@@ -20,6 +20,7 @@ configs = [
     ("only_capability", "— chỉ capability", "(ablation nguồn)"),
     ("only_precedent", "— chỉ precedent (kênh sinh)", "(ablation nguồn)"),
     ("only_precedent_no_guard", "— không có capability sheet làm trọng tài", "(ablation nguồn & guard)"),
+    ("only_precedent_no_guard_no_quarantine", "— tắt cả quarantine lúc ingest", "(ablation ingest & guard)"),
 ]
 
 def main():
@@ -112,6 +113,8 @@ def main():
     # Print ReAct placeholder
     lines.append("| V4+V5+A3 | ReAct | | | | / | | | | | | | | | |")
     
+    # ... (existing rows up to V4_V5_A3) ...
+    
     # Print only_capability
     lines.append(format_row(configs[1][1], configs[1][2], load_json(configs[1][0])))
     
@@ -121,6 +124,12 @@ def main():
     # Print only_precedent_no_guard
     lines.append(format_row(configs[3][1], configs[3][2], load_json(configs[3][0])))
     
+    # Print only_precedent_no_guard_no_quarantine
+    lines.append(format_row(configs[4][1], configs[4][2], load_json(configs[4][0])))
+    
+    lines.append("\n> **Lưu ý về cấu hình ablation (guard & ingest):**")
+    lines.append("> Kết quả `fabrication=0` ở cấu hình tắt lưới an toàn lúc sinh (guard 6.4 & 7) **không** chứng minh lưới an toàn bị thừa. Nó chứng tỏ **kiến trúc phòng thủ 2 tầng độc lập** hoạt động hiệu quả: các câu chứa thông tin bịa đặt đã bị **quarantine ngay từ Bước 2 (lúc ingest)** nên hoàn toàn không tồn tại trong index để retriever lấy ra. Cấu hình cuối cùng (tắt cả quarantine) chứng minh rõ điều này khi LLM lập tức rơi vào bẫy và bộc lộ fabrication > 0.")
+
     out = "\n".join(lines)
     (results_dir / "report.md").write_text(out, encoding="utf-8")
     

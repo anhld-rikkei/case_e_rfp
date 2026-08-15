@@ -23,21 +23,22 @@ def main():
     rfp_paths = []
     for gf in golden_files:
         data = json.loads(gf.read_text(encoding="utf-8"))
-        txt_path = ROOT / "eval" / "results" / f"temp4_{gf.stem}.txt"
+        txt_path = ROOT / "eval" / "results" / f"temp5_{gf.stem}.txt"
         txt_path.write_text(data["rfp_text"], encoding="utf-8")
         rfp_paths.append(txt_path)
         
     try:
-        print(f"\n{'='*40}\nRunning config: only_precedent_no_guard\n{'='*40}")
+        print(f"\n{'='*40}\nRunning config: only_precedent_no_guard_no_quarantine\n{'='*40}")
         set_config(1, 0)
         
-        out_file = ROOT / "eval" / "results" / "only_precedent_no_guard.json"
+        out_file = ROOT / "eval" / "results" / "only_precedent_no_guard_no_quarantine.json"
         
         cmd = [
             str(ROOT / ".venv" / "Scripts" / "python.exe"),
             "-m", "eval.run_ragas",
             "--out", str(out_file),
-            "--disable-guards"
+            "--disable-guards",
+            "--disable-quarantine"
         ]
         for p in rfp_paths:
             cmd.extend(["--rfp", str(p)])

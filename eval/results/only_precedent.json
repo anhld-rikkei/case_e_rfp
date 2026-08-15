@@ -1,0 +1,264 @@
+{
+  "judge": {
+    "model": "gpt-5.4-mini",
+    "temperature": 0.0,
+    "runs": 3
+  },
+  "deterministic": [
+    {
+      "requirements": 12,
+      "covered_requirements": 2,
+      "coverage": 0.16666666666666666,
+      "abstained_sections": 3,
+      "sections": 5,
+      "abstain_rate": 0.6,
+      "grounded_sentences": 4,
+      "sentences": 4,
+      "groundedness": 1.0,
+      "accurate_citations": 4,
+      "citation_accuracy": 1.0,
+      "fabrication_count": 0,
+      "client_leak_count": 0,
+      "hybrid_blocked": 0,
+      "conflict_dropped": 0,
+      "dedup_rate": 0.36363636363636365,
+      "latency_seconds": null,
+      "token_cost": null
+    },
+    {
+      "requirements": 12,
+      "covered_requirements": 3,
+      "coverage": 0.25,
+      "abstained_sections": 3,
+      "sections": 5,
+      "abstain_rate": 0.6,
+      "grounded_sentences": 5,
+      "sentences": 5,
+      "groundedness": 1.0,
+      "accurate_citations": 5,
+      "citation_accuracy": 1.0,
+      "fabrication_count": 0,
+      "client_leak_count": 0,
+      "hybrid_blocked": 0,
+      "conflict_dropped": 0,
+      "dedup_rate": 0.375,
+      "latency_seconds": null,
+      "token_cost": null
+    },
+    {
+      "requirements": 11,
+      "covered_requirements": 2,
+      "coverage": 0.18181818181818182,
+      "abstained_sections": 3,
+      "sections": 5,
+      "abstain_rate": 0.6,
+      "grounded_sentences": 4,
+      "sentences": 4,
+      "groundedness": 1.0,
+      "accurate_citations": 4,
+      "citation_accuracy": 1.0,
+      "fabrication_count": 0,
+      "client_leak_count": 0,
+      "hybrid_blocked": 0,
+      "conflict_dropped": 0,
+      "dedup_rate": 0.36363636363636365,
+      "latency_seconds": null,
+      "token_cost": null
+    },
+    {
+      "requirements": 11,
+      "covered_requirements": 2,
+      "coverage": 0.18181818181818182,
+      "abstained_sections": 3,
+      "sections": 5,
+      "abstain_rate": 0.6,
+      "grounded_sentences": 4,
+      "sentences": 4,
+      "groundedness": 1.0,
+      "accurate_citations": 4,
+      "citation_accuracy": 1.0,
+      "fabrication_count": 0,
+      "client_leak_count": 0,
+      "hybrid_blocked": 0,
+      "conflict_dropped": 0,
+      "dedup_rate": 0.36363636363636365,
+      "latency_seconds": null,
+      "token_cost": null
+    },
+    {
+      "requirements": 11,
+      "covered_requirements": 2,
+      "coverage": 0.18181818181818182,
+      "abstained_sections": 3,
+      "sections": 5,
+      "abstain_rate": 0.6,
+      "grounded_sentences": 4,
+      "sentences": 4,
+      "groundedness": 1.0,
+      "accurate_citations": 4,
+      "citation_accuracy": 1.0,
+      "fabrication_count": 0,
+      "client_leak_count": 0,
+      "hybrid_blocked": 0,
+      "conflict_dropped": 0,
+      "dedup_rate": 0.36363636363636365,
+      "latency_seconds": null,
+      "token_cost": null
+    },
+    {
+      "requirements": 0,
+      "covered_requirements": 0,
+      "coverage": 0.0,
+      "abstained_sections": 0,
+      "sections": 0,
+      "abstain_rate": 0.0,
+      "grounded_sentences": 0,
+      "sentences": 0,
+      "groundedness": 0.0,
+      "accurate_citations": 0,
+      "citation_accuracy": 0.0,
+      "fabrication_count": 0,
+      "client_leak_count": 0,
+      "hybrid_blocked": 0,
+      "conflict_dropped": 0,
+      "dedup_rate": 0.0,
+      "latency_seconds": null,
+      "token_cost": null
+    },
+    {
+      "requirements": 11,
+      "covered_requirements": 2,
+      "coverage": 0.18181818181818182,
+      "abstained_sections": 3,
+      "sections": 5,
+      "abstain_rate": 0.6,
+      "grounded_sentences": 4,
+      "sentences": 4,
+      "groundedness": 1.0,
+      "accurate_citations": 4,
+      "citation_accuracy": 1.0,
+      "fabrication_count": 0,
+      "client_leak_count": 0,
+      "hybrid_blocked": 0,
+      "conflict_dropped": 0,
+      "dedup_rate": 0.36363636363636365,
+      "latency_seconds": null,
+      "token_cost": null
+    },
+    {
+      "requirements": 9,
+      "covered_requirements": 0,
+      "coverage": 0.0,
+      "abstained_sections": 4,
+      "sections": 5,
+      "abstain_rate": 0.8,
+      "grounded_sentences": 3,
+      "sentences": 3,
+      "groundedness": 1.0,
+      "accurate_citations": 3,
+      "citation_accuracy": 1.0,
+      "fabrication_count": 0,
+      "client_leak_count": 0,
+      "hybrid_blocked": 0,
+      "conflict_dropped": 0,
+      "dedup_rate": 0.2857142857142857,
+      "latency_seconds": null,
+      "token_cost": null
+    },
+    {
+      "requirements": 6,
+      "covered_requirements": 0,
+      "coverage": 0.0,
+      "abstained_sections": 3,
+      "sections": 5,
+      "abstain_rate": 0.6,
+      "grounded_sentences": 3,
+      "sentences": 3,
+      "groundedness": 1.0,
+      "accurate_citations": 3,
+      "citation_accuracy": 1.0,
+      "fabrication_count": 0,
+      "client_leak_count": 0,
+      "hybrid_blocked": 0,
+      "conflict_dropped": 0,
+      "dedup_rate": 0.375,
+      "latency_seconds": null,
+      "token_cost": null
+    }
+  ],
+  "sample_count": 83,
+  "ragas_sample_count": 13,
+  "unanswered_sample_count": 70,
+  "ragas": {
+    "faithfulness": {
+      "mean": 1.0,
+      "std": 0.0,
+      "runs": [
+        1.0,
+        1.0,
+        1.0
+      ]
+    },
+    "answer_relevancy": {
+      "mean": 0.5414810312135546,
+      "std": 0.008812819395915926,
+      "runs": [
+        0.5341249527588267,
+        0.5364461627240045,
+        0.5538719781578328
+      ]
+    },
+    "context_precision": {
+      "mean": 0.08547008546410255,
+      "std": 0.006043647701844748,
+      "runs": [
+        0.07692307691794872,
+        0.08974358973717947,
+        0.08974358973717947
+      ]
+    },
+    "context_recall": {
+      "mean": 0.0,
+      "std": 0.0,
+      "runs": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "noise_sensitivity": {
+      "mean": 0.9358974358974358,
+      "std": 0.009065471553673654,
+      "runs": [
+        0.9423076923076923,
+        0.9423076923076923,
+        0.9230769230769231
+      ]
+    },
+    "context_entity_recall": {
+      "mean": 0.20085470032407407,
+      "std": 0.006043647667194521,
+      "runs": [
+        0.19230769182692306,
+        0.20512820457264958,
+        0.20512820457264958
+      ]
+    }
+  },
+  "usage": {
+    "calls": 1116,
+    "prompt_tokens": 899418,
+    "completion_tokens": 105783,
+    "seconds": 159.61649239622056,
+    "by_stage": {
+      "generate": 31,
+      "structured": 32,
+      "judge": 1053
+    },
+    "tokens_by_stage": {
+      "generate": 5527,
+      "structured": 11711,
+      "judge": 987963
+    }
+  }
+}

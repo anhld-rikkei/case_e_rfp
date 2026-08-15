@@ -280,6 +280,7 @@ def load_states(
     state_paths: Iterable[Path],
     rfp_paths: Iterable[Path],
     disable_guards: bool = False,
+    disable_quarantine: bool = False,
 ) -> list[dict[str, Any]]:
     states: list[dict[str, Any]] = []
     for path in state_paths:
@@ -308,10 +309,27 @@ def load_states(
         patcher3 = patch("rfp.graph.final_guard", mock_final_guard)
         patcher4 = patch("eval.to_samples.final_guard", mock_final_guard)
         
-        patcher1.start()
-        patcher2.start()
-        patcher3.start()
-        patcher4.start()
+        patchers = [patcher1, patcher2, patcher3, patcher4]
+
+    if disable_quarantine:
+        from unittest.mock import patch
+        
+        def mock_filter_client_leaks(sentences):
+            return sentences, []
+        
+        def mock_partition(self, sentences):
+            return sentences, []
+            
+        patcher5 = patch("rfp.stores.sentence_index.filter_client_leaks", mock_filter_client_leaks)
+        patcher6 = patch("rfp.stores.sentence_index.CapabilityBlocklist.partition", mock_partition)
+        
+        if 'patchers' not in locals():
+            patchers = []
+        patchers.extend([patcher5, patcher6])
+
+    if disable_guards or disable_quarantine:
+        for p in patchers:
+            p.start()
 
     try:
         for path in rfp_paths:
@@ -320,11 +338,9 @@ def load_states(
                 print(f"Graph không completed cho {path}: {state.get('status')}. Sẽ tính là fail coverage/abstain.")
             states.append(state)
     finally:
-        if disable_guards:
-            patcher1.stop()
-            patcher2.stop()
-            patcher3.stop()
-            patcher4.stop()
+        if disable_guards or disable_quarantine:
+            for p in patchers:
+                p.stop()
     return states
 
 
@@ -351,11 +367,17 @@ def main() -> None:
     parser.add_argument("--deterministic-only", action="store_true")
     parser.add_argument("--out", type=Path)
     parser.add_argument("--disable-guards", action="store_true", help="Vô hiệu hóa guard 6.4 và 7 (dùng cho ablation)")
+    parser.add_argument("--disable-quarantine", action="store_true", help="Vô hiệu hóa quarantine lúc ingest (dùng cho ablation)")
     args = parser.parse_args()
     if not args.state and not args.rfp:
         parser.error("provide at least one --state or --rfp")
 
-    states = load_states(state_paths=args.state, rfp_paths=args.rfp, disable_guards=args.disable_guards)
+    states = load_states(
+        state_paths=args.state, 
+        rfp_paths=args.rfp, 
+        disable_guards=args.disable_guards,
+        disable_quarantine=args.disable_quarantine
+    )
     samples: list[dict[str, Any]] = []
     deterministic_rows = []
     for state in states:
