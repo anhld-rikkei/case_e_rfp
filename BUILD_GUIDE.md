@@ -206,7 +206,8 @@ rfp/
 │   │   └── pdf_ingest.py     # TÙY CHỌN — Bước 1.5, chỉ khi demo upload PDF
 │   ├── sanitize/
 │   │   ├── leak.py           # mask tên khách hàng riêng
-│   │   └── blocklist.py      # đối chiếu capability sheet
+│   │   ├── blocklist.py      # đối chiếu capability sheet
+│   │   └── report.py         # CÔNG CỤ ĐO — file duy nhất trong src/ được đọc proposals_index.jsonl
 │   ├── stores/
 │   │   ├── capability.py     # KV lookup (KHÔNG embed)
 │   │   └── sentence_index.py # hybrid BM25 + dense
@@ -809,7 +810,12 @@ Tự tạo 1 PDF/chuỗi test chứa `ＩＳＯ／ＩＥＣ　２７０１７` (
 
 ### BƯỚC 2 — Sanitizer + capability store
 
-**Tạo:** `sanitize/leak.py`, `sanitize/blocklist.py`, `stores/capability.py`, `config/templates_ja.py`
+**Tạo:** `sanitize/leak.py`, `sanitize/blocklist.py`, `sanitize/report.py`, `stores/capability.py`,
+`config/templates_ja.py`
+
+> `sanitize/report.py` là **công cụ đo, không phải code runtime**. Đây là file duy nhất trong `src/`
+> được phép đọc `proposals_index.jsonl` (BB-6) — nó đối chiếu kết quả sanitize với nhãn để in bảng
+> nghiệm thu. Luồng chạy thật không bao giờ import nó.
 
 **2.1 Leak (`leak.py`)** — pattern `([^\s・]{2,10})様向け`, rồi phân loại:
 danh sách tên chung (§1.3, 5 token) → giữ; còn lại là tên riêng → mask về tên chung tương ứng
