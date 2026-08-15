@@ -486,12 +486,16 @@ Mỗi bước có: **Mục tiêu · Tạo file · Contract · Nghiệm thu (lệ
 > Mục "Tạo:" liệt kê **file mới**. Ngoài ra, **mọi bước từ Bước 5 trở đi được phép sửa 2 file
 > tích hợp** mà không cần hỏi:
 >
-> | File | Được sửa để làm gì |
+> | File | Được sửa/tạo để làm gì |
 > |---|---|
 > | `src/rfp/graph.py` | nối stage mới vào luồng + thêm cờ CLI mà nghiệm thu bước đó cần (`--trace`, `--json`…) |
 > | `config/settings.py` | thêm hằng số cấu hình của bước đó (trọng số rerank, ngưỡng…) — **không rải hằng số trong code** |
+> | **File kiểm chứng mà chính nghiệm thu của bước đó gọi** | `src/rfp/check.py`, `eval/test_gates.py`, `src/rfp/sanitize/report.py`… — nếu lệnh trong mục "Nghiệm thu" gọi tới nó thì nó **thuộc phạm vi bước đó**, khỏi hỏi |
 >
-> Chỉ hai file này. Sửa file của bước trước (parser, sanitizer, index…) vẫn phải hỏi.
+> Ngoài ba nhóm trên, sửa file của bước trước (parser, sanitizer, index…) vẫn phải hỏi.
+>
+> Nhóm thứ ba tồn tại vì một lý do đơn giản: **nghiệm thu là một phần của bước, không phải phụ lục.**
+> Bước nào cũng phải tự chứng minh được nó chạy đúng.
 >
 > Lý do: `graph.py` là điểm tích hợp duy nhất — Bước 5 cắm retrieval, Bước 6 cắm generation,
 > Bước 7 cắm guard. Không cho sửa nó thì không bước nào chạy được nghiệm thu của chính mình.
@@ -1082,7 +1086,12 @@ và vẫn chạy tiếp (fallback capability-only), không crash.
 
 ### BƯỚC 6 — Generation 5 giai đoạn (trái tim của bài)
 
-**Tạo:** `generate/precedent.py`, `capability.py`, `merge.py`, `claim_check.py`, `coverage.py`
+**Tạo:** `generate/precedent.py`, `generate/capability.py`, `generate/merge.py`,
+`generate/claim_check.py`, `generate/coverage.py`
+**Kiểm chứng (thuộc phạm vi bước này):** `src/rfp/check.py`, `eval/test_gates.py`
+**Được sửa:** `src/rfp/graph.py`, `config/settings.py`
+
+> `eval/test_gates.py` còn được Bước 7 và Bước 10 dùng tiếp — tạo ở đây, bổ sung dần về sau.
 
 **6.1 Sinh câu precedent** — từ câu proposal đã retrieve. Rewrite nhẹ, **giữ nguyên văn số liệu**
 (cấm LLM sinh số mới), giữ `sent_id` gốc. Không có precedent → skip, không bịa.

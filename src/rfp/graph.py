@@ -1,4 +1,7 @@
 import argparse
+import json
+from collections import Counter
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -10,13 +13,31 @@ from config.section_map import (
     section_key_for_chapter,
 )
 from config.settings import (
+    BRIDGE_SECTION_PRIORITY,
+    CAPABILITY_FACTS_PER_SECTION,
+    COMPANY_FACTS_PER_SECTION,
+    MAX_BRIDGES_PER_PROPOSAL,
     MMR_TOP_K,
+    PRECEDENTS_PER_CHAPTER,
     RERANK_TOP_K,
     RETRIEVAL_TOP_K,
     ROUTE_EMBEDDING_THRESHOLD,
 )
 from langgraph.graph import END, START, StateGraph
 
+from .generate.capability import (
+    default_fact_keys,
+    generate_capabilities,
+    render_fact,
+)
+from .generate.claim_check import (
+    build_claim_whitelist,
+    check_claims,
+    filter_hybrid_claims,
+)
+from .generate.coverage import assess_coverage, matched_requirement_ids
+from .generate.merge import deduplicate_sections, merge_channels
+from .generate.precedent import generate_precedents
 from .parsers.rfp_parser import (
     CHAPTER_RE,
     DEFAULT_RFP_DIR,
@@ -28,6 +49,7 @@ from .retrieve.hybrid import DEFAULT_EMBEDDING_MODEL, SearchResult
 from .retrieve.mmr import MMRSelection, maximal_marginal_relevance
 from .retrieve.rerank import RerankedResult, rerank_candidates, resolve_conflicts
 from .schema import RFP
+from .stores.capability import CapabilityStore
 from .stores.sentence_index import SentenceIndex
 
 
@@ -66,6 +88,16 @@ def _empty_trace() -> dict[str, Any]:
         "dedup": {"before": 0, "after": 0},
         "path": [],
         "conflicts": [],
+        "hybrid_blocked": [],
+        "claim_removed": [],
+        "claim_verdicts": {
+            "VERIFIED": 0,
+            "UNVERIFIABLE": 0,
+            "CONTRADICTED": 0,
+        },
+        "generation_channels": {},
+        "claim_whitelist": [],
+        "global_dedup": [],
     }
 
 
@@ -77,6 +109,12 @@ def _with_trace(state: GraphState, node: str) -> dict[str, Any]:
         "dedup": dict(current.get("dedup", {"before": 0, "after": 0})),
         "path": [*current.get("path", []), node],
         "conflicts": list(current.get("conflicts", [])),
+        "hybrid_blocked": list(current.get("hybrid_blocked", [])),
+        "claim_removed": list(current.get("claim_removed", [])),
+        "claim_verdicts": dict(current.get("claim_verdicts", {})),
+        "generation_channels": dict(current.get("generation_channels", {})),
+        "claim_whitelist": list(current.get("claim_whitelist", [])),
+        "global_dedup": list(current.get("global_dedup", [])),
     }
 
 
@@ -225,14 +263,9 @@ def retrieve_per_chapter(state: GraphState) -> GraphState:
         chapter.id: attribute_retriever.cover_chapter(chapter)
         for chapter in rfp.chapters
     }
-    section_sources = {
-        section["key"]: list(section["source_chapters"])
-        for section in state.get("sections", [])
-    }
     skip_decisions = _chapter_skip_decisions(
         rfp,
         coverages=coverages,
-        section_sources=section_sources,
     )
     chapters: list[dict[str, Any]] = []
     retrieval_stats: dict[str, Any] = {}
@@ -340,20 +373,11 @@ def retrieve_per_chapter(state: GraphState) -> GraphState:
             }
         )
 
-    selected_by_chapter = {
-        chapter["id"]: len(chapter["retrieval"]["selected"])
-        for chapter in chapters
-    }
-    for section_key, source_ids in section_sources.items():
-        if source_ids and sum(selected_by_chapter[source_id] for source_id in source_ids) == 0:
-            raise AssertionError(
-                f"Section {section_key} có source_chapters nhưng không có precedent selected"
-            )
-
     trace = _with_trace(state, "retrieve_per_chapter")
     trace["retrieval_stats"] = retrieval_stats
     trace["dedup"] = {"before": aggregate_before, "after": aggregate_after}
     trace["conflicts"] = conflicts
+    trace["claim_whitelist"] = sorted(build_claim_whitelist(sentence_index))
     return {
         "chapters": chapters,
         "trace": trace,
@@ -384,23 +408,14 @@ def _chapter_skip_decisions(
     rfp: RFP,
     *,
     coverages: dict[str, AttributeCoverage],
-    section_sources: dict[str, list[str]],
 ) -> dict[str, bool]:
-    decisions = {
+    return {
         chapter.id: (
-            coverages[chapter.id].exactly_covered
+            coverages[chapter.id].fully_covered
             and section_key_for_chapter(chapter.title) != "implementation_experience"
         )
         for chapter in rfp.chapters
     }
-
-    # A section with sources must retain at least one precedent-producing chapter.
-    # If all of its chapters were exact-match skip candidates, retrieve the chapter
-    # with the smallest id so the choice remains deterministic.
-    for source_ids in section_sources.values():
-        if source_ids and all(decisions[source_id] for source_id in source_ids):
-            decisions[min(source_ids)] = False
-    return decisions
 
 
 def _select_precedents(
@@ -491,20 +506,206 @@ def _reranked_result_dict(item: RerankedResult) -> dict[str, Any]:
 
 
 def generate_per_section(state: GraphState) -> GraphState:
-    return {
-        "sections": [
+    capability_store = CapabilityStore()
+    source_texts = {
+        sentence["sent_id"]: sentence["text"]
+        for chapter in state.get("chapters", [])
+        for sentence in chapter["retrieval"]["selected"]
+    }
+    claim_whitelist = set(state.get("trace", {}).get("claim_whitelist", []))
+    chapters_by_id = {
+        chapter["id"]: chapter for chapter in state.get("chapters", [])
+    }
+    generated_sections: list[dict[str, Any]] = []
+    generation_channels: dict[str, dict[str, int]] = {}
+    coverage_inputs: dict[str, dict[str, Any]] = {}
+    hybrid_blocked: list[dict[str, Any]] = []
+    claim_removed: list[dict[str, Any]] = []
+    contradicted_count = 0
+    used_fact_keys: set[str] = set()
+    llm_calls = 0
+
+    for section in state.get("sections", []):
+        source_chapters = [
+            chapters_by_id[chapter_id]
+            for chapter_id in section["source_chapters"]
+        ]
+        requirements = {
+            requirement["req_id"]: requirement["text"]
+            for chapter in source_chapters
+            for requirement in chapter["requirements"]
+        }
+
+        precedent_sentences: list[dict[str, Any]] = []
+        precedent_calls = 0
+        for chapter in source_chapters:
+            all_selected = chapter["retrieval"]["selected"]
+            same_section = [
+                item
+                for item in all_selected
+                if item["section"] == section["title_ja"]
+            ]
+            selected = (same_section or all_selected)[:PRECEDENTS_PER_CHAPTER]
+            chapter_requirements = {
+                item["req_id"]: item["text"] for item in chapter["requirements"]
+            }
+            generated, calls = generate_precedents(
+                selected,
+                req_ids_by_source={
+                    item["sent_id"]: matched_requirement_ids(
+                        item["text"],
+                        chapter_requirements,
+                    )
+                    for item in selected
+                },
+            )
+            precedent_sentences.extend(generated)
+            precedent_calls += calls
+
+        fact_keys: list[str] = []
+        req_ids_by_fact: dict[str, list[str]] = {}
+        for chapter in source_chapters:
+            attribute_stage = chapter["retrieval"]["stages"]["attribute"]
+            for match in attribute_stage["matches"]:
+                for fact_key in match["fact_keys"]:
+                    fact_keys.append(fact_key)
+                    req_ids_by_fact.setdefault(fact_key, []).append(match["req_id"])
+        if section["key"] == "company_overview":
+            fact_keys = default_fact_keys(section["key"])
+        elif not fact_keys:
+            fact_keys = default_fact_keys(section["key"])
+        fact_keys = [
+            key for key in dict.fromkeys(fact_keys) if key not in used_fact_keys
+        ]
+        if not fact_keys:
+            fact_keys = [
+                key
+                for key in default_fact_keys(section["key"])
+                if key not in used_fact_keys
+            ]
+        if not fact_keys:
+            fact_keys = [key for key in capability_store if key not in used_fact_keys]
+        fact_limit = (
+            COMPANY_FACTS_PER_SECTION
+            if section["key"] == "company_overview"
+            else CAPABILITY_FACTS_PER_SECTION
+        )
+        fact_keys = fact_keys[:fact_limit]
+        used_fact_keys.update(fact_keys)
+        capability_sentences, capability_calls = generate_capabilities(
+            fact_keys,
+            req_ids_by_fact={
+                key: matched_requirement_ids(
+                    render_fact(capability_store, key),
+                    requirements,
+                    candidate_req_ids=req_ids_by_fact.get(key, []),
+                )
+                for key in fact_keys
+            },
+            store=capability_store,
+        )
+
+        merged = merge_channels(
+            capability_sentences,
+            precedent_sentences,
+            section_key=section["key"],
+            add_bridge=False,
+        )
+        hybrid_clean, blocked = filter_hybrid_claims(merged, claim_whitelist)
+        checked, verdicts, check_calls, removed = check_claims(
+            hybrid_clean,
+            capability_store=capability_store,
+            source_texts=source_texts,
+        )
+        checked = merge_channels(
+            [item for item in checked if item["origin"] == "capability"],
+            [item for item in checked if item["origin"] == "precedent"],
+            section_key=section["key"],
+            add_bridge=False,
+        )
+        llm_calls += precedent_calls + capability_calls + check_calls
+        contradicted_count += verdicts["CONTRADICTED"]
+        hybrid_blocked.extend(
+            {
+                "section_key": section["key"],
+                "source_id": sentence["source_id"],
+                "text": sentence["text"],
+            }
+            for sentence in blocked
+        )
+        claim_removed.extend(
+            {
+                "section_key": section["key"],
+                "source_id": sentence["source_id"],
+                "text": sentence["text"],
+                "verdict": sentence["verdict"],
+            }
+            for sentence in removed
+        )
+        skipped = any(
+            chapter["retrieval"]["stages"]["query_embed"]["skipped"]
+            for chapter in source_chapters
+        )
+        coverage_inputs[section["key"]] = {
+            "source_chapters": list(section["source_chapters"]),
+            "requirements": requirements,
+            "skipped": skipped,
+        }
+        generated_sections.append(
             {
                 "key": section["key"],
                 "title_ja": section["title_ja"],
                 "title_vi": section["title_vi"],
                 "source_chapters": list(section["source_chapters"]),
-                "sentences": list(section["sentences"]),
-                "status": section["status"],
-                "note": section["note"],
+                "sentences": checked,
+                "status": None,
+                "note": None,
             }
-            for section in state.get("sections", [])
-        ],
-        "trace": _with_trace(state, "generate_per_section"),
+        )
+
+    generated_sections, global_dedup = deduplicate_sections(
+        generated_sections,
+        bridge_priority=BRIDGE_SECTION_PRIORITY,
+        max_bridges=MAX_BRIDGES_PER_PROPOSAL,
+    )
+    for section in generated_sections:
+        coverage_input = coverage_inputs[section["key"]]
+        status, note = assess_coverage(
+            section_key=section["key"],
+            source_chapters=coverage_input["source_chapters"],
+            requirements=coverage_input["requirements"],
+            sentences=section["sentences"],
+            skipped=coverage_input["skipped"],
+        )
+        section["status"] = status
+        section["note"] = note
+        generation_channels[section["key"]] = {
+            origin: sum(
+                item["origin"] == origin for item in section["sentences"]
+            )
+            for origin in ("capability", "precedent", "bridge")
+        }
+
+    claim_verdicts = Counter(
+        sentence["verdict"]
+        for section in generated_sections
+        for sentence in section["sentences"]
+    )
+    claim_verdicts["CONTRADICTED"] += contradicted_count
+
+    trace = _with_trace(state, "generate_per_section")
+    trace["llm_calls"] += llm_calls
+    trace["generation_channels"] = generation_channels
+    trace["hybrid_blocked"] = hybrid_blocked
+    trace["claim_removed"] = claim_removed
+    trace["global_dedup"] = global_dedup
+    trace["claim_verdicts"] = {
+        name: claim_verdicts[name]
+        for name in ("VERIFIED", "UNVERIFIABLE", "CONTRADICTED")
+    }
+    return {
+        "sections": generated_sections,
+        "trace": trace,
     }
 
 
@@ -590,6 +791,14 @@ def check_schema(state: GraphState) -> None:
         raise AssertionError("trace.dedup phải có before và after")
 
 
+def _json_default(value: Any) -> Any:
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    raise TypeError(f"Không thể serialize {type(value).__name__}")
+
+
 def print_trace(state: GraphState) -> None:
     reference = state["reference_rfp"]
     trace = state["trace"]
@@ -637,6 +846,7 @@ def main() -> None:
     source.add_argument("--text")
     argument_parser.add_argument("--check-schema", action="store_true")
     argument_parser.add_argument("--trace", action="store_true")
+    argument_parser.add_argument("--json", type=Path)
     args = argument_parser.parse_args()
 
     text = (
@@ -645,6 +855,16 @@ def main() -> None:
         else args.text
     )
     result = run_graph(text)
+
+    if args.json is not None:
+        args.json.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2, default=_json_default)
+            + "\n",
+            encoding="utf-8",
+            newline="\n",
+        )
+        print(f"json={args.json} · status={result['status']}")
+        return
 
     if args.check_schema:
         check_schema(result)

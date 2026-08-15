@@ -20,3 +20,17 @@ RERANK_SECTION_WEIGHT = 0.10
 
 MMR_LAMBDA = 0.70
 ROUTE_EMBEDDING_THRESHOLD = 0.35
+
+# Generation defaults.
+GENERATION_EFFORT = "low"
+PRECEDENTS_PER_CHAPTER = 1
+CAPABILITY_FACTS_PER_SECTION = 2
+COMPANY_FACTS_PER_SECTION = 2
+MAX_BRIDGES_PER_PROPOSAL = 1
+BRIDGE_SECTION_PRIORITY = (
+    "implementation_experience",
+    "proposal_overview",
+    "delivery_structure",
+    "certification_compliance",
+)
+COVERAGE_MIN_SHARED_ANCHORS = 2
