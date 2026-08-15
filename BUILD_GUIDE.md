@@ -256,6 +256,10 @@ Không cần vector DB ngoài. ~291 câu → FAISS in-memory là quá đủ. Th�
 
 ### 3.3 Cấu hình LLM — `src/rfp/llm.py` (mọi lệnh gọi đi qua đây, không rải rác)
 
+> ⚠️ **DỰ ÁN NÀY DÙNG OpenAI / `gpt-5.4-mini`.** Mục 3.3 dưới đây viết cho Anthropic và giữ lại
+> làm tham chiếu; **cấu hình thực tế nằm ở §3.3-bis**. Mọi cảnh báo trong 3.3 (temperature → 400,
+> `thinking`/`effort`, `cache_control` + ngưỡng 512 token) **chỉ đúng với Claude**, không áp dụng ở đây.
+
 ```python
 import anthropic
 from pydantic import BaseModel
@@ -413,10 +417,13 @@ if PROVIDER == "anthropic":
 elif PROVIDER == "openai":
     from openai import OpenAI
     _c = OpenAI()
-    # 3 cờ dưới đây điền theo KẾT QUẢ PROBE (§B), không đoán:
-    TOKEN_ARG   = os.getenv("LLM_TOKEN_ARG", "max_tokens")   # hoặc "max_completion_tokens"
+    # 3 cờ dưới điền theo KẾT QUẢ PROBE. ĐÃ ĐO cho gpt-5.4-mini (openai SDK 2.54):
+    #   max_tokens            -> 400  (không hỗ trợ)      | max_completion_tokens -> OK
+    #   temperature=0         -> OK   (khác Claude Opus 5) | reasoning_effort      -> OK
+    #   client.chat.completions.parse -> OK  (structured output dùng đường này)
+    TOKEN_ARG   = os.getenv("LLM_TOKEN_ARG", "max_completion_tokens")
     USE_TEMP    = os.getenv("LLM_USE_TEMP", "1") == "1"
-    USE_EFFORT  = os.getenv("LLM_USE_EFFORT", "0") == "1"
+    USE_EFFORT  = os.getenv("LLM_USE_EFFORT", "1") == "1"
 
     def _kw(limit: int, effort: str) -> dict:
         kw = {TOKEN_ARG: limit}

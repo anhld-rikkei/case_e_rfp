@@ -10,3 +10,4 @@ deepeval
 pytest
 pydantic
 python-dotenv
+openai
