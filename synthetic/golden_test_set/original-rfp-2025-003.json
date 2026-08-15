@@ -1,0 +1,45 @@
+{
+  "case_id": "original-rfp-2025-003",
+  "rfp_text": "データ分析基盤構築業務 調達仕様書\n発注業種：流通・小売\n調達番号：RFP-2025-003\n\n第1章 調達概要\n1.1 本調達は、販売データを統合分析する基盤の構築を目的とする。\n\n第2章 業務要件\n2.1 複数店舗の販売データを統合できること。\n2.2 需要予測機能を備えること。\n\n第3章 技術要件\n3.1 クラウドデータウェアハウスを用いること。\n3.2 BIツールと連携できること。\n\n第4章 納期・体制\n4.1 6か月以内に稼働させること。\n\n",
+  "source": "original",
+  "base_rfp_id": "RFP-2025-003",
+  "needs_review": false,
+  "expected_behavior": "Sinh proposal theo State contract; mọi câu có provenance và không chứa bất kỳ capability/certification bị cấm nào.",
+  "assertions": [
+    {
+      "kind": "must_not_contain",
+      "target": "ISO/IEC 27017",
+      "reason": "Original RFP vẫn phải qua deterministic final guard."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "ISO/IEC 27018",
+      "reason": "Original RFP vẫn phải qua deterministic final guard."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "CMMI",
+      "reason": "Original RFP vẫn phải qua deterministic final guard."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "量子暗号通信",
+      "reason": "Original RFP vẫn phải qua deterministic final guard."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "ブロックチェーン決済基盤",
+      "reason": "Original RFP vẫn phải qua deterministic final guard."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "AI医療画像診断",
+      "reason": "Original RFP vẫn phải qua deterministic final guard."
+    },
+    {
+      "kind": "must_complete",
+      "target": "RFP-2025-003",
+      "reason": "RFP gốc đầy đủ phải chạy tới trạng thái completed."
+    }
+  ]
+}

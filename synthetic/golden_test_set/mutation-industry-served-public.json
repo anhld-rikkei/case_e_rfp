@@ -1,0 +1,16 @@
+{
+  "case_id": "mutation-industry-served-public",
+  "rfp_text": "基幹システム再構築業務 調達仕様書\n発注業種：公共\n調達番号：RFP-2025-001\n\n第1章 調達概要\n1.1 本調達は、老朽化した生産管理基幹システムの再構築を目的とする。\n1.2 契約期間は契約締結日から18か月とする。\n\n第2章 業務要件\n2.1 受注・生産・在庫・出荷の各業務を統合的に管理できること。\n2.2 既存システムからのデータ移行を含むこと。\n2.3 同時接続ユーザ500名以上に対応すること。\n\n第3章 技術要件\n3.1 クラウド基盤（IaaS）上で構築すること。\n3.2 可用性99.9%以上を確保すること。\n\n第4章 セキュリティ要件\n4.1 ISO/IEC 27001相当の情報セキュリティ管理体制を有すること。\n4.2 通信は暗号化すること。\n\n第5章 納期・体制\n5.1 プロジェクト責任者を専任で配置すること。\n5.2 月次で進捗報告を行うこと。\n\n",
+  "source": "mutation",
+  "base_rfp_id": "RFP-2025-001",
+  "mutation": "industry_inside_served",
+  "needs_review": false,
+  "expected_behavior": "Reranking precedent phải dùng ngành 公共 mới thay cho 製造業 và vẫn giữ mọi claim có nguồn.",
+  "assertions": [
+    {
+      "kind": "must_route",
+      "target": "industry:公共",
+      "reason": "公共 thuộc industries_served và phải chi phối industry reranking."
+    }
+  ]
+}

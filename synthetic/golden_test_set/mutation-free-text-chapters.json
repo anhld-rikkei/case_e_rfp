@@ -1,0 +1,16 @@
+{
+  "case_id": "mutation-free-text-chapters",
+  "rfp_text": "基幹システム再構築業務 調達仕様書\n発注業種：製造業\n調達番号：RFP-2025-001\n\n調達概要\n1.1 本調達は、老朽化した生産管理基幹システムの再構築を目的とする。\n1.2 契約期間は契約締結日から18か月とする。\n\n業務要件\n2.1 受注・生産・在庫・出荷の各業務を統合的に管理できること。\n2.2 既存システムからのデータ移行を含むこと。\n2.3 同時接続ユーザ500名以上に対応すること。\n\n技術要件\n3.1 クラウド基盤（IaaS）上で構築すること。\n3.2 可用性99.9%以上を確保すること。\n\nセキュリティ要件\n4.1 ISO/IEC 27001相当の情報セキュリティ管理体制を有すること。\n4.2 通信は暗号化すること。\n\n納期・体制\n5.1 プロジェクト責任者を専任で配置すること。\n5.2 月次で進捗報告を行うこと。\n\n",
+  "source": "mutation",
+  "base_rfp_id": "RFP-2025-001",
+  "mutation": "parser_fallback",
+  "needs_review": false,
+  "expected_behavior": "Regex không còn nhận 第N章; RFPParser phải dùng structured LLM fallback và vẫn tách được các chương cùng requirement.",
+  "assertions": [
+    {
+      "kind": "must_parse_with_fallback",
+      "target": "5 chapters / 11 atoms",
+      "reason": "Text tự do vẫn phải được parser fallback tách đủ cấu trúc."
+    }
+  ]
+}

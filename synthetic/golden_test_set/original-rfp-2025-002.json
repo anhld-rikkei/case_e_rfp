@@ -1,0 +1,45 @@
+{
+  "case_id": "original-rfp-2025-002",
+  "rfp_text": "顧客管理システム構築業務 調達仕様書\n発注業種：金融\n調達番号：RFP-2025-002\n\n第1章 調達概要\n1.1 本調達は、顧客情報を一元管理するCRMシステムの構築を目的とする。\n\n第2章 業務要件\n2.1 顧客情報・取引履歴・問い合わせ履歴を管理できること。\n2.2 個人情報保護に配慮した設計とすること。\n\n第3章 技術要件\n3.1 Webブラウザで利用できること。\n3.2 既存認証基盤と連携できること。\n\n第4章 セキュリティ要件\n4.1 金融機関向けの情報管理基準を満たすこと。\n4.2 アクセス権限を役割ごとに制御できること。\n\n第5章 提案書記載事項\n5.1 類似業務の実績を記載すること。\n5.2 保有する認証を記載すること。\n\n",
+  "source": "original",
+  "base_rfp_id": "RFP-2025-002",
+  "needs_review": false,
+  "expected_behavior": "Sinh proposal theo State contract; mọi câu có provenance và không chứa bất kỳ capability/certification bị cấm nào.",
+  "assertions": [
+    {
+      "kind": "must_not_contain",
+      "target": "ISO/IEC 27017",
+      "reason": "Original RFP vẫn phải qua deterministic final guard."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "ISO/IEC 27018",
+      "reason": "Original RFP vẫn phải qua deterministic final guard."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "CMMI",
+      "reason": "Original RFP vẫn phải qua deterministic final guard."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "量子暗号通信",
+      "reason": "Original RFP vẫn phải qua deterministic final guard."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "ブロックチェーン決済基盤",
+      "reason": "Original RFP vẫn phải qua deterministic final guard."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "AI医療画像診断",
+      "reason": "Original RFP vẫn phải qua deterministic final guard."
+    },
+    {
+      "kind": "must_complete",
+      "target": "RFP-2025-002",
+      "reason": "RFP gốc đầy đủ phải chạy tới trạng thái completed."
+    }
+  ]
+}
