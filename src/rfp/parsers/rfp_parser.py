@@ -15,12 +15,18 @@ DEFAULT_RFP_DIR = PROJECT_ROOT / "synthetic" / "rfps"
 
 
 class RFPParser:
+    def __init__(self) -> None:
+        self.last_method: str | None = None
+
     def parse(self, text: str, *, allow_llm_fallback: bool = True) -> RFP:
         parsed = self._parse_regex(text)
         if parsed is not None:
+            self.last_method = "regex"
             return parsed
         if not allow_llm_fallback:
+            self.last_method = None
             raise ValueError("RFP text không khớp format chương/requirement")
+        self.last_method = "llm"
         return self._parse_llm(text)
 
     def parse_file(
@@ -107,7 +113,9 @@ class RFPParser:
         result = structured(
             system=(
                 "Bạn là parser RFP tiếng Nhật. Hãy giữ nguyên văn nội dung và tách "
-                "rfp_id, title, industry, chapters, requirements theo schema."
+                "rfp_id, title, industry, chapters, requirements theo schema. "
+                "Không suy đoán dữ liệu bị thiếu. Giữ nguyên req_id có trong văn bản; "
+                "tiêu đề chương có thể không có tiền tố 第N章."
             ),
             user=text,
             model_cls=FallbackRFP,

@@ -1,4 +1,5 @@
 import re
+from threading import Lock
 import unicodedata
 from dataclasses import dataclass
 from typing import Iterable
@@ -11,6 +12,20 @@ from ..schema import Sentence
 
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 TOKEN_RE = re.compile(r"[A-Za-z]+(?:/[A-Za-z]+)*|\d+(?:\.\d+)?%?|[ぁ-んァ-ヶ一-龯ー]")
+_MODEL_CACHE: dict[str, object] = {}
+_MODEL_CACHE_LOCK = Lock()
+
+
+def get_embedding_model(model_name: str = DEFAULT_EMBEDDING_MODEL):
+    """Return one process-wide embedding model, including under parallel eval."""
+    with _MODEL_CACHE_LOCK:
+        model = _MODEL_CACHE.get(model_name)
+        if model is None:
+            from sentence_transformers import SentenceTransformer
+
+            model = SentenceTransformer(model_name)
+            _MODEL_CACHE[model_name] = model
+        return model
 
 
 def tokenize(text: str) -> list[str]:
@@ -60,10 +75,9 @@ class HybridRetriever:
 
         # Chỉ encode text của Sentence lấy từ proposal đã sanitize. Capability sheet
         # không được truyền vào retriever và không đi qua model embedding.
-        from sentence_transformers import SentenceTransformer
         import faiss
 
-        self.model = SentenceTransformer(model_name)
+        self.model = get_embedding_model(model_name)
         embeddings = self.model.encode(
             [sentence.text for sentence in self.sentences],
             convert_to_numpy=True,

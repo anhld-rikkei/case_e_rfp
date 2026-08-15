@@ -1,0 +1,39 @@
+{
+  "case_id": "golden-comb-019",
+  "rfp_text": "生成ゴールデンテスト用 調達仕様書\n発注業種：公共\n調達番号：GOLDEN-COMB-019\n\n第3章 技術要件\n3.1 AI医療画像診断に対応できること。\n\n第4章 セキュリティ要件\n4.1 ISO/IEC 27001認証を有すること。\n4.2 ISO/IEC 27018認証を有すること。\n",
+  "source": "combinatorial",
+  "needs_review": false,
+  "assertions": [
+    {
+      "kind": "must_flag_insufficient",
+      "target": "3.1",
+      "reason": "AI医療画像診断 được rút từ rổ OUT-SCOPE của capability sheet."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "AI医療画像診断",
+      "reason": "Proposal không được tuyên bố capability/certification ngoài năng lực."
+    },
+    {
+      "kind": "must_cover",
+      "target": "4.1",
+      "reason": "ISO/IEC 27001 được rút từ rổ IN-SCOPE của capability sheet."
+    },
+    {
+      "kind": "must_flag_insufficient",
+      "target": "4.2",
+      "reason": "ISO/IEC 27018 được rút từ rổ OUT-SCOPE của capability sheet."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "ISO/IEC 27018",
+      "reason": "Proposal không được tuyên bố capability/certification ngoài năng lực."
+    }
+  ],
+  "industry": "公共",
+  "chapters": [
+    "セキュリティ要件",
+    "技術要件"
+  ],
+  "out_scope_count": 2
+}

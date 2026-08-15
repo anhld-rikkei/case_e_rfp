@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 import hashlib
 from pathlib import Path
 import sys
 from typing import Any
 
+import pandas as pd
 import streamlit as st
 
 
@@ -15,6 +17,25 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from config.settings import RFP_DIR, TRANSLATION_EFFORT, TRANSLATION_SYSTEM_PROMPT
+from eval.golden.generator import (
+    CHAPTER_TITLES,
+    DEFAULT_OUTPUT_DIR as GOLDEN_OUTPUT_DIR,
+    generate_combinatorial,
+    generate_mutations,
+    generate_paraphrases,
+    load_base_case,
+)
+from eval.golden.runner import (
+    DEFAULT_GOLDEN_DIR,
+    assertion_rows,
+    case_rows,
+    discover_case_files,
+    load_cases,
+    run_case,
+    run_cases,
+    source_summary,
+)
+from eval.golden.schema import GoldenCase, load_case, save_case
 from rfp.graph import PIPELINE_STAGES, stream_graph
 from rfp.llm import generate
 
@@ -373,11 +394,260 @@ def render_trace_details(state: dict[str, Any]) -> None:
         st.info("6.4-bis không chặn câu lai nào.")
 
 
+def _sync_golden_editor() -> None:
+    cases = st.session_state.get("golden_preview_cases", [])
+    index = st.session_state.get("golden_preview_index", 0)
+    if cases and 0 <= index < len(cases):
+        st.session_state["golden_rfp_editor"] = cases[index].rfp_text
+        st.session_state["golden_trial_result"] = None
+
+
+def _result_style(rows: list[dict[str, Any]], column: str) -> Any:
+    frame = pd.DataFrame(rows)
+    if frame.empty or column not in frame:
+        return frame
+    return frame.style.apply(
+        lambda row: [
+            "background-color: #5A1E25; color: #FFE9EC"
+            if str(row[column]) == "FAIL"
+            else ""
+            for _ in row
+        ],
+        axis=1,
+    )
+
+
+def _golden_management_rows() -> tuple[list[Path], list[GoldenCase], list[dict[str, Any]]]:
+    paths = discover_case_files(DEFAULT_GOLDEN_DIR)
+    cases = [load_case(path) for path in paths]
+    last_runs = st.session_state.get("golden_last_runs", {})
+    rows = [
+        {
+            "case_id": case.case_id,
+            "source": case.source,
+            "#assertion": len(case.assertions),
+            "needs_review": case.needs_review,
+            "lần chạy cuối": last_runs.get(case.case_id, {}).get("time", "—"),
+            "pass/fail": last_runs.get(case.case_id, {}).get("result", "—"),
+        }
+        for case in cases
+    ]
+    return paths, cases, rows
+
+
 def render_golden() -> None:
     st.header("Sinh golden test")
-    st.info("Khung trống — logic sinh golden test sẽ được bổ sung ở Bước 9-bis.")
-    st.text_input("Tên test", disabled=True, placeholder="Bước 9-bis")
-    st.button("Sinh golden test", disabled=True)
+    st.caption("Golden = RFP + assertion máy kiểm được; không lưu proposal mẫu.")
+
+    st.subheader("1. Cấu hình")
+    mode_labels = {
+        "Tổ hợp · 0 LLM": "combinatorial",
+        "Mutation · 0 LLM": "mutation",
+        "Paraphrase · LLM": "paraphrase",
+    }
+    config_left, config_middle, config_right = st.columns(3)
+    with config_left:
+        mode_label = st.radio("Mode", list(mode_labels), horizontal=False)
+        mode = mode_labels[mode_label]
+        industry = st.selectbox(
+            "業種",
+            ["製造業", "金融", "流通・小売", "公共", "医療"],
+        )
+    with config_middle:
+        chapters = st.multiselect(
+            "Chương",
+            list(CHAPTER_TITLES),
+            default=list(CHAPTER_TITLES),
+        )
+        out_scope_count = st.slider(
+            "Số requirement ngoài năng lực",
+            min_value=0,
+            max_value=3,
+            value=1,
+            disabled=mode != "combinatorial",
+        )
+    with config_right:
+        case_count = st.number_input(
+            "Số ca cần sinh",
+            min_value=1,
+            max_value=30,
+            value=1,
+            step=1,
+        )
+        base_paths = discover_case_files(DEFAULT_GOLDEN_DIR)
+        base_path = st.selectbox(
+            "Ca gốc",
+            base_paths,
+            format_func=lambda path: path.stem,
+            disabled=mode == "combinatorial",
+        ) if base_paths else None
+
+    if st.button("Sinh preview", type="primary", key="golden_generate_preview"):
+        if mode == "combinatorial":
+            preview_cases = generate_combinatorial(
+                int(case_count),
+                industries=[industry],
+                chapters=chapters,
+                out_scope_count=out_scope_count,
+            )
+        elif mode == "mutation":
+            preview_cases = generate_mutations(
+                load_base_case(base_path),
+                int(case_count),
+            )
+        else:
+            preview_cases = generate_paraphrases(
+                load_base_case(base_path),
+                int(case_count),
+            )
+        st.session_state["golden_preview_cases"] = preview_cases
+        st.session_state["golden_preview_index"] = 0
+        st.session_state["golden_rfp_editor"] = preview_cases[0].rfp_text
+        st.session_state["golden_trial_result"] = None
+
+    preview_cases: list[GoldenCase] = st.session_state.get("golden_preview_cases", [])
+    if preview_cases:
+        selected_index = st.selectbox(
+            "Ca đang preview",
+            range(len(preview_cases)),
+            key="golden_preview_index",
+            format_func=lambda index: preview_cases[index].case_id,
+            on_change=_sync_golden_editor,
+        )
+        selected_case = preview_cases[selected_index]
+        if selected_case.needs_review:
+            st.warning("🟠 Cần rà — ca paraphrase chưa được tính vào bảng §11.3.")
+
+        st.subheader("2. Preview")
+        preview_left, preview_right = st.columns(2)
+        with preview_left:
+            edited_rfp = st.text_area(
+                "RFP sinh ra — có thể sửa tay",
+                key="golden_rfp_editor",
+                height=430,
+            )
+        with preview_right:
+            st.dataframe(
+                [
+                    {
+                        "kind": item.kind,
+                        "target": item.target,
+                        "reason": item.reason,
+                    }
+                    for item in selected_case.assertions
+                ],
+                width="stretch",
+                hide_index=True,
+                height=430,
+            )
+
+        working_case = replace(selected_case, rfp_text=edited_rfp)
+        action_run, action_save, action_review = st.columns(3)
+        with action_run:
+            if st.button("Chạy thử", width="stretch", key="golden_run_one"):
+                with st.spinner("Đang chạy graph và kiểm assertion…"):
+                    trial = run_case(working_case)
+                st.session_state["golden_trial_result"] = trial
+                st.session_state.setdefault("golden_last_runs", {})[
+                    working_case.case_id
+                ] = {
+                    "time": "phiên hiện tại",
+                    "result": "PASS" if trial.passed else "FAIL",
+                }
+        with action_save:
+            if st.button("Lưu", width="stretch", key="golden_save"):
+                saved_path = save_case(
+                    working_case,
+                    GOLDEN_OUTPUT_DIR / f"{working_case.case_id}.json",
+                )
+                st.success(f"Đã lưu {saved_path.relative_to(ROOT_DIR)}")
+        with action_review:
+            if st.button(
+                "Đã rà",
+                width="stretch",
+                key="golden_review",
+                disabled=not working_case.needs_review,
+            ):
+                reviewed = replace(
+                    working_case,
+                    needs_review=False,
+                    metadata={**working_case.metadata, "reviewed_by_human": True},
+                )
+                save_case(reviewed, GOLDEN_OUTPUT_DIR / f"{reviewed.case_id}.json")
+                preview_cases[selected_index] = reviewed
+                st.session_state["golden_preview_cases"] = preview_cases
+                st.rerun()
+
+        trial = st.session_state.get("golden_trial_result")
+        if trial is not None and trial.case_id == working_case.case_id:
+            st.subheader("3. Kết quả chạy thử")
+            rows = assertion_rows(trial)
+            st.dataframe(
+                _result_style(rows, "PASS/FAIL"),
+                width="stretch",
+                hide_index=True,
+            )
+            if trial.passed:
+                st.success("Tất cả assertion PASS.")
+            else:
+                st.error("Có assertion FAIL — xem reason trong bảng.")
+    else:
+        st.info("Chọn cấu hình và bấm “Sinh preview” để bắt đầu.")
+
+    st.divider()
+    st.subheader("4. Quản lý golden set")
+    paths, cases, management_rows = _golden_management_rows()
+    st.dataframe(management_rows, width="stretch", hide_index=True)
+    generated_paths = [
+        path
+        for path in paths
+        if path.resolve().is_relative_to(GOLDEN_OUTPUT_DIR.resolve())
+    ]
+    delete_col, delete_action = st.columns([3, 1])
+    with delete_col:
+        delete_path = st.selectbox(
+            "Ca generated có thể xoá",
+            generated_paths,
+            format_func=lambda path: path.stem,
+            disabled=not generated_paths,
+        ) if generated_paths else None
+    with delete_action:
+        if st.button(
+            "Xoá ca đã chọn",
+            disabled=delete_path is None,
+            key="golden_delete",
+        ):
+            resolved = delete_path.resolve()
+            if not resolved.is_relative_to(GOLDEN_OUTPUT_DIR.resolve()):
+                raise ValueError("Refusing to delete outside generated golden directory")
+            resolved.unlink()
+            st.rerun()
+
+    st.divider()
+    st.subheader("5. Regression")
+    if st.button("Chạy toàn bộ golden set", key="golden_regression"):
+        with st.spinner("Đang chạy regression toàn bộ golden set…"):
+            regression = run_cases(cases)
+        st.session_state["golden_regression_results"] = regression
+    regression = st.session_state.get("golden_regression_results")
+    if regression:
+        regression_rows = case_rows(regression)
+        st.dataframe(
+            _result_style(regression_rows, "result"),
+            width="stretch",
+            hide_index=True,
+        )
+        st.markdown("**Pass rate theo source — không tính ca needs_review=True**")
+        st.dataframe(source_summary(regression), width="stretch", hide_index=True)
+        failed = [
+            result.case_id
+            for result in regression
+            if result.eligible_for_metrics and not result.passed
+        ]
+        if failed:
+            st.error("Ca FAIL: " + ", ".join(failed))
+        else:
+            st.success("Không có ca đủ điều kiện nào FAIL.")
 
 
 def render_empty_tabs(tabs: tuple[Any, ...]) -> None:

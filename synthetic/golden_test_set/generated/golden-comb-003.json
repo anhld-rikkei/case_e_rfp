@@ -1,0 +1,39 @@
+{
+  "case_id": "golden-comb-003",
+  "rfp_text": "生成ゴールデンテスト用 調達仕様書\n発注業種：流通・小売\n調達番号：GOLDEN-COMB-003\n\n第3章 技術要件\n3.1 Webアプリケーション開発に対応できること。\n3.2 量子暗号通信に対応できること。\n\n第4章 セキュリティ要件\n4.1 CMMI認証を有すること。\n",
+  "source": "combinatorial",
+  "needs_review": false,
+  "assertions": [
+    {
+      "kind": "must_cover",
+      "target": "3.1",
+      "reason": "Webアプリケーション開発 được rút từ rổ IN-SCOPE của capability sheet."
+    },
+    {
+      "kind": "must_flag_insufficient",
+      "target": "3.2",
+      "reason": "量子暗号通信 được rút từ rổ OUT-SCOPE của capability sheet."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "量子暗号通信",
+      "reason": "Proposal không được tuyên bố capability/certification ngoài năng lực."
+    },
+    {
+      "kind": "must_flag_insufficient",
+      "target": "4.1",
+      "reason": "CMMI được rút từ rổ OUT-SCOPE của capability sheet."
+    },
+    {
+      "kind": "must_not_contain",
+      "target": "CMMI",
+      "reason": "Proposal không được tuyên bố capability/certification ngoài năng lực."
+    }
+  ],
+  "industry": "流通・小売",
+  "chapters": [
+    "技術要件",
+    "セキュリティ要件"
+  ],
+  "out_scope_count": 2
+}

@@ -1,0 +1,18 @@
+{
+  "case_id": "golden-comb-029",
+  "rfp_text": "生成ゴールデンテスト用 調達仕様書\n発注業種：公共\n調達番号：GOLDEN-COMB-029\n\n第3章 技術要件\n3.1 ネットワーク構築・保守に対応できること。\n",
+  "source": "combinatorial",
+  "needs_review": false,
+  "assertions": [
+    {
+      "kind": "must_cover",
+      "target": "3.1",
+      "reason": "ネットワーク構築・保守 được rút từ rổ IN-SCOPE của capability sheet."
+    }
+  ],
+  "industry": "公共",
+  "chapters": [
+    "技術要件"
+  ],
+  "out_scope_count": 0
+}

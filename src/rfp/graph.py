@@ -47,7 +47,11 @@ from .parsers.rfp_parser import (
     RFPParser,
 )
 from .retrieve.attribute import AttributeCoverage, AttributeRetriever
-from .retrieve.hybrid import DEFAULT_EMBEDDING_MODEL, SearchResult
+from .retrieve.hybrid import (
+    DEFAULT_EMBEDDING_MODEL,
+    SearchResult,
+    get_embedding_model,
+)
 from .retrieve.mmr import MMRSelection, maximal_marginal_relevance
 from .retrieve.rerank import RerankedResult, rerank_candidates, resolve_conflicts
 from .schema import RFP
@@ -115,6 +119,7 @@ def _empty_trace() -> dict[str, Any]:
             for name in PIPELINE_STAGES
         },
         "llm_calls_by_stage": {
+            "parser": 0,
             "retrieval": 0,
             "precedent_generation": 0,
             "capability_generation": 0,
@@ -160,11 +165,24 @@ def parse_input(state: GraphState) -> GraphState:
     parsed_rfp: RFP | None = None
     parse_error: str | None = None
 
+    parser = RFPParser()
+    # Thiếu metadata ngành vẫn phải hỏi người dùng. Với metadata đầy đủ, regex
+    # được thử trước trong RFPParser rồi structured LLM mới làm fallback.
+    allow_llm_fallback = industry_match is not None
     try:
-        # BƯỚC 4 cấm LLM: parser regex thất bại thì giữ trạng thái thiếu dữ liệu.
-        parsed_rfp = RFPParser().parse(text, allow_llm_fallback=False)
-    except ValueError as error:
-        parse_error = str(error)
+        parsed_rfp = parser.parse(
+            text,
+            allow_llm_fallback=allow_llm_fallback,
+        )
+    except Exception as error:
+        parse_error = f"{type(error).__name__}: {error}"
+
+    trace = _with_trace(state, "parse_input")
+    if parser.last_method == "llm":
+        trace["llm_calls"] += 1
+        trace["llm_calls_by_stage"]["parser"] = (
+            trace["llm_calls_by_stage"].get("parser", 0) + 1
+        )
 
     return {
         "rfp": parsed_rfp,
@@ -179,7 +197,7 @@ def parse_input(state: GraphState) -> GraphState:
             len(parsed_rfp.chapters) if parsed_rfp is not None else chapter_count
         ),
         "parse_error": parse_error,
-        "trace": _with_trace(state, "parse_input"),
+        "trace": trace,
     }
 
 
@@ -240,9 +258,7 @@ def route_reference_rfp(state: GraphState) -> GraphState:
             "score": 1.0,
         }
     elif rfp is not None and references:
-        from sentence_transformers import SentenceTransformer
-
-        model = SentenceTransformer(DEFAULT_EMBEDDING_MODEL)
+        model = get_embedding_model(DEFAULT_EMBEDDING_MODEL)
         embeddings = model.encode(
             [rfp.title, *(reference.title for reference in references)],
             convert_to_numpy=True,
@@ -567,6 +583,14 @@ def generate_per_section(state: GraphState) -> GraphState:
     llm_calls = 0
     llm_calls_by_stage = Counter()
 
+    reserved_fact_owners: dict[str, str] = {}
+    for target_section in state.get("sections", []):
+        for chapter_id in target_section["source_chapters"]:
+            chapter = chapters_by_id[chapter_id]
+            for match in chapter["retrieval"]["stages"]["attribute"]["matches"]:
+                for fact_key in match["fact_keys"]:
+                    reserved_fact_owners.setdefault(fact_key, target_section["key"])
+
     for section in state.get("sections", []):
         source_chapters = [
             chapters_by_id[chapter_id]
@@ -617,16 +641,25 @@ def generate_per_section(state: GraphState) -> GraphState:
         elif not fact_keys:
             fact_keys = default_fact_keys(section["key"])
         fact_keys = [
-            key for key in dict.fromkeys(fact_keys) if key not in used_fact_keys
+            key
+            for key in dict.fromkeys(fact_keys)
+            if key not in used_fact_keys
+            and reserved_fact_owners.get(key, section["key"]) == section["key"]
         ]
         if not fact_keys:
             fact_keys = [
                 key
                 for key in default_fact_keys(section["key"])
                 if key not in used_fact_keys
+                and reserved_fact_owners.get(key, section["key"]) == section["key"]
             ]
         if not fact_keys:
-            fact_keys = [key for key in capability_store if key not in used_fact_keys]
+            fact_keys = [
+                key
+                for key in capability_store
+                if key not in used_fact_keys
+                and reserved_fact_owners.get(key, section["key"]) == section["key"]
+            ]
         fact_limit = (
             COMPANY_FACTS_PER_SECTION
             if section["key"] == "company_overview"

@@ -1,0 +1,18 @@
+{
+  "case_id": "golden-comb-013",
+  "rfp_text": "生成ゴールデンテスト用 調達仕様書\n発注業種：流通・小売\n調達番号：GOLDEN-COMB-013\n\n第3章 技術要件\n3.1 クラウド移行（AWS・Azure）に対応できること。\n",
+  "source": "combinatorial",
+  "needs_review": false,
+  "assertions": [
+    {
+      "kind": "must_cover",
+      "target": "3.1",
+      "reason": "クラウド移行（AWS・Azure） được rút từ rổ IN-SCOPE của capability sheet."
+    }
+  ],
+  "industry": "流通・小売",
+  "chapters": [
+    "技術要件"
+  ],
+  "out_scope_count": 0
+}
