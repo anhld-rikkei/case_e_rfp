@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 from collections import Counter
 from dataclasses import asdict, is_dataclass
@@ -64,6 +65,16 @@ SECTION_KEYS = {
     "note",
 }
 TRACE_KEYS = {"llm_calls", "retrieval_stats", "dedup"}
+PIPELINE_STAGES = (
+    "parse_input",
+    "check_complete",
+    "ask_user",
+    "route_reference_rfp",
+    "plan_sections",
+    "retrieve_per_chapter",
+    "generate_per_section",
+    "assemble",
+)
 
 
 class GraphState(TypedDict, total=False):
@@ -99,11 +110,30 @@ def _empty_trace() -> dict[str, Any]:
         "generation_channels": {},
         "claim_whitelist": [],
         "global_dedup": [],
+        "stages": {
+            name: {"status": "pending"}
+            for name in PIPELINE_STAGES
+        },
+        "llm_calls_by_stage": {
+            "retrieval": 0,
+            "precedent_generation": 0,
+            "capability_generation": 0,
+            "claim_check": 0,
+            "final_guard": 0,
+        },
+        "section_statuses": {
+            "OK": 0,
+            "ATTRIBUTE_ONLY": 0,
+            "INSUFFICIENT_EVIDENCE": 0,
+        },
+        "grounding": {"grounded": 0, "total": 0},
     }
 
 
 def _with_trace(state: GraphState, node: str) -> dict[str, Any]:
     current = state.get("trace", _empty_trace())
+    stages = copy.deepcopy(current.get("stages", _empty_trace()["stages"]))
+    stages.setdefault(node, {})["status"] = "completed"
     return {
         "llm_calls": current.get("llm_calls", 0),
         "retrieval_stats": dict(current.get("retrieval_stats", {})),
@@ -116,6 +146,10 @@ def _with_trace(state: GraphState, node: str) -> dict[str, Any]:
         "generation_channels": dict(current.get("generation_channels", {})),
         "claim_whitelist": list(current.get("claim_whitelist", [])),
         "global_dedup": list(current.get("global_dedup", [])),
+        "stages": stages,
+        "llm_calls_by_stage": dict(current.get("llm_calls_by_stage", {})),
+        "section_statuses": dict(current.get("section_statuses", {})),
+        "grounding": dict(current.get("grounding", {})),
     }
 
 
@@ -155,10 +189,16 @@ def check_complete(state: GraphState) -> GraphState:
         missing.append("industry (発注業種)")
     if state.get("chapter_count", 0) == 0:
         missing.append("chapters (第N章)")
+    trace = _with_trace(state, "check_complete")
+    if missing:
+        for stage_name in PIPELINE_STAGES[3:]:
+            trace["stages"][stage_name]["status"] = "skipped"
+    else:
+        trace["stages"]["ask_user"]["status"] = "skipped"
     return {
         "missing": missing,
         "status": "needs_input" if missing else "ready",
-        "trace": _with_trace(state, "check_complete"),
+        "trace": trace,
     }
 
 
@@ -525,6 +565,7 @@ def generate_per_section(state: GraphState) -> GraphState:
     contradicted_count = 0
     used_fact_keys: set[str] = set()
     llm_calls = 0
+    llm_calls_by_stage = Counter()
 
     for section in state.get("sections", []):
         source_chapters = [
@@ -625,6 +666,9 @@ def generate_per_section(state: GraphState) -> GraphState:
             add_bridge=False,
         )
         llm_calls += precedent_calls + capability_calls + check_calls
+        llm_calls_by_stage["precedent_generation"] += precedent_calls
+        llm_calls_by_stage["capability_generation"] += capability_calls
+        llm_calls_by_stage["claim_check"] += check_calls
         contradicted_count += verdicts["CONTRADICTED"]
         hybrid_blocked.extend(
             {
@@ -704,6 +748,20 @@ def generate_per_section(state: GraphState) -> GraphState:
         name: claim_verdicts[name]
         for name in ("VERIFIED", "UNVERIFIABLE", "CONTRADICTED")
     }
+    trace["llm_calls_by_stage"].update(llm_calls_by_stage)
+    trace["section_statuses"] = {
+        name: sum(section["status"] == name for section in generated_sections)
+        for name in ("OK", "ATTRIBUTE_ONLY", "INSUFFICIENT_EVIDENCE")
+    }
+    all_sentences = [
+        sentence
+        for section in generated_sections
+        for sentence in section["sentences"]
+    ]
+    trace["grounding"] = {
+        "grounded": sum(sentence["origin"] != "bridge" for sentence in all_sentences),
+        "total": len(all_sentences),
+    }
     return {
         "sections": generated_sections,
         "trace": trace,
@@ -713,7 +771,7 @@ def generate_per_section(state: GraphState) -> GraphState:
 def assemble(state: GraphState) -> GraphState:
     proposal = "\n\n".join(
         f"{index}. {section['title_ja']}\n"
-        + "".join(sentence.get("text", "") for sentence in section["sentences"])
+        + "\n".join(sentence.get("text", "") for sentence in section["sentences"])
         for index, section in enumerate(state.get("sections", []), start=1)
     )
     final_guard(proposal)
@@ -758,15 +816,51 @@ GRAPH = build_graph()
 
 
 def run_graph(text: str) -> GraphState:
-    return GRAPH.invoke(
-        {
-            "input_text": text,
-            "reference_rfp": {"rfp_id": "", "method": "none", "score": None},
-            "chapters": [],
-            "sections": [],
-            "trace": _empty_trace(),
-        }
-    )
+    return GRAPH.invoke(_initial_state(text))
+
+
+def _initial_state(text: str) -> GraphState:
+    return {
+        "input_text": text,
+        "reference_rfp": {"rfp_id": "", "method": "none", "score": None},
+        "chapters": [],
+        "sections": [],
+        "trace": _empty_trace(),
+    }
+
+
+def _running_snapshot(state: GraphState, node: str) -> GraphState:
+    snapshot = copy.deepcopy(state)
+    trace = copy.deepcopy(snapshot.get("trace", _empty_trace()))
+    trace["stages"][node]["status"] = "running"
+    snapshot["trace"] = trace
+    return snapshot
+
+
+def _next_stage(node: str, state: GraphState) -> str | None:
+    if node == "check_complete":
+        return "ask_user" if state.get("missing") else "route_reference_rfp"
+    next_by_node = {
+        "parse_input": "check_complete",
+        "route_reference_rfp": "plan_sections",
+        "plan_sections": "retrieve_per_chapter",
+        "retrieve_per_chapter": "generate_per_section",
+        "generate_per_section": "assemble",
+    }
+    return next_by_node.get(node)
+
+
+def stream_graph(text: str):
+    """Yield State snapshots while consuming the compiled graph exactly once."""
+    accumulated = _initial_state(text)
+    yield _running_snapshot(accumulated, "parse_input")
+    for update in GRAPH.stream(accumulated, stream_mode="updates"):
+        for node, values in update.items():
+            accumulated.update(values)
+            yield copy.deepcopy(accumulated)
+            next_stage = _next_stage(node, accumulated)
+            if next_stage is not None:
+                yield _running_snapshot(accumulated, next_stage)
 
 
 def check_schema(state: GraphState) -> None:

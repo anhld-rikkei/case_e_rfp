@@ -34,3 +34,11 @@ BRIDGE_SECTION_PRIORITY = (
     "certification_compliance",
 )
 COVERAGE_MIN_SHARED_ANCHORS = 2
+
+# Streamlit translation runs once after proposal assembly, outside the graph.
+TRANSLATION_EFFORT = "low"
+TRANSLATION_SYSTEM_PROMPT = (
+    "Bạn là biên dịch viên Nhật-Việt. Dịch đầy đủ hai phần RFP và proposal sang "
+    "tiếng Việt, giữ nguyên tiêu đề, mã requirement, số liệu và nhãn [RFP]/[PROPOSAL]. "
+    "Chỉ trả bản dịch, không bình luận thêm."
+)

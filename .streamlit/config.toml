@@ -1,0 +1,12 @@
+[server]
+port = 8642
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "dark"
+primaryColor = "#4F8A6B"
+backgroundColor = "#12161C"
+secondaryBackgroundColor = "#1B2129"
+textColor = "#E6EAF0"
