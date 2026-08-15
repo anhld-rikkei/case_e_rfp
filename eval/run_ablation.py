@@ -29,6 +29,12 @@ CONFIGS = {
     "only_precedent_no_guard_no_quarantine": dict(
         prec=1, cap=0, guards=False, quarantine=False
     ),
+    "force_precedent_k5_no_guard": dict(
+        prec=5, cap=0, guards=False, quarantine=False
+    ),
+    "force_precedent_k5_with_guard": dict(
+        prec=5, cap=0, guards=True, quarantine=False
+    ),
 }
 
 

@@ -122,6 +122,8 @@ def to_eval_samples(
     golden_cases: Iterable[GoldenCase] | None = None,
 ) -> list[dict[str, Any]]:
     cases = list(golden_cases) if golden_cases is not None else load_golden_cases()
+    if not state.get("rfp"):
+        return []
     golden_case = matching_golden_case(state, cases)
     full_capability_sheet = capability_sheet_text()
     capability_store = CapabilityStore()
@@ -273,7 +275,13 @@ def _hybrid_claims_in_output(state: dict[str, Any]) -> int:
 
 
 def deterministic_metrics(state: dict[str, Any]) -> dict[str, int | float | None]:
-    assert_deterministic_gates(state)
+    try:
+        assert_deterministic_gates(state)
+    except Exception as e:
+        if type(e).__name__ == "GuardViolation":
+            pass # Ignore here since we already measure fabrication_count below, and load_states already tracks if it crashed during generation.
+        else:
+            raise
     requirements = {
         requirement["req_id"]
         for chapter in state.get("chapters", [])
@@ -331,6 +339,7 @@ def deterministic_metrics(state: dict[str, Any]) -> dict[str, int | float | None
         ),
         "fabrication_count": forbidden_hits,
         "client_leak_count": leak_hits,
+        "guard_blocked_publish": state.get("guard_blocked_publish", 0),
         "hybrid_in_output": _hybrid_claims_in_output(state),
         "hybrid_blocked": len(trace.get("hybrid_blocked", [])),
         **_poison_reach(state),

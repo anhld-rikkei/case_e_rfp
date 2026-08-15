@@ -360,8 +360,21 @@ def load_states(
             p.start()
 
     try:
+        from rfp.guard import GuardViolation
+        from rfp.graph import build_graph
+        app = build_graph()
+        
         for path in rfp_paths:
-            state = run_graph(path.read_text(encoding="utf-8"))
+            last_state = None
+            try:
+                for s in app.stream({"input_text": path.read_text(encoding="utf-8"), "trace": {}}, stream_mode="values"):
+                    last_state = s
+                state = last_state
+            except GuardViolation as e:
+                print(f"Guard chặn không cho xuất bản {path}: {e}")
+                state = dict(last_state) if last_state else {}
+                state["status"] = "guard_blocked"
+                state["guard_blocked_publish"] = 1
             if state.get("status") != "completed":
                 print(f"Graph không completed cho {path}: {state.get('status')}. Sẽ tính là fail coverage/abstain.")
             states.append(state)

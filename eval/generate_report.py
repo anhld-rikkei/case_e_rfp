@@ -28,6 +28,8 @@ configs = [
     ("only_precedent", "— chỉ precedent (kênh sinh)", "(ablation nguồn)"),
     ("only_precedent_no_guard", "— không có capability sheet làm trọng tài", "(ablation nguồn & guard)"),
     ("only_precedent_no_guard_no_quarantine", "— tắt cả quarantine lúc ingest", "(ablation ingest & guard)"),
+    ("force_precedent_k5_no_guard", "— ép k=5, tắt guard", "(minh chứng BB-1/BB-2)"),
+    ("force_precedent_k5_with_guard", "— ép k=5, BẬT guard", "(minh chứng BB-1/BB-2)"),
 ]
 
 
@@ -103,8 +105,8 @@ def poison_reach_rows(lines):
     """Bảng chẩn đoán: câu bịa/rò rỉ đi được tới mốc nào."""
     lines.append("### Chất độc đi tới đâu (giải thích cột fabric./leak ở trên)")
     lines.append("")
-    lines.append("| Cấu hình | trong context retrieval | vào prompt sinh | còn trong hồ sơ |")
-    lines.append("|---|---|---|---|")
+    lines.append("| Cấu hình | trong context retrieval | vào prompt sinh | guard chặn xuất bản | còn trong hồ sơ |")
+    lines.append("|---|---|---|---|---|")
 
     reach = {}
     for key, id_col, _ in configs:
@@ -117,6 +119,7 @@ def poison_reach_rows(lines):
                 "client_leak_in_context",
                 "fabrication_in_prompt",
                 "client_leak_in_prompt",
+                "guard_blocked_publish",
                 "fabrication_count",
                 "client_leak_count",
             )
@@ -133,6 +136,7 @@ def poison_reach_rows(lines):
         lines.append(
             f"| {id_col} | {pair('fabrication_in_context', 'client_leak_in_context')} "
             f"| {pair('fabrication_in_prompt', 'client_leak_in_prompt')} "
+            f"| {fmt_count(entry.get('guard_blocked_publish'))} "
             f"| {pair('fabrication_count', 'client_leak_count')} |"
         )
     return reach
