@@ -16,6 +16,11 @@ Quy tắc cứng cho người thực hiện, lặp lại ở mọi bước:
 > Không sửa file ngoài phạm vi bước đang làm. Không thêm phụ thuộc mới ngoài `requirements.txt`.
 > Không "cải thiện" logic của bước trước. Nghiệm thu fail thì sửa, không nới tiêu chí.
 
+> ⚠️ **Mọi lệnh `python -m rfp.*` trong file này cần `PYTHONPATH=src`.** Gói nằm trong `src/` và
+> repo không cài dạng package, nên chạy trần từ gốc repo sẽ ra `ModuleNotFoundError: No module
+> named 'rfp'`. PowerShell: `$env:PYTHONPATH="src"` một lần cho cả phiên.
+> Các lệnh `python -m eval.*` và `streamlit run app.py` **không** cần — chúng tự nạp `sys.path`.
+
 ---
 
 ## PHẦN 0 — Rà soát đề bài (đối chiếu yêu cầu ↔ bước thực thi)

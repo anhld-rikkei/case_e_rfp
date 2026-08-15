@@ -1,3 +1,4 @@
+import functools
 import os
 import time
 
@@ -12,19 +13,30 @@ PROVIDER = os.getenv("LLM_PROVIDER", "anthropic")
 MODEL = os.getenv("LLM_MODEL")
 MODEL_EVAL = os.getenv("LLM_MODEL_EVAL", MODEL)
 
-if not MODEL:
-    raise ValueError("Thiếu biến môi trường LLM_MODEL")
+
+def _require_model() -> str:
+    # Kiểm lúc GỌI, không phải lúc import. Dựng client hay bắt lỗi thiếu biến
+    # ngay khi import nghĩa là mọi file lỡ import module này đều đòi API key —
+    # kể cả tầng eval regex vốn không gọi LLM một lần nào (BUILD_GUIDE §11.5).
+    if not MODEL:
+        raise ValueError("Thiếu biến môi trường LLM_MODEL")
+    return MODEL
+
 
 if PROVIDER == "anthropic":
     import anthropic
     from rfp.usage import record
 
-    client = anthropic.Anthropic()
+    @functools.lru_cache(maxsize=1)
+    def _client() -> "anthropic.Anthropic":
+        return anthropic.Anthropic()
 
     def generate(system: str, user: str, effort: str = "medium") -> str:
+        model = _require_model()
+        client = _client()
         t0 = time.perf_counter()
         response = client.messages.create(
-            model=MODEL,
+            model=model,
             max_tokens=16000,
             thinking={"type": "adaptive"},
             output_config={"effort": effort},
@@ -51,9 +63,11 @@ if PROVIDER == "anthropic":
         user: str,
         model_cls: type[BaseModel],
     ) -> BaseModel:
+        model = _require_model()
+        client = _client()
         t0 = time.perf_counter()
         response = client.messages.parse(
-            model=MODEL,
+            model=model,
             max_tokens=4000,
             system=system,
             messages=[{"role": "user", "content": user}],
@@ -70,13 +84,13 @@ elif PROVIDER == "openai":
     from openai import OpenAI
     from rfp.usage import record
 
-    client = OpenAI()
     TOKEN_ARG = os.getenv("LLM_TOKEN_ARG")
     USE_TEMP = os.getenv("LLM_USE_TEMP") == "1"
     USE_EFFORT = os.getenv("LLM_USE_EFFORT") == "1"
 
-    if not TOKEN_ARG:
-        raise ValueError("Thiếu biến môi trường LLM_TOKEN_ARG")
+    @functools.lru_cache(maxsize=1)
+    def _client() -> "OpenAI":
+        return OpenAI()
 
     def _openai_kwargs(
         limit: int,
@@ -84,6 +98,8 @@ elif PROVIDER == "openai":
         *,
         structured_output: bool = False,
     ) -> dict[str, object]:
+        if not TOKEN_ARG:
+            raise ValueError("Thiếu biến môi trường LLM_TOKEN_ARG")
         kwargs: dict[str, object] = {TOKEN_ARG: limit}
         # gpt-5.4-mini accepts these options separately but rejects their
         # combination. Generation honors its public effort argument; structured
@@ -95,9 +111,11 @@ elif PROVIDER == "openai":
         return kwargs
 
     def generate(system: str, user: str, effort: str = "medium") -> str:
+        model = _require_model()
+        client = _client()
         t0 = time.perf_counter()
         response = client.chat.completions.create(
-            model=MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
@@ -116,9 +134,11 @@ elif PROVIDER == "openai":
         user: str,
         model_cls: type[BaseModel],
     ) -> BaseModel:
+        model = _require_model()
+        client = _client()
         t0 = time.perf_counter()
         response = client.chat.completions.parse(
-            model=MODEL,
+            model=model,
             messages=[
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

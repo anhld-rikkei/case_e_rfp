@@ -44,9 +44,18 @@ Lần chạy đầu sẽ tải model embedding (~458MB) từ HuggingFace, cần 
 `PYTHONPATH=src` là bắt buộc với các lệnh dạng `python -m rfp.*` vì gói nằm trong `src/`;
 `app.py` và mọi thứ trong `eval/` thì tự nạp đường dẫn nên không cần.
 
-> ⚠️ **Mọi thứ còn lại đều cần API key**, kể cả `pytest`. Client LLM được tạo lúc *import*
-> `src/rfp/llm.py`, nên thiếu key thì `pytest eval/test_gates.py` **dừng ngay ở bước collection**
-> chứ không chạy được test nào — dù bản thân các test tầng 1 không hề gọi LLM.
+Bộ test tầng 1 cũng chạy được **không cần key** — client LLM khởi tạo lười, chỉ dựng khi thật sự
+có lệnh gọi:
+
+```powershell
+.venv\Scripts\python.exe -m pytest eval/test_gates.py -q
+```
+
+Không key: `1 failed, 10 passed` — ca fail duy nhất là `test_redteam_27017` vì nó sinh hồ sơ thật.
+Có key: `11 passed`.
+
+> ⚠️ **Sinh hồ sơ và chạy eval thì bắt buộc có key.** Thiếu key, lỗi nổ đúng lúc gọi LLM với
+> thông báo rõ ràng (`Missing credentials`), không phải một traceback lúc khởi động.
 
 ## Chạy
 

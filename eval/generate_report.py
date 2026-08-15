@@ -242,11 +242,33 @@ def main():
     lines.append(f"Test set: 3 RFP gốc + 6 mutation = 9 RFP, {total_atoms} requirement atom")
     lines.append(f"Tổng token Sản phẩm: {total_prod:,} (từ {prod_runs} lần chạy) | Tổng token Đo lường (Judge): {total_judge:,} (từ {judge_runs} lần chạy có RAGAS)")
     
-    if prod_runs and judge_runs:
-        prod_per_rfp = total_prod / (prod_runs * 9)
-        judge_per_rfp = total_judge / (judge_runs * 9)
-        ratio = judge_per_rfp / prod_per_rfp if prod_per_rfp else 0
-        lines.append(f"Trung bình mỗi RFP: sản phẩm ~{int(prod_per_rfp):,}/RFP · judge ~{int(judge_per_rfp):,}/RFP (judge gấp ~{ratio:.0f} lần token sản phẩm)")
+    # Chi phí mỗi RFP phải lấy từ CẤU HÌNH ĐỀ XUẤT, không phải trung bình gộp 7
+    # cấu hình: các ablation rẻ (tắt bớt kênh sinh) kéo con số xuống, ra một mức
+    # chi phí không ứng với thứ thật sự đem dùng.
+    proposed_key = configs[0][0]
+    # Đọc thẳng hai file: load_json() ghép chúng lại và ghi đè "usage" bằng bản
+    # deterministic, nên token judge không còn trong đó.
+    det_path = results_dir / f"{proposed_key}.det.json"
+    ragas_path = results_dir / f"{proposed_key}.json"
+    if det_path.exists() and ragas_path.exists():
+        det_proposed = json.loads(det_path.read_text(encoding="utf-8"))
+        ragas_proposed = json.loads(ragas_path.read_text(encoding="utf-8"))
+        rfp_count = len(det_proposed.get("deterministic", [])) or 9
+        tokens = det_proposed.get("usage", {}).get("tokens_by_stage", {})
+        prod_per_rfp = sum(
+            v for k, v in tokens.items() if k in ("generate", "structured")
+        ) / rfp_count
+        judge_per_rfp = (
+            ragas_proposed.get("usage", {}).get("tokens_by_stage", {}).get("judge", 0)
+            / rfp_count
+        )
+        if prod_per_rfp and judge_per_rfp:
+            ratio = judge_per_rfp / prod_per_rfp
+            lines.append(
+                f"Cấu hình đề xuất, mỗi RFP: sản phẩm ~{int(prod_per_rfp):,} token · "
+                f"judge ~{int(judge_per_rfp):,} token "
+                f"(đo lường tốn gấp ~{ratio:.0f} lần sản phẩm)"
+            )
         
     lines.append("")
     lines.append("| # | Cấu hình | fabric.↓ | leak↓ | hybrid↓ | **cov.↑ / abstain↓** | cite_acc↑ | ctx_prec↑ | ctx_recall↑ | noise_sens↓ | faithful.↑ | ans_rel.↑ | compliance↑ | latency | cost |")

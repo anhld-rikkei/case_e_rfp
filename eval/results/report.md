@@ -1,7 +1,7 @@
 Judge: gpt-5.4-mini, temperature=0.0, reasoning_effort: không gửi, n=3 (mean±std)
 Test set: 3 RFP gốc + 6 mutation = 9 RFP, 83 requirement atom
 Tổng token Sản phẩm: 157,655 (từ 7 lần chạy) | Tổng token Đo lường (Judge): 7,887,951 (từ 5 lần chạy có RAGAS)
-Trung bình mỗi RFP: sản phẩm ~2,502/RFP · judge ~175,287/RFP (judge gấp ~70 lần token sản phẩm)
+Cấu hình đề xuất, mỗi RFP: sản phẩm ~4,723 token · judge ~299,161 token (đo lường tốn gấp ~63 lần sản phẩm)
 
 | # | Cấu hình | fabric.↓ | leak↓ | hybrid↓ | **cov.↑ / abstain↓** | cite_acc↑ | ctx_prec↑ | ctx_recall↑ | noise_sens↓ | faithful.↑ | ans_rel.↑ | compliance↑ | latency | cost |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
