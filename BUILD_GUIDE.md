@@ -918,8 +918,26 @@ skip 5.2/5.3/5.4, ghi `stage.skipped = True` (đây là node xám nét đứt "b
 **5.3 Rerank** — `score = α·dense + β·bm25 + γ·industry_match + δ·same_section_prior`,
 top-20 → top-8. Hằng số vào `settings.py`, không rải trong code.
 
-**5.4 MMR** — **bắt buộc**. 40 proposal gần như cùng khung, chỉ khác số liệu; không MMR thì top-k
-toàn câu trùng nghĩa. Log `{"before": N, "after": M}` → ra con số "32 câu nguồn → 12 câu" trên UI.
+**5.4 MMR** — **bắt buộc**. Log `{"before": N, "after": M}` → ra con số "32 câu nguồn → 12 câu" trên UI.
+
+**Đã đo trên index thật ở Bước 3 — đây là lý do MMR không phải tuỳ chọn:**
+
+```
+273 câu trong index  →  chỉ 59 VĂN BẢN KHÁC NHAU  →  trùng 79%
+  本調達の要件を踏まえ、要件定義から…      × 40   (có ở CẢ 40 file)
+  当社はISO 9001・ISO/IEC 27001…          × 40
+  プロジェクト責任者を専任で配置し…        × 40
+```
+
+Ba câu đó chiếm 120/273 index. Không MMR thì top-k trả về **k bản sao của cùng một câu** —
+đúng như nghiệm thu Bước 3 đã cho thấy (top-5 là 5 bản sao).
+
+**Tiêu chí nghiệm thu cho 5.4 — kiểm ĐA DẠNG, không chỉ kiểm hiện diện:**
+```
+top-k sau MMR phải có số văn bản duy nhất == k   (0 câu trùng nhau)
+```
+Tiêu chí kiểu "top-5 có ít nhất 1 câu liên quan" **pass được cả khi kết quả vô dụng** — đã dính
+đúng bẫy này ở Bước 3, đừng lặp lại.
 
 **5.5 Route** — chọn RFP tham chiếu, thử theo thứ tự, dừng ở cái đầu khớp, ghi lại `method`:
 `industry` (0 LLM) → `embedding` → `none`.
