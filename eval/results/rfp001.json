@@ -1,0 +1,78 @@
+{
+  "judge": {
+    "model": "gpt-5.4-mini",
+    "temperature": 0.0,
+    "runs": 3
+  },
+  "deterministic": [
+    {
+      "requirements": 11,
+      "covered_requirements": 5,
+      "coverage": 0.45454545454545453,
+      "abstained_sections": 3,
+      "sections": 5,
+      "abstain_rate": 0.6,
+      "grounded_sentences": 10,
+      "sentences": 11,
+      "groundedness": 0.9090909090909091,
+      "accurate_citations": 10,
+      "citation_accuracy": 1.0,
+      "fabrication_count": 0,
+      "client_leak_count": 0,
+      "hybrid_blocked": 0,
+      "conflict_dropped": 0,
+      "dedup_rate": 0.36363636363636365,
+      "latency_seconds": null,
+      "token_cost": null
+    }
+  ],
+  "sample_count": 11,
+  "ragas": {
+    "faithfulness": {
+      "mean": 0.5537037037037037,
+      "std": 0.002618914004394611,
+      "runs": [
+        0.5555555555555556,
+        0.55,
+        0.5555555555555556
+      ]
+    },
+    "answer_relevancy": {
+      "mean": NaN,
+      "std": 0.0,
+      "runs": []
+    },
+    "context_precision": {
+      "mean": 0.0808080808,
+      "std": 0.04999744916980665,
+      "runs": [
+        0.04545454545,
+        0.04545454545,
+        0.1515151515
+      ]
+    },
+    "context_recall": {
+      "mean": 0.0,
+      "std": 0.0,
+      "runs": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    "noise_sensitivity": {
+      "mean": NaN,
+      "std": 0.0,
+      "runs": []
+    },
+    "context_entity_recall": {
+      "mean": 0.0,
+      "std": 0.0,
+      "runs": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    }
+  }
+}

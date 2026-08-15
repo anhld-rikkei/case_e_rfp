@@ -22,9 +22,16 @@ from config.settings import (  # noqa: E402
     EVAL_JUDGE_RUNS,
     EVAL_JUDGE_TEMPERATURE,
 )
-from eval.to_samples import deterministic_metrics, to_eval_samples  # noqa: E402
+from eval.to_samples import (  # noqa: E402
+    deterministic_metrics,
+    partition_ragas_samples,
+    to_eval_samples,
+)
 from rfp.graph import run_graph  # noqa: E402
-from rfp.retrieve.hybrid import get_embedding_model  # noqa: E402
+from rfp.retrieve.hybrid import (  # noqa: E402
+    DEFAULT_EMBEDDING_MODEL,
+    get_embedding_model,
+)
 
 
 METRIC_NAMES = (
@@ -54,10 +61,13 @@ class LocalSentenceEmbeddings(Embeddings):
     """LangChain-compatible adapter over the retrieval embedding model."""
 
     def __init__(self) -> None:
-        self.model = get_embedding_model()
+        # RAGAS records ``model`` in EmbeddingUsageEvent, whose schema requires
+        # a string. Keep the actual local encoder separate from that metadata.
+        self.model = DEFAULT_EMBEDDING_MODEL
+        self._encoder = get_embedding_model(self.model)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        values = self.model.encode(
+        values = self._encoder.encode(
             texts,
             convert_to_numpy=True,
             normalize_embeddings=True,
@@ -74,6 +84,8 @@ def _ragas_components():
     from langchain_openai import ChatOpenAI
     from ragas import evaluate
     from ragas.dataset_schema import EvaluationDataset
+    from ragas.embeddings.base import LangchainEmbeddingsWrapper
+    from ragas.llms.base import LangchainLLMWrapper
     from ragas.metrics._answer_relevance import ResponseRelevancy
     from ragas.metrics._context_entities_recall import ContextEntityRecall
     from ragas.metrics._context_precision import LLMContextPrecisionWithReference
@@ -93,19 +105,24 @@ def _ragas_components():
     # reasoning_effort is sent. Set it after construction and intentionally do
     # not configure reasoning_effort, matching rfp.llm.structured().
     judge.temperature = EVAL_JUDGE_TEMPERATURE
+    # gpt-5.4-mini returns one generation per request. RAGAS' historical
+    # answer-relevancy default is strictness=3, which is an internal ensemble,
+    # unrelated to this harness' three independent outer runs.
+    ragas_judge = LangchainLLMWrapper(judge, bypass_n=True)
+    embeddings = LangchainEmbeddingsWrapper(LocalSentenceEmbeddings())
     metrics = [
         Faithfulness(),
-        ResponseRelevancy(),
+        ResponseRelevancy(strictness=1),
         LLMContextPrecisionWithReference(name="context_precision"),
         LLMContextRecall(),
-        NoiseSensitivity(),
+        NoiseSensitivity(mode="irrelevant"),
         ContextEntityRecall(),
     ]
-    return evaluate, EvaluationDataset, judge, metrics
+    return evaluate, EvaluationDataset, ragas_judge, embeddings, metrics
 
 
 def _evaluation_dataset(samples: list[dict[str, Any]]):
-    _, EvaluationDataset, _, _ = _ragas_components()
+    _, EvaluationDataset, _, _, _ = _ragas_components()
     return EvaluationDataset.from_list(
         [
             {
@@ -124,15 +141,22 @@ def _result_means(result: Any) -> dict[str, float]:
     frame = result.to_pandas()
     means: dict[str, float] = {}
     for metric_name in METRIC_NAMES:
-        if metric_name not in frame:
-            means[metric_name] = math.nan
-            continue
+        # RAGAS 0.4.x appends the selected mode to ModeMetric column names.
+        result_name = (
+            "noise_sensitivity(mode=irrelevant)"
+            if metric_name == "noise_sensitivity"
+            else metric_name
+        )
+        if result_name not in frame:
+            raise RuntimeError(f"RAGAS không trả metric {metric_name}")
         values = [
             float(value)
-            for value in frame[metric_name].tolist()
-            if value is not None and not math.isnan(float(value))
+            for value in frame[result_name].tolist()
+            if value is not None and math.isfinite(float(value))
         ]
-        means[metric_name] = statistics.fmean(values) if values else math.nan
+        if not values:
+            raise RuntimeError(f"RAGAS không tính được metric {metric_name}")
+        means[metric_name] = statistics.fmean(values)
     return means
 
 
@@ -145,7 +169,17 @@ def run_ragas(
         raise ValueError(
             f"Judge runs được pin ở n={EVAL_JUDGE_RUNS}, nhận n={runs}"
         )
-    evaluate, EvaluationDataset, judge, metric_templates = _ragas_components()
+    answered, unanswered = partition_ragas_samples(samples)
+    if unanswered:
+        raise ValueError(
+            "run_ragas chỉ nhận requirement có answer; "
+            f"nhận {len(unanswered)} sample không có answer"
+        )
+    if not answered:
+        raise ValueError("Không có requirement có answer để chạy RAGAS")
+    evaluate, EvaluationDataset, judge, embeddings, metric_templates = (
+        _ragas_components()
+    )
     dataset = EvaluationDataset.from_list(
         [
             {
@@ -154,11 +188,10 @@ def run_ragas(
                 "response": sample["answer"],
                 "reference": sample["ground_truth"],
             }
-            for sample in samples
+            for sample in answered
         ],
         name="case_e_rfp_requirement_atoms",
     )
-    embeddings = LocalSentenceEmbeddings()
     per_run: list[dict[str, float]] = []
     for _ in range(runs):
         result = evaluate(
@@ -166,20 +199,18 @@ def run_ragas(
             metrics=metric_templates,
             llm=judge,
             embeddings=embeddings,
-            raise_exceptions=False,
+            raise_exceptions=True,
             show_progress=True,
         )
         per_run.append(_result_means(result))
 
     summary: dict[str, dict[str, Any]] = {}
     for metric_name in METRIC_NAMES:
-        values = [
-            row[metric_name]
-            for row in per_run
-            if not math.isnan(row[metric_name])
-        ]
+        values = [row[metric_name] for row in per_run]
+        if len(values) != runs or not all(math.isfinite(value) for value in values):
+            raise RuntimeError(f"Metric {metric_name} thiếu kết quả hữu hạn: {values}")
         summary[metric_name] = {
-            "mean": statistics.fmean(values) if values else math.nan,
+            "mean": statistics.fmean(values),
             "std": statistics.pstdev(values) if len(values) > 1 else 0.0,
             "runs": values,
         }
@@ -237,7 +268,12 @@ def main() -> None:
         deterministic_rows.append(row)
         print_deterministic(state, row)
         samples.extend(to_eval_samples(state))
-    print(f"samples={len(samples)} · capability_sheet_in_every_context=True")
+    ragas_samples, unanswered_samples = partition_ragas_samples(samples)
+    print(
+        f"ragas_samples={len(ragas_samples)}/{len(samples)} "
+        f"(loại {len(unanswered_samples)} sample không có answer)"
+    )
+    print("capability_sheet_in_every_context=True")
 
     report: dict[str, Any] = {
         "judge": {
@@ -247,9 +283,11 @@ def main() -> None:
         },
         "deterministic": deterministic_rows,
         "sample_count": len(samples),
+        "ragas_sample_count": len(ragas_samples),
+        "unanswered_sample_count": len(unanswered_samples),
     }
     if not args.deterministic_only:
-        summary = run_ragas(samples)
+        summary = run_ragas(ragas_samples)
         report["ragas"] = summary
         print(
             f"judge={EVAL_JUDGE_MODEL} · temperature={EVAL_JUDGE_TEMPERATURE:g} "
@@ -257,7 +295,9 @@ def main() -> None:
         )
         for metric_name, values in summary.items():
             print(
-                f"{metric_name}: {values['mean']:.4f} ± {values['std']:.4f}"
+                f"{metric_name}: runs="
+                f"[{', '.join(f'{value:.4f}' for value in values['runs'])}] "
+                f"· {values['mean']:.4f} ± {values['std']:.4f}"
             )
     if args.out is not None:
         args.out.parent.mkdir(parents=True, exist_ok=True)

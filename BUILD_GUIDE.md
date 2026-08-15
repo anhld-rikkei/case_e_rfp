@@ -1461,6 +1461,118 @@ không phải thứ retrieve được.
 
 ---
 
+### BƯỚC 10-bis — Đo lường + màn hình Eval (làm trước Bước 11)
+
+**Mục tiêu:** biết **còn bao lâu**, **tốn bao nhiêu token**, **điểm ra sao** — ngay khi đang chạy,
+thay vì ngồi nhìn con trỏ nhấp nháy 15 phút.
+
+**Tạo:** `src/rfp/usage.py` · **Được sửa:** `src/rfp/llm.py`, `eval/run_ragas.py`, `app.py`, `config/settings.py`
+
+#### 10-bis.1 Đo ở đúng một chỗ — `llm.py`
+
+Mọi lệnh gọi LLM trong repo đều đi qua `generate()` và `structured()`. Đó là chỗ duy nhất cần đo:
+
+```python
+# src/rfp/usage.py
+from dataclasses import dataclass, field
+import threading, time
+
+@dataclass
+class Usage:
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    seconds: float = 0.0
+    by_stage: dict[str, int] = field(default_factory=dict)   # "generate"/"structured"/"judge"
+
+_LOCK = threading.Lock()
+_USAGE = Usage()
+
+def record(stage: str, resp, elapsed: float) -> None:
+    """resp.usage của OpenAI có prompt_tokens / completion_tokens."""
+    with _LOCK:
+        _USAGE.calls += 1
+        _USAGE.seconds += elapsed
+        u = getattr(resp, "usage", None)
+        if u:
+            _USAGE.prompt_tokens += getattr(u, "prompt_tokens", 0) or 0
+            _USAGE.completion_tokens += getattr(u, "completion_tokens", 0) or 0
+        _USAGE.by_stage[stage] = _USAGE.by_stage.get(stage, 0) + 1
+
+def snapshot() -> Usage: ...
+def reset() -> None: ...
+```
+
+`llm.py` bọc mỗi lệnh gọi bằng `t=time.perf_counter()` … `record(stage, resp, time.perf_counter()-t)`.
+**Không** thêm import SDK ở đâu khác — `usage.py` chỉ nhận object trả về, không tự gọi API.
+
+> ⚠️ **`llm.py` KHÔNG bắt được judge của RAGAS.** RAGAS gọi judge qua `langchain_openai`, không đi
+> qua `generate()`/`structured()` của ta. Chỉ đo ở `llm.py` thì dashboard báo gần 0 token cho đúng
+> phần tốn nhất — sai hoàn toàn về chi phí.
+>
+> Bắt thêm bằng **callback handler của LangChain** gắn vào LLM truyền cho RAGAS, ghi vào cùng
+> `usage.py` với `stage="judge"`. Kết quả phải tách được hai nhóm:
+>
+> ```
+> stage=generate/structured  → token do SẢN PHẨM tiêu (sinh hồ sơ)
+> stage=judge                → token do ĐO LƯỜNG tiêu (chấm điểm)
+> ```
+>
+> Tách được hai nhóm này mới trả lời được câu "chạy sản phẩm tốn bao nhiêu" tách khỏi
+> "chạy eval tốn bao nhiêu" — hai con số rất khác nhau và Bước 11 cần cả hai.
+
+#### 10-bis.2 Tiến trình + ETA trong `run_ragas.py`
+
+In một dòng mỗi sample, ETA tính từ trung bình động:
+
+```
+[ 4/11] req 2.2 · 6 metric × n=3 · 18 call · 42s  |  da: 2m48s · con lai ~4m54s · 12.4k tok
+```
+
+ETA = `(số sample còn lại) × (thời gian trung bình mỗi sample đã đo được)`. Đơn giản, đủ dùng.
+
+#### 10-bis.3 Chi phí — KHÔNG đoán đơn giá
+
+```python
+# config/settings.py
+COST_PER_1M_INPUT  = None   # điền theo bảng giá provider; None = không hiển thị tiền
+COST_PER_1M_OUTPUT = None
+```
+
+Chưa điền thì màn hình hiện **"chưa cấu hình đơn giá"**, không hiện số. Bịa một con số tiền rồi
+đưa vào báo cáo còn tệ hơn là không có. Điền vào rồi thì tính `tokens/1e6 × rate`.
+
+#### 10-bis.4 Tab "Eval" trong `app.py` (tab thứ 7)
+
+| Vùng | Nội dung |
+|---|---|
+| **Chạy** | chọn RFP (hoặc *tất cả*) · chọn cấu hình biến thể · nút Chạy |
+| **Đang chạy** | `st.progress` + ETA + số call + token cộng dồn, cập nhật theo dòng tiến trình 10-bis.2 |
+| **Ước lượng trước** | nhập số RFP × số cấu hình → dự báo tổng thời gian và token, **dựa trên lần chạy trước** đã lưu, không dựa vào hằng số bịa |
+| **Kết quả** | bảng metric: coverage / abstain_rate (một ô, hai số) · citation_accuracy · groundedness · fabrication · leak · 6 metric RAGAS mean ± std |
+| **Lịch sử** | đọc `eval/results/*.json`, mỗi lần chạy một dòng: thời điểm · cấu hình · thời gian · token · các metric chính. Đây là **nguồn dữ liệu để điền bảng §11.3** |
+
+**Ước lượng phải lấy từ dữ liệu đã đo, không hardcode.** Chạy 1 RFP xong thì mọi dự báo cho
+8 cấu hình × 9 RFP đều suy ra từ con số thật của lần đó.
+
+#### 10-bis.5 Nghiệm thu
+
+```bash
+python -m eval.run_ragas --rfp synthetic/rfps/RFP-2025-001.txt --deterministic-only
+```
+Vẫn chạy được, **0 call, 0 token** — đo lường không được làm hỏng đường không-LLM.
+
+```bash
+python -m eval.run_ragas --rfp synthetic/rfps/RFP-2025-001.txt --out eval/results/rfp001.json
+```
+In dòng tiến trình có ETA. File JSON chứa `usage: {calls, prompt_tokens, completion_tokens, seconds}`.
+
+Mở tab Eval: thấy lịch sử lần chạy đó, và ô dự báo cho 9 RFP suy ra từ chính nó.
+
+**Cấm:** hardcode đơn giá token. Hardcode thời gian ước lượng. Thêm import SDK ngoài `llm.py`.
+
+---
+
 ### BƯỚC 11 — Ablation + báo cáo
 
 **11.1 Biến thể RAG** — chỉ chọn cái mà **đặc tính data này** khiến kết quả khó đoán:

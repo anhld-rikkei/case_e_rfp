@@ -125,6 +125,7 @@ def to_eval_samples(
     golden_case = matching_golden_case(state, cases)
     full_capability_sheet = capability_sheet_text()
     capability_store = CapabilityStore()
+    evidence_by_source = _evidence_by_source(state)
     samples: list[dict[str, Any]] = []
 
     for chapter in state.get("chapters", []):
@@ -134,12 +135,22 @@ def to_eval_samples(
         ]
         for requirement in chapter.get("requirements", []):
             req_id = requirement["req_id"]
-            answer_sentences = [
-                sentence["text"]
+            answer_rows = [
+                sentence
                 for section in state.get("sections", [])
                 for sentence in section.get("sentences", [])
                 if req_id in sentence.get("req_ids", [])
             ]
+            answer_sentences = [sentence["text"] for sentence in answer_rows]
+            golden_assertion = golden_lookup(golden_case, req_id)
+            reference_evidence = list(
+                dict.fromkeys(
+                    evidence_by_source[source_id]
+                    for sentence in answer_rows
+                    if sentence.get("origin") == "capability"
+                    if (source_id := sentence.get("source_id")) in evidence_by_source
+                )
+            )
             contexts = list(
                 dict.fromkeys(
                     [
@@ -163,10 +174,31 @@ def to_eval_samples(
                     "question": requirement["text"],
                     "contexts": contexts,
                     "answer": "".join(answer_sentences),
-                    "ground_truth": golden_lookup(golden_case, req_id),
+                    # The golden set defines the required behavior, while the
+                    # authoritative capability fact supplies the requirement-
+                    # level reference. A precedent being evaluated must not be
+                    # copied into its own reference, which would make noise
+                    # sensitivity circular. A global assertion alone has no
+                    # entities/content for recall metrics to test.
+                    "ground_truth": "\n".join(
+                        [golden_assertion, *reference_evidence]
+                    ),
+                    "golden_assertion": golden_assertion,
                 }
             )
     return samples
+
+
+def partition_ragas_samples(
+    samples: Iterable[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split quality samples from abstentions without mixing the two measures."""
+    answered: list[dict[str, Any]] = []
+    unanswered: list[dict[str, Any]] = []
+    for sample in samples:
+        target = answered if str(sample.get("answer", "")).strip() else unanswered
+        target.append(sample)
+    return answered, unanswered
 
 
 def _evidence_by_source(state: dict[str, Any]) -> dict[str, str]:
@@ -260,4 +292,3 @@ def deterministic_metrics(state: dict[str, Any]) -> dict[str, int | float | None
         "latency_seconds": trace.get("latency_seconds"),
         "token_cost": trace.get("token_cost"),
     }
-
