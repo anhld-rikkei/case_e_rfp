@@ -18,6 +18,8 @@ from rfp.generate.coverage import (  # noqa: E402
     matched_requirement_ids,
     validate_source_req_ids,
 )
+from rfp.graph import assemble  # noqa: E402
+from rfp.guard import GuardViolation, final_guard  # noqa: E402
 from rfp.stores.capability import CapabilityStore  # noqa: E402
 from rfp.stores.sentence_index import SentenceIndex  # noqa: E402
 
@@ -165,3 +167,41 @@ def test_req_id_must_match_its_own_source() -> None:
             source_text=iso_source,
             requirements=requirements,
         )
+
+
+def test_final_guard_rejects_iso27017() -> None:
+    with pytest.raises(GuardViolation, match="ISO/IEC 27017"):
+        final_guard("当社はISO/IEC 27017認証を取得済み")
+
+
+def test_final_guard_allows_common_client_and_held_certification() -> None:
+    final_guard(
+        "公共機関様向けの案件として、ISO/IEC 27001に基づき対応します。"
+    )
+
+
+def test_final_guard_rejects_private_client_name() -> None:
+    with pytest.raises(GuardViolation, match="client name leaked"):
+        final_guard("新生証券様向けの案件実績を活用します。")
+
+
+def test_assemble_does_not_swallow_guard_violation() -> None:
+    malicious_state = {
+        "sections": [
+            {
+                "title_ja": "認証・コンプライアンス",
+                "sentences": [
+                    {"text": "当社はISO/IEC 27017認証を取得済み"}
+                ],
+            }
+        ],
+        "trace": {
+            "llm_calls": 0,
+            "retrieval_stats": {},
+            "dedup": {"before": 0, "after": 0},
+            "path": [],
+        },
+    }
+
+    with pytest.raises(GuardViolation, match="ISO/IEC 27017"):
+        assemble(malicious_state)

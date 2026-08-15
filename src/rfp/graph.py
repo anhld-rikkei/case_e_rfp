@@ -38,6 +38,7 @@ from .generate.claim_check import (
 from .generate.coverage import assess_coverage, matched_requirement_ids
 from .generate.merge import deduplicate_sections, merge_channels
 from .generate.precedent import generate_precedents
+from .guard import final_guard
 from .parsers.rfp_parser import (
     CHAPTER_RE,
     DEFAULT_RFP_DIR,
@@ -715,6 +716,7 @@ def assemble(state: GraphState) -> GraphState:
         + "".join(sentence.get("text", "") for sentence in section["sentences"])
         for index, section in enumerate(state.get("sections", []), start=1)
     )
+    final_guard(proposal)
     return {
         "proposal": proposal,
         "status": "completed",
