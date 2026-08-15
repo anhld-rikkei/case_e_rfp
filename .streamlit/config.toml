@@ -1,17 +1,8 @@
 [server]
 port = 8642
-
-[browser]
-gatherUsageStats = false
-
-[theme]
-base = "dark"
-primaryColor = "#4F8A6B"
-backgroundColor = "#12161C"
-secondaryBackgroundColor = "#1B2129"
-textColor = "#E6EAF0"
-[server]
-port = 8642
+# Tắt file watcher: nó duyệt __path__ của mọi module đã import, chạm vào
+# transformers/models/zoedepth -> import torchvision (không cài) -> traceback rác mỗi lần lưu file.
+# Đánh đổi: sửa code xong phải tự tắt/bật lại Streamlit, không tự reload.
 fileWatcherType = "none"
 
 [browser]
