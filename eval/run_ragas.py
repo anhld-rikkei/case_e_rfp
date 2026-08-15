@@ -1,0 +1,272 @@
+from __future__ import annotations
+
+import argparse
+import json
+import math
+from pathlib import Path
+import statistics
+import sys
+import types
+from typing import Any, Iterable
+
+import numpy as np
+from langchain_core.embeddings import Embeddings
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(PROJECT_ROOT / "src"), str(PROJECT_ROOT)]
+
+from config.settings import (  # noqa: E402
+    EVAL_JUDGE_MAX_COMPLETION_TOKENS,
+    EVAL_JUDGE_MODEL,
+    EVAL_JUDGE_RUNS,
+    EVAL_JUDGE_TEMPERATURE,
+)
+from eval.to_samples import deterministic_metrics, to_eval_samples  # noqa: E402
+from rfp.graph import run_graph  # noqa: E402
+from rfp.retrieve.hybrid import get_embedding_model  # noqa: E402
+
+
+METRIC_NAMES = (
+    "faithfulness",
+    "answer_relevancy",
+    "context_precision",
+    "context_recall",
+    "noise_sensitivity",
+    "context_entity_recall",
+)
+
+
+def _install_ragas_vertex_compatibility() -> None:
+    """Bridge a removed optional LangChain module imported by ragas 0.4.3."""
+    module_name = "langchain_community.chat_models.vertexai"
+    try:
+        __import__(module_name)
+    except ModuleNotFoundError as error:
+        if error.name != module_name:
+            raise
+        module = types.ModuleType(module_name)
+        module.ChatVertexAI = type("ChatVertexAI", (), {})
+        sys.modules[module_name] = module
+
+
+class LocalSentenceEmbeddings(Embeddings):
+    """LangChain-compatible adapter over the retrieval embedding model."""
+
+    def __init__(self) -> None:
+        self.model = get_embedding_model()
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        values = self.model.encode(
+            texts,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        return np.asarray(values, dtype=np.float32).tolist()
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed_documents([text])[0]
+
+
+def _ragas_components():
+    _install_ragas_vertex_compatibility()
+    from langchain_openai import ChatOpenAI
+    from ragas import evaluate
+    from ragas.dataset_schema import EvaluationDataset
+    from ragas.metrics._answer_relevance import ResponseRelevancy
+    from ragas.metrics._context_entities_recall import ContextEntityRecall
+    from ragas.metrics._context_precision import LLMContextPrecisionWithReference
+    from ragas.metrics._context_recall import LLMContextRecall
+    from ragas.metrics._faithfulness import Faithfulness
+    from ragas.metrics._noise_sensitivity import NoiseSensitivity
+
+    if not EVAL_JUDGE_MODEL:
+        raise ValueError("Thiếu LLM_MODEL_EVAL hoặc LLM_MODEL trong .env")
+    judge = ChatOpenAI(
+        model=EVAL_JUDGE_MODEL,
+        max_completion_tokens=EVAL_JUDGE_MAX_COMPLETION_TOKENS,
+    )
+    # langchain-openai 1.5 assumes every non-chat gpt-5 rejects temperature
+    # and silently removes it during validation. The repository's model probe
+    # is the source of truth: gpt-5.4-mini accepts temperature when no
+    # reasoning_effort is sent. Set it after construction and intentionally do
+    # not configure reasoning_effort, matching rfp.llm.structured().
+    judge.temperature = EVAL_JUDGE_TEMPERATURE
+    metrics = [
+        Faithfulness(),
+        ResponseRelevancy(),
+        LLMContextPrecisionWithReference(name="context_precision"),
+        LLMContextRecall(),
+        NoiseSensitivity(),
+        ContextEntityRecall(),
+    ]
+    return evaluate, EvaluationDataset, judge, metrics
+
+
+def _evaluation_dataset(samples: list[dict[str, Any]]):
+    _, EvaluationDataset, _, _ = _ragas_components()
+    return EvaluationDataset.from_list(
+        [
+            {
+                "user_input": sample["question"],
+                "retrieved_contexts": sample["contexts"],
+                "response": sample["answer"],
+                "reference": sample["ground_truth"],
+            }
+            for sample in samples
+        ],
+        name="case_e_rfp_requirement_atoms",
+    )
+
+
+def _result_means(result: Any) -> dict[str, float]:
+    frame = result.to_pandas()
+    means: dict[str, float] = {}
+    for metric_name in METRIC_NAMES:
+        if metric_name not in frame:
+            means[metric_name] = math.nan
+            continue
+        values = [
+            float(value)
+            for value in frame[metric_name].tolist()
+            if value is not None and not math.isnan(float(value))
+        ]
+        means[metric_name] = statistics.fmean(values) if values else math.nan
+    return means
+
+
+def run_ragas(
+    samples: list[dict[str, Any]],
+    *,
+    runs: int = EVAL_JUDGE_RUNS,
+) -> dict[str, dict[str, Any]]:
+    if runs != EVAL_JUDGE_RUNS:
+        raise ValueError(
+            f"Judge runs được pin ở n={EVAL_JUDGE_RUNS}, nhận n={runs}"
+        )
+    evaluate, EvaluationDataset, judge, metric_templates = _ragas_components()
+    dataset = EvaluationDataset.from_list(
+        [
+            {
+                "user_input": sample["question"],
+                "retrieved_contexts": sample["contexts"],
+                "response": sample["answer"],
+                "reference": sample["ground_truth"],
+            }
+            for sample in samples
+        ],
+        name="case_e_rfp_requirement_atoms",
+    )
+    embeddings = LocalSentenceEmbeddings()
+    per_run: list[dict[str, float]] = []
+    for _ in range(runs):
+        result = evaluate(
+            dataset=dataset,
+            metrics=metric_templates,
+            llm=judge,
+            embeddings=embeddings,
+            raise_exceptions=False,
+            show_progress=True,
+        )
+        per_run.append(_result_means(result))
+
+    summary: dict[str, dict[str, Any]] = {}
+    for metric_name in METRIC_NAMES:
+        values = [
+            row[metric_name]
+            for row in per_run
+            if not math.isnan(row[metric_name])
+        ]
+        summary[metric_name] = {
+            "mean": statistics.fmean(values) if values else math.nan,
+            "std": statistics.pstdev(values) if len(values) > 1 else 0.0,
+            "runs": values,
+        }
+    return summary
+
+
+def load_states(
+    *,
+    state_paths: Iterable[Path],
+    rfp_paths: Iterable[Path],
+) -> list[dict[str, Any]]:
+    states = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in state_paths
+    ]
+    for path in rfp_paths:
+        state = run_graph(path.read_text(encoding="utf-8"))
+        if state.get("status") != "completed":
+            raise RuntimeError(f"Graph không completed cho {path}: {state.get('status')}")
+        states.append(state)
+    return states
+
+
+def print_deterministic(state: dict[str, Any], metrics: dict[str, Any]) -> None:
+    rfp = state.get("rfp")
+    rfp_id = rfp.get("rfp_id", "") if isinstance(rfp, dict) else getattr(rfp, "rfp_id", "")
+    print(
+        f"deterministic {rfp_id}: "
+        f"coverage={metrics['covered_requirements']}/{metrics['requirements']} "
+        f"({metrics['coverage']:.3f}) · "
+        f"abstain_rate={metrics['abstained_sections']}/{metrics['sections']} "
+        f"({metrics['abstain_rate']:.3f}) · "
+        f"groundedness={metrics['groundedness']:.3f} · "
+        f"citation_accuracy={metrics['citation_accuracy']:.3f} · "
+        f"fabrication={metrics['fabrication_count']} · "
+        f"leak={metrics['client_leak_count']}"
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Three-layer RFP evaluation harness")
+    parser.add_argument("--state", action="append", type=Path, default=[])
+    parser.add_argument("--rfp", action="append", type=Path, default=[])
+    parser.add_argument("--deterministic-only", action="store_true")
+    parser.add_argument("--out", type=Path)
+    args = parser.parse_args()
+    if not args.state and not args.rfp:
+        parser.error("provide at least one --state or --rfp")
+
+    states = load_states(state_paths=args.state, rfp_paths=args.rfp)
+    samples: list[dict[str, Any]] = []
+    deterministic_rows = []
+    for state in states:
+        row = deterministic_metrics(state)
+        deterministic_rows.append(row)
+        print_deterministic(state, row)
+        samples.extend(to_eval_samples(state))
+    print(f"samples={len(samples)} · capability_sheet_in_every_context=True")
+
+    report: dict[str, Any] = {
+        "judge": {
+            "model": EVAL_JUDGE_MODEL,
+            "temperature": EVAL_JUDGE_TEMPERATURE,
+            "runs": EVAL_JUDGE_RUNS,
+        },
+        "deterministic": deterministic_rows,
+        "sample_count": len(samples),
+    }
+    if not args.deterministic_only:
+        summary = run_ragas(samples)
+        report["ragas"] = summary
+        print(
+            f"judge={EVAL_JUDGE_MODEL} · temperature={EVAL_JUDGE_TEMPERATURE:g} "
+            f"· n={EVAL_JUDGE_RUNS}"
+        )
+        for metric_name, values in summary.items():
+            print(
+                f"{metric_name}: {values['mean']:.4f} ± {values['std']:.4f}"
+            )
+    if args.out is not None:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(
+            json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(f"output={args.out}")
+
+
+if __name__ == "__main__":
+    main()

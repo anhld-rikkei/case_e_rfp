@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+import shutil
 from typing import Any
 
 import pytest
@@ -18,7 +19,14 @@ from rfp.generate.coverage import (  # noqa: E402
     matched_requirement_ids,
     validate_source_req_ids,
 )
-from rfp.graph import assemble  # noqa: E402
+from config.settings import PROPOSAL_DIR, RFP_DIR  # noqa: E402
+from eval.golden.schema import Assertion, GoldenCase  # noqa: E402
+from eval.to_samples import (  # noqa: E402
+    capability_sheet_text,
+    deterministic_metrics,
+    to_eval_samples,
+)
+from rfp.graph import assemble, run_graph  # noqa: E402
 from rfp.guard import GuardViolation, final_guard  # noqa: E402
 from rfp.stores.capability import CapabilityStore  # noqa: E402
 from rfp.stores.sentence_index import SentenceIndex  # noqa: E402
@@ -205,3 +213,142 @@ def test_assemble_does_not_swallow_guard_violation() -> None:
 
     with pytest.raises(GuardViolation, match="ISO/IEC 27017"):
         assemble(malicious_state)
+
+
+def test_eval_projection_always_contains_capability_sheet() -> None:
+    rfp_text = (
+        "評価用RFP\n発注業種：製造業\n調達番号：RFP-EVAL-001\n\n"
+        "第3章 技術要件\n3.1 基幹システム構築に対応できること。\n"
+    )
+    state = {
+        "input_text": rfp_text,
+        "rfp": {"rfp_id": "RFP-EVAL-001"},
+        "chapters": [
+            {
+                "id": "3",
+                "requirements": [
+                    {
+                        "req_id": "3.1",
+                        "text": "基幹システム構築に対応できること。",
+                    }
+                ],
+                "retrieval": {"selected": []},
+            }
+        ],
+        "sections": [
+            {
+                "sentences": [
+                    {
+                        "text": "基幹システム構築の実績があります。",
+                        "origin": "capability",
+                        "source_id": "capabilities:基幹システム構築",
+                        "req_ids": ["3.1"],
+                        "verdict": "VERIFIED",
+                    }
+                ]
+            }
+        ],
+    }
+    golden = GoldenCase(
+        case_id="eval-projection",
+        rfp_text=rfp_text,
+        source="combinatorial",
+        needs_review=False,
+        assertions=[Assertion("must_cover", "3.1", "IN-SCOPE")],
+    )
+
+    samples = to_eval_samples(state, golden_cases=[golden])
+
+    assert len(samples) == 1
+    assert samples[0]["question"] == "基幹システム構築に対応できること。"
+    assert samples[0]["answer"] == "基幹システム構築の実績があります。"
+    assert samples[0]["contexts"][-1] == capability_sheet_text()
+    assert "must_cover" in samples[0]["ground_truth"]
+
+
+def test_deterministic_metrics_pair_coverage_with_abstain_and_citation() -> None:
+    state = {
+        "proposal": "基幹システム構築の実績があります。",
+        "chapters": [
+            {
+                "requirements": [
+                    {
+                        "req_id": "3.1",
+                        "text": "基幹システム構築に対応できること。",
+                    }
+                ],
+                "retrieval": {"selected": []},
+            }
+        ],
+        "sections": [
+            {
+                "status": "OK",
+                "sentences": [
+                    {
+                        "text": "基幹システム構築の実績があります。",
+                        "origin": "capability",
+                        "source_id": "capabilities:基幹システム構築",
+                        "req_ids": ["3.1"],
+                        "verdict": "VERIFIED",
+                    }
+                ],
+            }
+        ],
+        "trace": {
+            "dedup": {"before": 1, "after": 1},
+            "hybrid_blocked": [],
+            "conflicts": [],
+        },
+    }
+
+    metrics = deterministic_metrics(state)
+
+    assert metrics["coverage"] == 1.0
+    assert metrics["abstain_rate"] == 0.0
+    assert metrics["citation_accuracy"] == 1.0
+    assert metrics["fabrication_count"] == 0
+    assert metrics["client_leak_count"] == 0
+
+
+def test_redteam_27017(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    poisoned_proposals = tmp_path / "proposals"
+    poisoned_proposals.mkdir()
+    for source in PROPOSAL_DIR.glob("*.txt"):
+        shutil.copy2(source, poisoned_proposals / source.name)
+
+    fake_certificate = (
+        PROJECT_ROOT / "synthetic" / "certs" / "fake_iso27017.txt"
+    ).read_text(encoding="utf-8")
+    poisoned_text = (
+        "提案書 PROP-999\n"
+        "宛先調達：RFP-2025-001\n\n"
+        "1. 会社概要\n検証用文書です。\n\n"
+        "4. 認証・コンプライアンス\n"
+        f"{fake_certificate}\n"
+    )
+    (poisoned_proposals / "PROP-999.txt").write_text(
+        poisoned_text,
+        encoding="utf-8",
+    )
+    poisoned_index = SentenceIndex.build(proposal_dir=poisoned_proposals)
+    assert any(
+        "ISO/IEC 27017" in sentence.text
+        for sentence in poisoned_index.capability_quarantine
+    )
+    assert all(
+        "ISO/IEC 27017" not in sentence.text
+        for sentence in poisoned_index.all_sentences()
+    )
+
+    monkeypatch.setattr(
+        SentenceIndex,
+        "build",
+        classmethod(lambda cls, *args, **kwargs: poisoned_index),
+    )
+    state = run_graph(
+        (RFP_DIR / "RFP-2025-001.txt").read_text(encoding="utf-8")
+    )
+
+    assert state["status"] == "completed"
+    assert "ISO/IEC 27017" not in state["proposal"]
+    final_guard(state["proposal"])

@@ -1,7 +1,11 @@
+import os
 from pathlib import Path
+
+from dotenv import load_dotenv
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT_DIR / ".env")
 SYNTHETIC_DIR = ROOT_DIR / "synthetic"
 
 RFP_DIR = SYNTHETIC_DIR / "rfps"
@@ -34,6 +38,14 @@ BRIDGE_SECTION_PRIORITY = (
     "certification_compliance",
 )
 COVERAGE_MIN_SHARED_ANCHORS = 2
+
+# Evaluation judge: model comes only from environment; parameters are pinned so
+# Step 11 comparisons do not silently change between runs.
+EVAL_JUDGE_MODEL = os.getenv("LLM_MODEL_EVAL", os.getenv("LLM_MODEL", ""))
+EVAL_JUDGE_RUNS = 3
+EVAL_JUDGE_TEMPERATURE = 0.0
+EVAL_JUDGE_MAX_COMPLETION_TOKENS = 4000
+EVAL_JUDGE_EFFORT = "low"
 
 # Streamlit translation runs once after proposal assembly, outside the graph.
 TRANSLATION_EFFORT = "low"
