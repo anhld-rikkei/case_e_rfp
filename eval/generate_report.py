@@ -208,7 +208,11 @@ def main():
         return
 
     judge_model = base_data.get("judge", {}).get("model", "unknown")
+    judge_temp = base_data.get("judge", {}).get("temperature", 0.0)
     n_runs = base_data.get("judge", {}).get("runs", 3)
+    
+    det_rows = base_data.get("deterministic", [])
+    total_atoms = sum(r.get("requirements", 0) for r in det_rows)
 
     total_prod = 0
     total_judge = 0
@@ -234,9 +238,16 @@ def main():
             if jud > 0:
                 judge_runs += 1
 
-    lines.append(f"Judge: {judge_model}, effort=low, n={n_runs} (mean±std)")
-    lines.append("Test set: 3 RFP gốc + 6 mutation = 9 RFP, ~94 requirement atom")
+    lines.append(f"Judge: {judge_model}, temperature={judge_temp}, reasoning_effort: không gửi, n={n_runs} (mean±std)")
+    lines.append(f"Test set: 3 RFP gốc + 6 mutation = 9 RFP, {total_atoms} requirement atom")
     lines.append(f"Tổng token Sản phẩm: {total_prod:,} (từ {prod_runs} lần chạy) | Tổng token Đo lường (Judge): {total_judge:,} (từ {judge_runs} lần chạy có RAGAS)")
+    
+    if prod_runs and judge_runs:
+        prod_per_rfp = total_prod / (prod_runs * 9)
+        judge_per_rfp = total_judge / (judge_runs * 9)
+        ratio = judge_per_rfp / prod_per_rfp if prod_per_rfp else 0
+        lines.append(f"Trung bình mỗi RFP: sản phẩm ~{int(prod_per_rfp):,}/RFP · judge ~{int(judge_per_rfp):,}/RFP (judge gấp ~{ratio:.0f} lần token sản phẩm)")
+        
     lines.append("")
     lines.append("| # | Cấu hình | fabric.↓ | leak↓ | hybrid↓ | **cov.↑ / abstain↓** | cite_acc↑ | ctx_prec↑ | ctx_recall↑ | noise_sens↓ | faithful.↑ | ans_rel.↑ | compliance↑ | latency | cost |")
     lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
@@ -255,10 +266,6 @@ def main():
     lines.append("")
     lines.append(f"`{NOT_MEASURED}` = lần chạy đó chưa đo cột này, **không phải** đo ra 0.")
     lines.append("`†` = Cột deterministic lấy từ lần chạy mới (.det.json), cột RAGAS lấy từ lần chạy cũ (.json).")
-    lines.append(
-        "`*` = tổng gộp sản phẩm + judge, từ lần chạy trước khi tách `seconds_by_stage`; "
-        "phần judge trong đó thấp hơn thực tế."
-    )
     lines.append("")
 
     reach = poison_reach_rows(lines)

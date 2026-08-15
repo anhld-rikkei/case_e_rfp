@@ -1,6 +1,7 @@
-Judge: gpt-5.4-mini, effort=low, n=3 (mean±std)
-Test set: 3 RFP gốc + 6 mutation = 9 RFP, ~94 requirement atom
+Judge: gpt-5.4-mini, temperature=0.0, reasoning_effort: không gửi, n=3 (mean±std)
+Test set: 3 RFP gốc + 6 mutation = 9 RFP, 83 requirement atom
 Tổng token Sản phẩm: 157,655 (từ 7 lần chạy) | Tổng token Đo lường (Judge): 7,887,951 (từ 5 lần chạy có RAGAS)
+Trung bình mỗi RFP: sản phẩm ~2,502/RFP · judge ~175,287/RFP (judge gấp ~70 lần token sản phẩm)
 
 | # | Cấu hình | fabric.↓ | leak↓ | hybrid↓ | **cov.↑ / abstain↓** | cite_acc↑ | ctx_prec↑ | ctx_recall↑ | noise_sens↓ | faithful.↑ | ans_rel.↑ | compliance↑ | latency | cost |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -20,7 +21,6 @@ Tổng token Sản phẩm: 157,655 (từ 7 lần chạy) | Tổng token Đo lư�
 
 `—` = lần chạy đó chưa đo cột này, **không phải** đo ra 0.
 `†` = Cột deterministic lấy từ lần chạy mới (.det.json), cột RAGAS lấy từ lần chạy cũ (.json).
-`*` = tổng gộp sản phẩm + judge, từ lần chạy trước khi tách `seconds_by_stage`; phần judge trong đó thấp hơn thực tế.
 
 ### Chất độc đi tới đâu (giải thích cột fabric./leak ở trên)
 
