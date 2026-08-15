@@ -105,6 +105,7 @@ def _empty_trace() -> dict[str, Any]:
         "path": [],
         "conflicts": [],
         "hybrid_blocked": [],
+        "precedent_sources": [],
         "claim_removed": [],
         "claim_verdicts": {
             "VERIFIED": 0,
@@ -146,6 +147,7 @@ def _with_trace(state: GraphState, node: str) -> dict[str, Any]:
         "path": [*current.get("path", []), node],
         "conflicts": list(current.get("conflicts", [])),
         "hybrid_blocked": list(current.get("hybrid_blocked", [])),
+        "precedent_sources": list(current.get("precedent_sources", [])),
         "claim_removed": list(current.get("claim_removed", [])),
         "claim_verdicts": dict(current.get("claim_verdicts", {})),
         "generation_channels": dict(current.get("generation_channels", {})),
@@ -577,6 +579,11 @@ def generate_per_section(state: GraphState) -> GraphState:
     generation_channels: dict[str, dict[str, int]] = {}
     coverage_inputs: dict[str, dict[str, Any]] = {}
     hybrid_blocked: list[dict[str, Any]] = []
+    # Câu precedent thật sự vào prompt sinh — khác với retrieval.selected, vì
+    # mỗi chương chỉ lấy PRECEDENTS_PER_CHAPTER câu sau khi ưu tiên cùng mục.
+    # Ablation Bước 11 cần đúng con số này để biết fabrication=0 là do guard
+    # chặn hay do câu bịa chưa bao giờ tới được prompt.
+    precedent_sources: list[str] = []
     claim_removed: list[dict[str, Any]] = []
     contradicted_count = 0
     used_fact_keys: set[str] = set()
@@ -612,6 +619,7 @@ def generate_per_section(state: GraphState) -> GraphState:
                 if item["section"] == section["title_ja"]
             ]
             selected = (same_section or all_selected)[:PRECEDENTS_PER_CHAPTER]
+            precedent_sources.extend(item["sent_id"] for item in selected)
             chapter_requirements = {
                 item["req_id"]: item["text"] for item in chapter["requirements"]
             }
@@ -775,6 +783,7 @@ def generate_per_section(state: GraphState) -> GraphState:
     trace["llm_calls"] += llm_calls
     trace["generation_channels"] = generation_channels
     trace["hybrid_blocked"] = hybrid_blocked
+    trace["precedent_sources"] = precedent_sources
     trace["claim_removed"] = claim_removed
     trace["global_dedup"] = global_dedup
     trace["claim_verdicts"] = {

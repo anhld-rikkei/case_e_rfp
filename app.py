@@ -690,8 +690,20 @@ def render_eval() -> None:
     # Tóm tắt lần chạy gần nhất để nội suy
     latest_name, latest_data = runs[0]
     usage = latest_data.get("usage", {})
-    t_seconds = usage.get("seconds", 0)
-    
+    total_seconds = usage.get("seconds", 0)
+    # usage.seconds là tổng CẢ lần chạy. Lần chạy ablation có 9 RFP, nên lấy
+    # thẳng số đó làm "thời gian/RFP" rồi nhân tiếp 9 là đếm 9 hai lần.
+    # Số RFP của lần chạy = số dòng deterministic.
+    rfp_count = max(1, len(latest_data.get("deterministic", [])))
+    t_seconds = total_seconds / rfp_count
+    seconds_by_stage = usage.get("seconds_by_stage", {})
+    judge_seconds = seconds_by_stage.get("judge")
+    product_seconds = (
+        sum(v for k, v in seconds_by_stage.items() if k != "judge")
+        if seconds_by_stage
+        else None
+    )
+
     st.subheader("Ước tính chi phí (Dựa trên lần chạy gần nhất)")
     
     # "TÁCH token thành 2 nhóm: sản phẩm (generate+structured) vs đo lường (judge)"
@@ -700,7 +712,12 @@ def render_eval() -> None:
     judge_toks = tokens_by_stage.get("judge", 0)
     
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Thời gian/RFP", f"{t_seconds:.1f}s")
+    time_help = f"{total_seconds:.1f}s / {rfp_count} RFP trong `{latest_name}`"
+    if product_seconds is not None:
+        time_help += f" · sản phẩm {product_seconds:.1f}s · judge {judge_seconds or 0:.1f}s"
+    else:
+        time_help += " · lần chạy cũ chưa tách sản phẩm/judge"
+    c1.metric("Thời gian/RFP", f"{t_seconds:.1f}s", help=time_help)
     c2.metric("Token Sản phẩm", f"{prod_toks:,}")
     c3.metric("Token Đo lường (Judge)", f"{judge_toks:,}")
     

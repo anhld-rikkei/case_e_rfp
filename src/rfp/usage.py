@@ -9,6 +9,9 @@ class Usage:
     seconds: float = 0.0
     by_stage: dict[str, int] = field(default_factory=dict)
     tokens_by_stage: dict[str, int] = field(default_factory=dict)
+    # Token đã tách sản phẩm/judge ở Bước 10-bis; thời gian thì chưa, nên cột
+    # latency của bảng §11.3 gộp cả thời gian judge vào thời gian sinh hồ sơ.
+    seconds_by_stage: dict[str, float] = field(default_factory=dict)
 
 _LOCK = threading.Lock()
 _USAGE = Usage()
@@ -23,6 +26,7 @@ def record(stage: str, prompt_tokens: int, completion_tokens: int, elapsed: floa
         
         total_tokens = prompt_tokens + completion_tokens
         _USAGE.tokens_by_stage[stage] = _USAGE.tokens_by_stage.get(stage, 0) + total_tokens
+        _USAGE.seconds_by_stage[stage] = _USAGE.seconds_by_stage.get(stage, 0.0) + elapsed
 
 def snapshot() -> Usage:
     with _LOCK:
@@ -33,6 +37,7 @@ def snapshot() -> Usage:
             seconds=_USAGE.seconds,
             by_stage=dict(_USAGE.by_stage),
             tokens_by_stage=dict(_USAGE.tokens_by_stage),
+            seconds_by_stage=dict(_USAGE.seconds_by_stage),
         )
 
 def reset() -> None:

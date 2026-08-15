@@ -16,6 +16,7 @@ from typing import Any, Iterable
 import numpy as np
 from langchain_core.embeddings import Embeddings
 from langchain_core.callbacks.base import BaseCallbackHandler
+import threading
 import time
 
 
@@ -88,11 +89,38 @@ class LocalSentenceEmbeddings(Embeddings):
 
 
 class JudgeUsageCallback(BaseCallbackHandler):
-    def on_llm_start(self, *args, **kwargs) -> None:
-        self._t0 = time.perf_counter()
+    # RAGAS chạy nhiều lệnh gọi judge song song trên cùng MỘT instance handler.
+    # Một biến self._t0 dùng chung sẽ bị lệnh gọi sau ghi đè, nên elapsed của
+    # lệnh gọi trước bị rút ngắn về "khoảng cách giữa hai lần start". LangChain
+    # truyền run_id riêng cho từng lệnh gọi — mốc thời gian phải khoá theo nó.
+    # LangChain nuốt exception trong handler và chỉ log warning nếu cờ này False.
+    # Nuốt ở đây nghĩa là mất luôn bản ghi token của lệnh gọi đó -> số đo thấp
+    # hơn thực tế mà không ai biết. Thà nổ.
+    raise_error = True
 
-    def on_llm_end(self, response, **kwargs) -> None:
-        elapsed = time.perf_counter() - getattr(self, "_t0", time.perf_counter())
+    def __init__(self) -> None:
+        super().__init__()
+        self._starts: dict[Any, float] = {}
+        self._lock = threading.Lock()
+
+    def on_llm_error(self, error, *, run_id: Any = None, **kwargs) -> None:
+        with self._lock:
+            self._starts.pop(run_id, None)
+
+    def on_llm_start(self, *args, run_id: Any = None, **kwargs) -> None:
+        with self._lock:
+            self._starts[run_id] = time.perf_counter()
+
+    def on_llm_end(self, response, *, run_id: Any = None, **kwargs) -> None:
+        now = time.perf_counter()
+        with self._lock:
+            started = self._starts.pop(run_id, None)
+        if started is None:
+            raise RuntimeError(
+                f"JudgeUsageCallback nhận on_llm_end không có on_llm_start khớp "
+                f"(run_id={run_id!r}) — thời gian judge sẽ sai"
+            )
+        elapsed = now - started
         prompt_tokens = 0
         completion_tokens = 0
         found = False
@@ -426,6 +454,7 @@ def main() -> None:
             "seconds": usage.seconds,
             "by_stage": usage.by_stage,
             "tokens_by_stage": usage.tokens_by_stage,
+            "seconds_by_stage": usage.seconds_by_stage,
         }
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(

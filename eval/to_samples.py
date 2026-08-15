@@ -223,6 +223,55 @@ def assert_deterministic_gates(state: dict[str, Any]) -> None:
     final_guard(str(state.get("proposal", "")))
 
 
+def _poison_reach(state: dict[str, Any]) -> dict[str, int]:
+    """Câu bịa/rò rỉ đi được tới đâu: index -> context -> prompt sinh.
+
+    Không có ba mốc này thì `fabrication_count = 0` là con số câm: không phân
+    biệt được "guard chặn", "retriever không xếp lên", hay "câu bịa không có
+    trong index". Ablation §11.3 sống chết bằng phân biệt đó.
+    """
+    store = CapabilityStore()
+    forbidden = tuple(store.forbidden_terms)
+
+    selected = [
+        candidate
+        for chapter in state.get("chapters", [])
+        for candidate in chapter.get("retrieval", {}).get("selected", [])
+    ]
+    used_ids = set(state.get("trace", {}).get("precedent_sources", []))
+    used = [item for item in selected if item.get("sent_id") in used_ids]
+
+    def count(rows: list[dict[str, Any]], predicate) -> int:
+        return sum(predicate(str(row.get("text", ""))) for row in rows)
+
+    def has_forbidden(text: str) -> bool:
+        return any(term in text for term in forbidden)
+
+    def has_leak(text: str) -> bool:
+        return bool(private_client_names(text))
+
+    return {
+        "fabrication_in_context": count(selected, has_forbidden),
+        "client_leak_in_context": count(selected, has_leak),
+        "fabrication_in_prompt": count(used, has_forbidden),
+        "client_leak_in_prompt": count(used, has_leak),
+    }
+
+
+def _hybrid_claims_in_output(state: dict[str, Any]) -> int:
+    """Chỉ số định lượng trong hồ sơ mà KHÔNG có nguyên văn trong corpus.
+
+    Khác `trace.hybrid_blocked` — cái đó đếm số lần guard 6.4-bis *chạy*, nên
+    cấu hình tắt guard luôn ra 0 và trông như "sạch hơn". Cái này đo cái còn
+    lại trong sản phẩm, đo được ở mọi cấu hình dù guard bật hay tắt.
+    """
+    whitelist = set(state.get("trace", {}).get("claim_whitelist", []))
+    proposal = str(state.get("proposal", ""))
+    return sum(
+        match.group(0) not in whitelist for match in CLAIM_RE.finditer(proposal)
+    )
+
+
 def deterministic_metrics(state: dict[str, Any]) -> dict[str, int | float | None]:
     assert_deterministic_gates(state)
     requirements = {
@@ -282,7 +331,9 @@ def deterministic_metrics(state: dict[str, Any]) -> dict[str, int | float | None
         ),
         "fabrication_count": forbidden_hits,
         "client_leak_count": leak_hits,
+        "hybrid_in_output": _hybrid_claims_in_output(state),
         "hybrid_blocked": len(trace.get("hybrid_blocked", [])),
+        **_poison_reach(state),
         "conflict_dropped": len(trace.get("conflicts", [])),
         "dedup_rate": (
             (dedup_before - int(dedup.get("after", 0))) / dedup_before
