@@ -1,0 +1,12 @@
+anthropic
+langgraph
+streamlit
+graphviz
+rank-bm25
+sentence-transformers
+faiss-cpu
+ragas
+deepeval
+pytest
+pydantic
+python-dotenv

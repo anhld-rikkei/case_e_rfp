@@ -1,0 +1,21 @@
+# ── BÍ MẬT — không bao giờ commit ─────────────────────
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+*.key
+*.pem
+
+# ── Sinh lại được, không cần commit ───────────────────
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+index/                      # FAISS + cache embedding
+cache/
+outputs/                    # proposal sinh ra
+eval/results/raw/           # log chạy eval từng lần
+
+# ── NHỚ: những thứ này PHẢI vào git, đừng ignore nhầm ─
+# synthetic/golden_test_set/        <- bộ test, là tài sản của dự án
+# eval/results/report.md            <- bảng §11.3 đã chốt

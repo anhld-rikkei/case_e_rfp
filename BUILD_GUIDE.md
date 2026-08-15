@@ -591,7 +591,9 @@ ln -sf ../../scripts/check_secrets.sh .git/hooks/pre-commit
 # scripts/check_secrets.sh
 set -uo pipefail
 PATTERNS='sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}|(ANTHROPIC|OPENAI)_API_KEY[[:space:]]*=[[:space:]]*["'"'"']?[A-Za-z0-9_-]{20,}'
-if git diff --cached -U0 | grep -nEI "$PATTERNS"; then
+# CHỈ quét dòng THÊM (+). Dòng xoá (-) nghĩa là đang GỠ key ra khỏi file — chặn nó
+# vừa ngược mục đích, vừa làm kẹt cứng mọi commit dọn dẹp về sau.
+if git diff --cached -U0 | grep '^+' | grep -v '^+++' | grep -nEI "$PATTERNS"; then
   echo "" >&2
   echo "CHẶN COMMIT: phát hiện API key trong diff (dòng ở trên)." >&2
   echo "Gỡ key ra, đưa vào .env, rồi commit lại." >&2
@@ -632,22 +634,26 @@ git check-ignore -v .env            # phải in ra dòng khớp trong .gitignore
 git status --porcelain | grep '\.env$'   # phải KHÔNG ra gì (trừ .env.example)
 ```
 
-```bash
-# 3. Hook chặn được — test bằng key giả
-echo 'K = "sk-ant-api03-[KEY-GIA-GHEP-TU-MANH-XEM-HEAD]"' > /tmp/leak_test.py
-cp /tmp/leak_test.py ./leak_test.py && git add ./leak_test.py
-git commit -m "test hook"           # PHẢI bị chặn, exit code khác 0
-git reset HEAD ./leak_test.py && rm -f ./leak_test.py /tmp/leak_test.py
+```powershell
+# 3. Hook chặn được — test bằng key giả.
+#    Key giả GHÉP TỪ MẢNH, để chính file BUILD_GUIDE.md này không chứa chuỗi khớp
+#    pattern của hook — nếu không, mọi lần sửa guide sau này sẽ bị hook tự chặn.
+$fake = "sk-" + "ant-api03-" + ("A" * 24)
+Set-Content leak_test.py "K = `"$fake`""
+git add leak_test.py
+git commit -m "test hook"            # PHẢI bị chặn, exit code khác 0
+git reset HEAD leak_test.py; Remove-Item leak_test.py
 ```
 
 ```bash
-# 4. Không có key nào lọt vào code
-grep -rnE 'sk-ant-|sk-[A-Za-z0-9]{32,}' --include='*.py' --include='*.md' --include='*.toml' . || echo "sạch"
+# 4. Không có key nào lọt vào code — dùng ĐÚNG pattern của hook, không dùng
+#    'sk-ant-' trần (sẽ báo trúng các ví dụ trong tài liệu và gây nhiễu vĩnh viễn)
+grep -rnE 'sk-ant-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{32,}' --include='*.py' --include='*.md' --include='*.toml' . || echo "sạch"
 ```
 
 ```bash
-# 5. Chỉ llm.py biết tên biến key
-grep -rn 'ANTHROPIC_API_KEY\|OPENAI_API_KEY' --include='*.py' src/ | grep -v 'llm.py' || echo "đúng — chỉ llm.py"
+# 5. Chỉ llm.py biết tên biến key — quét CẢ src/ VÀ config/
+grep -rn 'ANTHROPIC_API_KEY\|OPENAI_API_KEY' --include='*.py' src/ config/ | grep -v 'llm.py' || echo "đúng — chỉ llm.py"
 ```
 
 **Cấm:**
