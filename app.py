@@ -16,7 +16,13 @@ SRC_DIR = ROOT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from config.settings import RFP_DIR, TRANSLATION_EFFORT, TRANSLATION_SYSTEM_PROMPT
+from config.settings import (
+    RFP_DIR,
+    TRANSLATION_EFFORT,
+    TRANSLATION_SYSTEM_PROMPT,
+    COST_PER_1M_INPUT,
+    COST_PER_1M_OUTPUT,
+)
 from eval.golden.generator import (
     CHAPTER_TITLES,
     DEFAULT_OUTPUT_DIR as GOLDEN_OUTPUT_DIR,
@@ -662,6 +668,83 @@ def render_empty_tabs(tabs: tuple[Any, ...]) -> None:
             st.info(label)
 
 
+def render_eval() -> None:
+    st.header("Đo lường & Eval (RAGAS)")
+    
+    results_dir = ROOT_DIR / "eval" / "results"
+    import json
+    
+    runs = []
+    if results_dir.exists():
+        for path in sorted(results_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                runs.append((path.stem, data))
+            except Exception:
+                pass
+                
+    if not runs:
+        st.info("Chưa có kết quả chạy Eval. Chạy lệnh: `python -m eval.run_ragas ...` để xem kết quả.")
+        return
+
+    # Tóm tắt lần chạy gần nhất để nội suy
+    latest_name, latest_data = runs[0]
+    usage = latest_data.get("usage", {})
+    t_seconds = usage.get("seconds", 0)
+    
+    st.subheader("Ước tính chi phí (Dựa trên lần chạy gần nhất)")
+    
+    # "TÁCH token thành 2 nhóm: sản phẩm (generate+structured) vs đo lường (judge)"
+    tokens_by_stage = usage.get("tokens_by_stage", {})
+    prod_toks = sum(v for k, v in tokens_by_stage.items() if k in ("generate", "structured"))
+    judge_toks = tokens_by_stage.get("judge", 0)
+    
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Thời gian/RFP", f"{t_seconds:.1f}s")
+    c2.metric("Token Sản phẩm", f"{prod_toks:,}")
+    c3.metric("Token Đo lường (Judge)", f"{judge_toks:,}")
+    
+    est_rfps = 9
+    est_configs = 8
+    total_est_seconds = t_seconds * est_rfps * est_configs
+    est_h, est_m = divmod(total_est_seconds / 60, 60)
+    c4.metric("Dự báo (9 RFP × 8 cấu hình)", f"{int(est_h)}h {int(est_m)}m")
+    
+    if COST_PER_1M_INPUT is not None and COST_PER_1M_OUTPUT is not None:
+        p_cost = (prod_toks / 1e6) * COST_PER_1M_OUTPUT # Simplification: using output cost or mixed
+        st.caption(f"Đơn giá đã cấu hình. (Cần chia input/output chi tiết hơn để ra số tiền chính xác)")
+    else:
+        st.caption("Chưa cấu hình đơn giá (COST_PER_1M_INPUT/OUTPUT = None). Không tính tiền.")
+
+    st.divider()
+    st.subheader("Lịch sử chạy Eval")
+    
+    rows = []
+    for name, data in runs:
+        ragas = data.get("ragas", {})
+        det = data.get("deterministic", [{}])[0] if data.get("deterministic") else {}
+        usage_data = data.get("usage", {})
+        
+        row = {
+            "Run ID": name,
+            "Thời gian": f"{usage_data.get('seconds', 0):.1f}s",
+            "Token (SP/Đo)": f"{sum(v for k, v in usage_data.get('tokens_by_stage', {}).items() if k in ('generate', 'structured'))} / {usage_data.get('tokens_by_stage', {}).get('judge', 0)}",
+            "Mẫu (có đáp án/tổng)": f"{data.get('ragas_sample_count', 0)}/{data.get('sample_count', 0)} (loại {data.get('unanswered_sample_count', 0)} không có answer)",
+            "Coverage / Abstain": f"{det.get('coverage', 0):.2f} / {det.get('abstain_rate', 0):.2f}",
+            "Groundedness": f"{det.get('groundedness', 0):.3f}",
+            "Citation Acc": f"{det.get('citation_accuracy', 0):.3f}",
+            "Fabrication": det.get("fabrication_count", 0),
+            "Leak": det.get("client_leak_count", 0),
+        }
+        for metric in ["faithfulness", "answer_relevancy", "context_precision", "context_recall", "noise_sensitivity", "context_entity_recall"]:
+            m_data = ragas.get(metric, {})
+            row[metric] = f"{m_data.get('mean', 0):.3f} ± {m_data.get('std', 0):.3f}" if m_data else "—"
+            
+        rows.append(row)
+        
+    st.dataframe(rows, width="stretch", hide_index=True)
+
+
 def main() -> None:
     st.session_state.setdefault("rfp_input", "")
     st.session_state.setdefault("result_state", None)
@@ -678,9 +761,10 @@ def main() -> None:
             "Bản dịch",
             "Trace",
             "Sinh golden test",
+            "Eval",
         ]
     )
-    proposal_tab, coverage_tab, sources_tab, translation_tab, trace_tab, golden_tab = tabs
+    proposal_tab, coverage_tab, sources_tab, translation_tab, trace_tab, golden_tab, eval_tab = tabs
 
     with trace_tab:
         trace_metrics = st.empty()
@@ -727,6 +811,9 @@ def main() -> None:
 
     with golden_tab:
         render_golden()
+        
+    with eval_tab:
+        render_eval()
 
 
 if __name__ == "__main__":

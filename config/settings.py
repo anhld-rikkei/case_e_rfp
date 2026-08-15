@@ -47,6 +47,9 @@ EVAL_JUDGE_TEMPERATURE = 0.0
 EVAL_JUDGE_MAX_COMPLETION_TOKENS = 4000
 EVAL_JUDGE_EFFORT = "low"
 
+COST_PER_1M_INPUT = None
+COST_PER_1M_OUTPUT = None
+
 # Streamlit translation runs once after proposal assembly, outside the graph.
 TRANSLATION_EFFORT = "low"
 TRANSLATION_SYSTEM_PROMPT = (

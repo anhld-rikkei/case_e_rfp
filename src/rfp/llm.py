@@ -1,4 +1,5 @@
 import os
+import time
 
 from dotenv import load_dotenv
 
@@ -16,10 +17,12 @@ if not MODEL:
 
 if PROVIDER == "anthropic":
     import anthropic
+    from rfp.usage import record
 
     client = anthropic.Anthropic()
 
     def generate(system: str, user: str, effort: str = "medium") -> str:
+        t0 = time.perf_counter()
         response = client.messages.create(
             model=MODEL,
             max_tokens=16000,
@@ -34,6 +37,11 @@ if PROVIDER == "anthropic":
             ],
             messages=[{"role": "user", "content": user}],
         )
+        elapsed = time.perf_counter() - t0
+        u = getattr(response, "usage", None)
+        pt = getattr(u, "input_tokens", 0) if u else 0
+        ct = getattr(u, "output_tokens", 0) if u else 0
+        record("generate", pt, ct, elapsed)
         return next(
             block.text for block in response.content if block.type == "text"
         )
@@ -43,6 +51,7 @@ if PROVIDER == "anthropic":
         user: str,
         model_cls: type[BaseModel],
     ) -> BaseModel:
+        t0 = time.perf_counter()
         response = client.messages.parse(
             model=MODEL,
             max_tokens=4000,
@@ -50,10 +59,16 @@ if PROVIDER == "anthropic":
             messages=[{"role": "user", "content": user}],
             output_format=model_cls,
         )
+        elapsed = time.perf_counter() - t0
+        u = getattr(response, "usage", None)
+        pt = getattr(u, "input_tokens", 0) if u else 0
+        ct = getattr(u, "output_tokens", 0) if u else 0
+        record("structured", pt, ct, elapsed)
         return response.parsed_output
 
 elif PROVIDER == "openai":
     from openai import OpenAI
+    from rfp.usage import record
 
     client = OpenAI()
     TOKEN_ARG = os.getenv("LLM_TOKEN_ARG")
@@ -80,6 +95,7 @@ elif PROVIDER == "openai":
         return kwargs
 
     def generate(system: str, user: str, effort: str = "medium") -> str:
+        t0 = time.perf_counter()
         response = client.chat.completions.create(
             model=MODEL,
             messages=[
@@ -88,6 +104,11 @@ elif PROVIDER == "openai":
             ],
             **_openai_kwargs(16000, effort),
         )
+        elapsed = time.perf_counter() - t0
+        u = getattr(response, "usage", None)
+        pt = getattr(u, "prompt_tokens", 0) if u else 0
+        ct = getattr(u, "completion_tokens", 0) if u else 0
+        record("generate", pt, ct, elapsed)
         return response.choices[0].message.content
 
     def structured(
@@ -95,6 +116,7 @@ elif PROVIDER == "openai":
         user: str,
         model_cls: type[BaseModel],
     ) -> BaseModel:
+        t0 = time.perf_counter()
         response = client.chat.completions.parse(
             model=MODEL,
             messages=[
@@ -104,6 +126,11 @@ elif PROVIDER == "openai":
             response_format=model_cls,
             **_openai_kwargs(4000, "low", structured_output=True),
         )
+        elapsed = time.perf_counter() - t0
+        u = getattr(response, "usage", None)
+        pt = getattr(u, "prompt_tokens", 0) if u else 0
+        ct = getattr(u, "completion_tokens", 0) if u else 0
+        record("structured", pt, ct, elapsed)
         return response.choices[0].message.parsed
 
 else:

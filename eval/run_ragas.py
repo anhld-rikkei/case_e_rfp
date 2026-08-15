@@ -6,15 +6,23 @@ import math
 from pathlib import Path
 import statistics
 import sys
+
+if sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")
+
 import types
 from typing import Any, Iterable
 
 import numpy as np
 from langchain_core.embeddings import Embeddings
+from langchain_core.callbacks.base import BaseCallbackHandler
+import time
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(PROJECT_ROOT / "src"), str(PROJECT_ROOT)]
+
+from rfp.usage import record, snapshot
 
 from config.settings import (  # noqa: E402
     EVAL_JUDGE_MAX_COMPLETION_TOKENS,
@@ -79,6 +87,40 @@ class LocalSentenceEmbeddings(Embeddings):
         return self.embed_documents([text])[0]
 
 
+class JudgeUsageCallback(BaseCallbackHandler):
+    def on_llm_start(self, *args, **kwargs) -> None:
+        self._t0 = time.perf_counter()
+
+    def on_llm_end(self, response, **kwargs) -> None:
+        elapsed = time.perf_counter() - getattr(self, "_t0", time.perf_counter())
+        prompt_tokens = 0
+        completion_tokens = 0
+        found = False
+
+        llm_output = getattr(response, "llm_output", None) or {}
+        if "token_usage" in llm_output:
+            u = llm_output["token_usage"]
+            prompt_tokens = u.get("prompt_tokens", 0)
+            completion_tokens = u.get("completion_tokens", 0)
+            found = True
+        else:
+            try:
+                msg = response.generations[0][0].message
+                usage_meta = getattr(msg, "usage_metadata", None)
+                if usage_meta:
+                    prompt_tokens = usage_meta.get("input_tokens", 0)
+                    completion_tokens = usage_meta.get("output_tokens", 0)
+                    found = True
+            except (IndexError, AttributeError):
+                pass
+
+        if not found:
+            import warnings
+            warnings.warn("JudgeUsageCallback không tìm thấy thông tin token usage trong response")
+
+        record("judge", prompt_tokens, completion_tokens, elapsed)
+
+
 def _ragas_components():
     _install_ragas_vertex_compatibility()
     from langchain_openai import ChatOpenAI
@@ -98,6 +140,7 @@ def _ragas_components():
     judge = ChatOpenAI(
         model=EVAL_JUDGE_MODEL,
         max_completion_tokens=EVAL_JUDGE_MAX_COMPLETION_TOKENS,
+        callbacks=[JudgeUsageCallback()],
     )
     # langchain-openai 1.5 assumes every non-chat gpt-5 rejects temperature
     # and silently removes it during validation. The repository's model probe
@@ -193,16 +236,31 @@ def run_ragas(
         name="case_e_rfp_requirement_atoms",
     )
     per_run: list[dict[str, float]] = []
-    for _ in range(runs):
+    start_time = time.perf_counter()
+    rfp_ids = list(dict.fromkeys(s.get("rfp_id", "unknown") for s in answered))
+    rfp_id_str = rfp_ids[0] if len(rfp_ids) == 1 else f"{len(rfp_ids)} RFPs"
+
+    for run_idx in range(runs):
         result = evaluate(
             dataset=dataset,
             metrics=metric_templates,
             llm=judge,
             embeddings=embeddings,
             raise_exceptions=True,
-            show_progress=True,
+            show_progress=False,
         )
         per_run.append(_result_means(result))
+        
+        elapsed = time.perf_counter() - start_time
+        avg_time = elapsed / (run_idx + 1)
+        remaining = avg_time * (runs - 1 - run_idx)
+        usage = snapshot()
+        
+        m_sec, s_sec = divmod(elapsed, 60)
+        rem_m, rem_s = divmod(remaining, 60)
+        judge_toks = usage.tokens_by_stage.get("judge", 0)
+        
+        print(f"{rfp_id_str} · lượt {run_idx + 1}/{runs} · đã: {int(m_sec)}m{int(s_sec)}s · còn ~{int(rem_m)}m{int(rem_s)}s · judge {judge_toks/1000:.1f}k tok")
 
     summary: dict[str, dict[str, Any]] = {}
     for metric_name in METRIC_NAMES:
@@ -300,6 +358,16 @@ def main() -> None:
                 f"· {values['mean']:.4f} ± {values['std']:.4f}"
             )
     if args.out is not None:
+        from rfp.usage import snapshot
+        usage = snapshot()
+        report["usage"] = {
+            "calls": usage.calls,
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "seconds": usage.seconds,
+            "by_stage": usage.by_stage,
+            "tokens_by_stage": usage.tokens_by_stage,
+        }
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(
             json.dumps(report, ensure_ascii=False, indent=2) + "\n",
