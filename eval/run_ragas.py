@@ -279,16 +279,52 @@ def load_states(
     *,
     state_paths: Iterable[Path],
     rfp_paths: Iterable[Path],
+    disable_guards: bool = False,
 ) -> list[dict[str, Any]]:
-    states = [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in state_paths
-    ]
-    for path in rfp_paths:
-        state = run_graph(path.read_text(encoding="utf-8"))
-        if state.get("status") != "completed":
-            raise RuntimeError(f"Graph không completed cho {path}: {state.get('status')}")
-        states.append(state)
+    states: list[dict[str, Any]] = []
+    for path in state_paths:
+        states.append(json.loads(path.read_text(encoding="utf-8")))
+
+    if disable_guards:
+        from unittest.mock import patch
+        from collections import Counter
+
+        def mock_check_claims(sentences, **kwargs):
+            checked = []
+            for s in sentences:
+                sc = dict(s)
+                sc["verdict"] = "VERIFIED"
+                checked.append(sc)
+            return checked, Counter({"VERIFIED": len(sentences)}), 0, []
+
+        def mock_filter_hybrid_claims(sentences, whitelist):
+            return sentences, []
+
+        def mock_final_guard(proposal):
+            pass
+
+        patcher1 = patch("rfp.graph.check_claims", mock_check_claims)
+        patcher2 = patch("rfp.graph.filter_hybrid_claims", mock_filter_hybrid_claims)
+        patcher3 = patch("rfp.graph.final_guard", mock_final_guard)
+        patcher4 = patch("eval.to_samples.final_guard", mock_final_guard)
+        
+        patcher1.start()
+        patcher2.start()
+        patcher3.start()
+        patcher4.start()
+
+    try:
+        for path in rfp_paths:
+            state = run_graph(path.read_text(encoding="utf-8"))
+            if state.get("status") != "completed":
+                print(f"Graph không completed cho {path}: {state.get('status')}. Sẽ tính là fail coverage/abstain.")
+            states.append(state)
+    finally:
+        if disable_guards:
+            patcher1.stop()
+            patcher2.stop()
+            patcher3.stop()
+            patcher4.stop()
     return states
 
 
@@ -314,11 +350,12 @@ def main() -> None:
     parser.add_argument("--rfp", action="append", type=Path, default=[])
     parser.add_argument("--deterministic-only", action="store_true")
     parser.add_argument("--out", type=Path)
+    parser.add_argument("--disable-guards", action="store_true", help="Vô hiệu hóa guard 6.4 và 7 (dùng cho ablation)")
     args = parser.parse_args()
     if not args.state and not args.rfp:
         parser.error("provide at least one --state or --rfp")
 
-    states = load_states(state_paths=args.state, rfp_paths=args.rfp)
+    states = load_states(state_paths=args.state, rfp_paths=args.rfp, disable_guards=args.disable_guards)
     samples: list[dict[str, Any]] = []
     deterministic_rows = []
     for state in states:

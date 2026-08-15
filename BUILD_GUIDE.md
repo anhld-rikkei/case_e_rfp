@@ -1628,6 +1628,21 @@ Test set: 3 RFP gốc + 6 mutation = 9 RFP, ~90 requirement atom
 Cấu hình abstain hết sẽ có `fabric=0, leak=0` mà `cov` ≈ 0 / `abstain` ≈ 100%: bảng phải cho thấy
 ngay đó là hệ thống vô dụng, không phải hệ thống an toàn.
 
+> ⚠️ **BẪY DIỄN GIẢI — đọc trước khi đọc bảng.**
+> `capability_sheet.json` được dùng ở **ba chỗ**, không phải một:
+> `6.2` sinh câu capability · `6.4` claim-check (BB-1) · `7` final guard blocklist (BB-2).
+>
+> Nếu ablation "— chỉ precedent" **chỉ tắt 6.2**, thì 6.4 và 7 vẫn chặn → `fabrication = 0`.
+> Bảng sẽ cho ba dòng đều `fabrication = 0` và **lập luận trung tâm sụp** — không chứng minh được
+> vì sao cần capability sheet, vì guard đã che mất.
+>
+> | Dòng | Tắt gì | Cho thấy |
+> |---|---|---|
+> | `— chỉ precedent (kênh sinh)` | chỉ 6.2 | coverage/relevancy tụt. `fabrication` **vẫn 0** — đúng, không phải bằng chứng precedent an toàn |
+> | **`— không có capability sheet làm trọng tài`** | 6.2 **+ 6.4 + 7** | **`fabrication > 0`, `leak > 0`** ← dòng chứng minh BB-1/BB-2 |
+>
+> Ghi rõ trong `report.md` cấu hình mỗi dòng đã tắt chính xác những gì. Đặt tên mơ hồ là tự bẫy mình.
+
 Ba dòng cuối là **lập luận trung tâm** cho "vì sao dùng cả hai nguồn":
 một mình precedent thì **bịa và rò rỉ**, một mình capability sheet thì **rỗng** (abstain gần 100%),
 và bỏ guard 6.4-bis thì **ảo giác lai xuất hiện** — chứng minh guard đó không thừa.
