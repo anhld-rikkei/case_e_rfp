@@ -557,6 +557,16 @@ eval/results/raw/           # log chạy eval từng lần
 `synthetic/golden_test_set/generated/` (Bước 9-bis) **phải được commit** — nó là bộ test, không phải
 sản phẩm phụ. Ignore nhầm chỗ này là mất luôn khả năng chạy regression trên máy khác.
 
+**`.gitattributes` — đã có sẵn ở repo, đừng xoá.** Trên Windows git mặc định đổi LF → CRLF, và điều đó
+làm hỏng đúng hai thứ của dự án này:
+
+| Hỏng gì | Triệu chứng |
+|---|---|
+| `scripts/check_secrets.sh` chạy làm git hook | `bad interpreter: /usr/bin/env bash^M` → **hook chặn key im lặng không chạy** |
+| Parser regex MULTILINE ở Bước 1 | `\r` lọt vào cuối group bắt được → `req_id`/`title` dính rác, nghiệm thu lệch mà không rõ vì sao |
+
+Cả hai đều là lỗi *âm thầm* — không báo lỗi, chỉ ra kết quả sai.
+
 #### 0.4 Hook chặn commit — phòng tuyến cuối
 
 `.gitignore` chỉ chặn đúng file đã liệt kê. Key dán nhầm vào `notebook.ipynb`, `README.md`, hay một

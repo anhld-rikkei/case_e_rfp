@@ -1,0 +1,19 @@
+# Chuẩn hoá xuống dòng — BẮT BUỘC cho repo này, không phải tuỳ chọn.
+#
+# Lý do cụ thể:
+#  1. scripts/*.sh chạy làm git hook. File .sh có CRLF sẽ chết với lỗi
+#     "bad interpreter: /usr/bin/env bash^M" -> hook chặn key im lặng không chạy.
+#  2. Data tiếng Nhật (.txt) được parse bằng regex MULTILINE ở Bước 1.
+#     CRLF làm '\r' lọt vào cuối group bắt được -> req_id / title dính rác.
+
+* text=auto eol=lf
+
+*.sh    text eol=lf
+*.txt   text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+*.jsonl text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+
+*.pdf binary
