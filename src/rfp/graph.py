@@ -861,6 +861,20 @@ def run_graph(text: str) -> GraphState:
     return GRAPH.invoke(_initial_state(text))
 
 
+def run_graph_eval(text: str) -> GraphState:
+    from rfp.guard import GuardViolation
+    last_state = None
+    try:
+        for s in GRAPH.stream(_initial_state(text), stream_mode="values"):
+            last_state = s
+        return last_state
+    except GuardViolation as e:
+        state = dict(last_state) if last_state else {}
+        state["status"] = "guard_blocked"
+        state["guard_blocked_publish"] = 1
+        return state
+
+
 def _initial_state(text: str) -> GraphState:
     return {
         "input_text": text,

@@ -307,81 +307,21 @@ def load_states(
     *,
     state_paths: Iterable[Path],
     rfp_paths: Iterable[Path],
-    disable_guards: bool = False,
-    disable_quarantine: bool = False,
 ) -> list[dict[str, Any]]:
     states: list[dict[str, Any]] = []
     for path in state_paths:
         states.append(json.loads(path.read_text(encoding="utf-8")))
 
-    if disable_guards:
-        from unittest.mock import patch
-        from collections import Counter
-
-        def mock_check_claims(sentences, **kwargs):
-            checked = []
-            for s in sentences:
-                sc = dict(s)
-                sc["verdict"] = "VERIFIED"
-                checked.append(sc)
-            return checked, Counter({"VERIFIED": len(sentences)}), 0, []
-
-        def mock_filter_hybrid_claims(sentences, whitelist):
-            return sentences, []
-
-        def mock_final_guard(proposal):
-            pass
-
-        patcher1 = patch("rfp.graph.check_claims", mock_check_claims)
-        patcher2 = patch("rfp.graph.filter_hybrid_claims", mock_filter_hybrid_claims)
-        patcher3 = patch("rfp.graph.final_guard", mock_final_guard)
-        patcher4 = patch("eval.to_samples.final_guard", mock_final_guard)
+    from rfp.graph import run_graph_eval
+    
+    for path in rfp_paths:
+        state = run_graph_eval(path.read_text(encoding="utf-8"))
+        if state.get("status") == "guard_blocked":
+            print(f"Guard chặn không cho xuất bản {path}")
+        if state.get("status") != "completed":
+            print(f"Graph không completed cho {path}: {state.get('status')}. Sẽ tính là fail coverage/abstain.")
+        states.append(state)
         
-        patchers = [patcher1, patcher2, patcher3, patcher4]
-
-    if disable_quarantine:
-        from unittest.mock import patch
-        
-        def mock_filter_client_leaks(sentences):
-            return sentences, []
-        
-        def mock_partition(self, sentences):
-            return sentences, []
-            
-        patcher5 = patch("rfp.stores.sentence_index.filter_client_leaks", mock_filter_client_leaks)
-        patcher6 = patch("rfp.stores.sentence_index.CapabilityBlocklist.partition", mock_partition)
-        
-        if 'patchers' not in locals():
-            patchers = []
-        patchers.extend([patcher5, patcher6])
-
-    if disable_guards or disable_quarantine:
-        for p in patchers:
-            p.start()
-
-    try:
-        from rfp.guard import GuardViolation
-        from rfp.graph import build_graph
-        app = build_graph()
-        
-        for path in rfp_paths:
-            last_state = None
-            try:
-                for s in app.stream({"input_text": path.read_text(encoding="utf-8"), "trace": {}}, stream_mode="values"):
-                    last_state = s
-                state = last_state
-            except GuardViolation as e:
-                print(f"Guard chặn không cho xuất bản {path}: {e}")
-                state = dict(last_state) if last_state else {}
-                state["status"] = "guard_blocked"
-                state["guard_blocked_publish"] = 1
-            if state.get("status") != "completed":
-                print(f"Graph không completed cho {path}: {state.get('status')}. Sẽ tính là fail coverage/abstain.")
-            states.append(state)
-    finally:
-        if disable_guards or disable_quarantine:
-            for p in patchers:
-                p.stop()
     return states
 
 
@@ -413,19 +353,64 @@ def main() -> None:
     if not args.state and not args.rfp:
         parser.error("provide at least one --state or --rfp")
 
-    states = load_states(
-        state_paths=args.state, 
-        rfp_paths=args.rfp, 
-        disable_guards=args.disable_guards,
-        disable_quarantine=args.disable_quarantine
-    )
-    samples: list[dict[str, Any]] = []
-    deterministic_rows = []
-    for state in states:
-        row = deterministic_metrics(state)
-        deterministic_rows.append(row)
-        print_deterministic(state, row)
-        samples.extend(to_eval_samples(state))
+    patchers = []
+    if args.disable_guards:
+        from unittest.mock import patch
+        from collections import Counter
+
+        def mock_check_claims(sentences, **kwargs):
+            checked = []
+            for s in sentences:
+                sc = dict(s)
+                sc["verdict"] = "VERIFIED"
+                checked.append(sc)
+            return checked, Counter({"VERIFIED": len(sentences)}), 0, []
+
+        def mock_filter_hybrid_claims(sentences, whitelist):
+            return sentences, []
+
+        def mock_final_guard(proposal):
+            pass
+
+        patchers.extend([
+            patch("rfp.graph.check_claims", mock_check_claims),
+            patch("rfp.graph.filter_hybrid_claims", mock_filter_hybrid_claims),
+            patch("rfp.graph.final_guard", mock_final_guard),
+            patch("eval.to_samples.final_guard", mock_final_guard),
+        ])
+
+    if args.disable_quarantine:
+        from unittest.mock import patch
+        
+        def mock_filter_client_leaks(sentences):
+            return sentences, []
+        
+        def mock_partition(self, sentences):
+            return sentences, []
+            
+        patchers.extend([
+            patch("rfp.stores.sentence_index.filter_client_leaks", mock_filter_client_leaks),
+            patch("rfp.stores.sentence_index.CapabilityBlocklist.partition", mock_partition),
+        ])
+
+    for p in patchers:
+        p.start()
+
+    try:
+        states = load_states(
+            state_paths=args.state, 
+            rfp_paths=args.rfp
+        )
+        samples: list[dict[str, Any]] = []
+        deterministic_rows = []
+        for state in states:
+            row = deterministic_metrics(state)
+            deterministic_rows.append(row)
+            print_deterministic(state, row)
+            samples.extend(to_eval_samples(state))
+    finally:
+        for p in patchers:
+            p.stop()
     ragas_samples, unanswered_samples = partition_ragas_samples(samples)
     print(
         f"ragas_samples={len(ragas_samples)}/{len(samples)} "

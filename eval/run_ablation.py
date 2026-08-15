@@ -83,12 +83,13 @@ def main() -> None:
                 print(f"\n{'=' * 40}\nRunning config: {name}\n{'=' * 40}")
                 set_config(config["prec"], config["cap"])
 
+                out_file = f"{name}.det.json" if args.deterministic_only else f"{name}.json"
                 cmd = [
                     str(ROOT / ".venv" / "Scripts" / "python.exe"),
                     "-m",
                     "eval.run_ragas",
                     "--out",
-                    str(ROOT / "eval" / "results" / f"{name}.json"),
+                    str(ROOT / "eval" / "results" / out_file),
                 ]
                 if not config["guards"]:
                     cmd.append("--disable-guards")

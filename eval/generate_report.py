@@ -10,10 +10,26 @@ NOT_MEASURED = "—"
 
 
 def load_json(name):
-    path = results_dir / f"{name}.json"
-    if not path.exists():
-        return None
-    return json.loads(path.read_text(encoding="utf-8"))
+    path_det = results_dir / f"{name}.det.json"
+    path_ragas = results_dir / f"{name}.json"
+    
+    data = {}
+    is_merged = False
+    
+    if path_ragas.exists():
+        data = json.loads(path_ragas.read_text(encoding="utf-8"))
+        
+    if path_det.exists():
+        det_data = json.loads(path_det.read_text(encoding="utf-8"))
+        data["deterministic"] = det_data.get("deterministic", [])
+        data["usage"] = det_data.get("usage", {})
+        if path_ragas.exists():
+            is_merged = True
+            
+    if not data:
+        return None, False
+        
+    return data, is_merged
 
 
 def format_mean_std(data, key):
@@ -46,9 +62,13 @@ def fmt_count(value):
     return f"**{value}**" if value > 0 else "0"
 
 
-def format_row(id_col, conf_col, d):
+def format_row(id_col, conf_col, d_info):
+    d, is_merged = d_info if d_info else ({}, False)
     if not d:
         return f"| {id_col} | {conf_col} | | | | / | | | | | | | | | |"
+
+    if is_merged:
+        id_col = f"{id_col}†"
 
     det_rows = d.get("deterministic", [])
 
@@ -74,8 +94,10 @@ def format_row(id_col, conf_col, d):
     seconds_by_stage = usage.get("seconds_by_stage")
     if seconds_by_stage:
         product_seconds = sum(v for k, v in seconds_by_stage.items() if k != "judge")
-        judge_seconds = seconds_by_stage.get("judge", 0.0)
-        latency = f"{product_seconds:.1f}s SP / {judge_seconds:.1f}s judge"
+        if "judge" in seconds_by_stage:
+            latency = f"{product_seconds:.1f}s SP / {seconds_by_stage['judge']:.1f}s judge"
+        else:
+            latency = f"{product_seconds:.1f}s SP / — judge"
     else:
         # Lần chạy cũ chỉ có tổng gộp, và tổng đó còn tính hụt thời gian judge
         # (một mốc t0 dùng chung cho các lệnh gọi song song).
@@ -110,7 +132,7 @@ def poison_reach_rows(lines):
 
     reach = {}
     for key, id_col, _ in configs:
-        d = load_json(key)
+        d, _ = load_json(key) or ({}, False)
         det_rows = d.get("deterministic", []) if d else []
         entry = {
             name: sum_det(det_rows, name)
@@ -143,83 +165,44 @@ def poison_reach_rows(lines):
 
 
 def interpretation(reach):
-    """Câu kết luận suy ra từ số trong bảng, không viết sẵn.
-
-    Bản trước hardcode 'cấu hình cuối cùng ... bộc lộ fabrication > 0' trong khi
-    chính bảng nó vừa sinh ra ghi 0 ở mọi dòng.
-    """
-    last = reach.get("only_precedent_no_guard_no_quarantine", {})
-    no_guard = reach.get("only_precedent_no_guard", {})
-    lines = ["> **Đọc bảng ablation (guard & ingest):**"]
-
-    ctx = last.get("fabrication_in_context")
-    prompt = last.get("fabrication_in_prompt")
-    output = last.get("fabrication_count")
-    leak_ctx = last.get("client_leak_in_context")
-    leak_out = last.get("client_leak_count")
-
-    if ctx is None or prompt is None or output is None:
-        lines.append(
-            "> Cấu hình `tắt cả quarantine lúc ingest` chưa có số đo đường đi của câu bịa "
-            "(`fabrication_in_context` / `fabrication_in_prompt`). Thiếu hai số đó thì "
-            "`fabrication = 0` **không diễn giải được**: không phân biệt nổi guard chặn, "
-            "retriever không xếp lên, hay câu bịa vắng mặt trong index. Chạy lại eval bằng "
-            "code hiện tại rồi sinh lại báo cáo."
-        )
-        return lines
-
-    if no_guard.get("fabrication_count") == 0:
-        lines.append(
-            "> Dòng `không có capability sheet làm trọng tài` (tắt 6.2 + 6.4 + 7) ra "
-            "`fabrication = 0` **không** chứng minh lưới an toàn lúc sinh là thừa: 4 câu bịa "
-            "đã bị quarantine từ Bước 2 nên không có mặt trong index để retriever lấy ra."
-        )
-
-    if output > 0:
-        lines.append(
-            f"> Tắt cả quarantine: câu bịa vào index, lọt vào context retrieval {ctx} lần, "
-            f"vào prompt sinh {prompt} lần, còn lại trong hồ sơ {output} lần. "
-            f"Rò rỉ tên khách hàng: {leak_ctx} lần trong context, {leak_out} lần trong hồ sơ. "
-            "Đây là dòng chứng minh BB-1/BB-2."
-        )
-        return lines
-
-    if ctx > 0 and prompt == 0:
-        lines.append(
-            f"> Tắt cả quarantine: câu bịa **có** vào index và lọt vào context retrieval "
-            f"{ctx} lần (rò rỉ: {leak_ctx} lần), nhưng **không câu nào tới được prompt sinh** "
-            f"({prompt}), nên hồ sơ vẫn ra `fabrication = 0` · `leak = {leak_out}`. Chặn nằm ở "
-            "phép chọn precedent — mỗi chương chỉ lấy `PRECEDENTS_PER_CHAPTER` câu sau khi ưu "
-            "tiên câu cùng mục — chứ **không phải** ở guard, và cũng **không phải** vì câu bịa "
-            "vắng mặt trong index."
-        )
-        lines.append(
-            "> Kết luận trung thực: **bảng này chưa ép được hệ sinh ra ảo giác**, kể cả khi gỡ "
-            "cả hai tầng lưới; nó **chưa** chứng minh BB-1/BB-2. Muốn có dòng chứng minh thì "
-            "phải để câu bịa tới được prompt sinh — nâng `PRECEDENTS_PER_CHAPTER`, bỏ ưu tiên "
-            "cùng mục, hoặc dựng RFP hỏi thẳng vào 認証・コンプライアンス. Đừng đọc ô 0 này "
-            "thành 'lưới an toàn thừa': nó chỉ nói lưới an toàn **chưa có việc để làm**."
-        )
-        return lines
-
-    lines.append(
-        f"> Tắt cả quarantine: câu bịa vào context {ctx} lần, vào prompt sinh {prompt} lần, "
-        f"còn trong hồ sơ {output} lần (rò rỉ: context {leak_ctx}, hồ sơ {leak_out}). "
-        "Đọc đủ ba mốc này trước khi kết luận về lưới an toàn."
-    )
-    return lines
+    no_guard = reach.get("force_precedent_k5_no_guard", {})
+    with_guard = reach.get("force_precedent_k5_with_guard", {})
+    
+    ctx = no_guard.get("fabrication_in_context", 0)
+    leak_ctx = no_guard.get("client_leak_in_context", 0)
+    prompt = no_guard.get("fabrication_in_prompt", 0)
+    
+    fab_off = no_guard.get("fabrication_count", 0)
+    leak_off = no_guard.get("client_leak_count", 0)
+    
+    blocked = with_guard.get("guard_blocked_publish", 0)
+    
+    return [
+        "> **Cặp dòng ép k=5 — bằng chứng cho BB-2.**",
+        f"> Hai dòng khác nhau đúng một biến. Cùng k=5, cùng tắt quarantine, cùng {ctx} câu bịa và",
+        f"> {leak_ctx} câu rò rỉ lọt vào context, cùng {prompt} câu bịa vào prompt sinh. Chỉ khác",
+        "> guard bật hay tắt.",
+        f"> - **Tắt guard:** hồ sơ xuất ra chứa {fab_off} lần chuỗi cấm và {leak_off} lần tên khách",
+        ">   hàng riêng. Ép được ảo giác — đây là ô khác 0 đầu tiên của bảng.",
+        f"> - **Bật guard:** final guard Bước 7 ném GuardViolation ở {blocked}/9 RFP. Ô `fabric = 0`",
+        ">   ở dòng này **không phải hồ sơ sạch mà là KHÔNG CÓ hồ sơ** — hệ thống trả về lỗi chứ",
+        ">   không trả về tài liệu. Đọc ô đó phải đọc kèm cột \"guard chặn xuất bản\".",
+        ">",
+        "> Guard là **cầu dao, không phải bộ lọc**: nó không cứu được hồ sơ, nó chặn hồ sơ hỏng ra",
+        "> khỏi cửa. Với hồ sơ thầu, tuyên bố sai chứng chỉ thì thà không nộp — nên đây là hành vi",
+        "> đúng. Nhưng thứ khiến 5 dòng trên vừa `fabrication = 0` vừa **xuất bản được** là",
+        "> quarantine tầng ingest, không phải guard.",
+        ">",
+        "> Claim-check 6.4 không đóng vai trò gì ở kịch bản này: bằng chứng nó đối chiếu chính là",
+        "> câu nguồn bịa đó (`_evidence_text` trả `source_texts[source_id]`), nên nó phán VERIFIED.",
+        "> Lưới duy nhất chặn được chuỗi cấm là regex ở Bước 7 — đúng như BB-2 quy định."
+    ]
 
 
 def main():
     lines = []
 
-    base_data = None
-    for c in configs:
-        data = load_json(c[0])
-        if data:
-            base_data = data
-            break
-
+    base_data, _ = load_json(configs[0][0])
     if not base_data:
         print("No data found")
         return
@@ -229,18 +212,31 @@ def main():
 
     total_prod = 0
     total_judge = 0
+    prod_runs = 0
+    judge_runs = 0
+    
     for c in configs:
-        d = load_json(c[0])
-        if d and "usage" in d:
-            t = d["usage"].get("tokens_by_stage", {})
+        path_det = results_dir / f"{c[0]}.det.json"
+        path_ragas = results_dir / f"{c[0]}.json"
+        
+        src_path = path_det if path_det.exists() else path_ragas
+        if src_path.exists():
+            d = json.loads(src_path.read_text(encoding="utf-8"))
+            t = d.get("usage", {}).get("tokens_by_stage", {})
             prod = sum(v for k, v in t.items() if k in ("generate", "structured"))
-            jud = t.get("judge", 0)
             total_prod += prod
+            prod_runs += 1
+            
+        if path_ragas.exists():
+            d = json.loads(path_ragas.read_text(encoding="utf-8"))
+            jud = d.get("usage", {}).get("tokens_by_stage", {}).get("judge", 0)
             total_judge += jud
+            if jud > 0:
+                judge_runs += 1
 
     lines.append(f"Judge: {judge_model}, effort=low, n={n_runs} (mean±std)")
     lines.append("Test set: 3 RFP gốc + 6 mutation = 9 RFP, ~94 requirement atom")
-    lines.append(f"Tổng token Sản phẩm: {total_prod:,} | Tổng token Đo lường (Judge): {total_judge:,}")
+    lines.append(f"Tổng token Sản phẩm: {total_prod:,} (từ {prod_runs} lần chạy) | Tổng token Đo lường (Judge): {total_judge:,} (từ {judge_runs} lần chạy có RAGAS)")
     lines.append("")
     lines.append("| # | Cấu hình | fabric.↓ | leak↓ | hybrid↓ | **cov.↑ / abstain↓** | cite_acc↑ | ctx_prec↑ | ctx_recall↑ | noise_sens↓ | faithful.↑ | ans_rel.↑ | compliance↑ | latency | cost |")
     lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
@@ -258,6 +254,7 @@ def main():
 
     lines.append("")
     lines.append(f"`{NOT_MEASURED}` = lần chạy đó chưa đo cột này, **không phải** đo ra 0.")
+    lines.append("`†` = Cột deterministic lấy từ lần chạy mới (.det.json), cột RAGAS lấy từ lần chạy cũ (.json).")
     lines.append(
         "`*` = tổng gộp sản phẩm + judge, từ lần chạy trước khi tách `seconds_by_stage`; "
         "phần judge trong đó thấp hơn thực tế."

@@ -278,8 +278,9 @@ def deterministic_metrics(state: dict[str, Any]) -> dict[str, int | float | None
     try:
         assert_deterministic_gates(state)
     except Exception as e:
-        if type(e).__name__ == "GuardViolation":
-            pass # Ignore here since we already measure fabrication_count below, and load_states already tracks if it crashed during generation.
+        from rfp.guard import GuardViolation
+        if isinstance(e, GuardViolation) and state.get("guard_blocked_publish"):
+            pass
         else:
             raise
     requirements = {
