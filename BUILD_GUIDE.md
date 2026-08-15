@@ -897,6 +897,19 @@ python -m rfp.graph --text "xin chào"
 ```
 Phải rẽ `ask_user`, không crash.
 
+**Và — quan trọng nhất — `State` phải ĐÚNG HÌNH DẠNG contract §2.7 ngay từ bước này**, dù giá trị rỗng:
+
+```bash
+python -m rfp.graph --rfp synthetic/rfps/RFP-2025-001.txt --check-schema
+```
+Phải xác nhận mọi `sections[i]` có đủ khoá:
+`key · title_ja · title_vi · source_chapters · sentences · status · note`
+và `trace` là **dict** có `llm_calls · retrieval_stats · dedup`, không phải list.
+
+> Giá trị rỗng thì được (`sentences: []`, `status: None`), nhưng **khoá phải có sẵn**. Bước 4 tồn tại
+> để chốt hình dạng; Bước 5–6 chỉ điền vào. Nghiệm thu kiểu "ra đủ 5 mục" **pass được cả khi
+> contract đã trôi** — và lúc đó phải viết lại cả `generate` lẫn UI. Kiểm hình dạng, đừng chỉ đếm.
+
 **Điểm mấu chốt:** sau bước này đã có sản phẩm chạy đầu-cuối. Các bước sau chỉ nâng chất lượng —
 không bao giờ rơi vào tình trạng "code nhiều mà chưa demo được gì".
 
