@@ -25,6 +25,29 @@ Copy-Item scripts\check_secrets.sh .git\hooks\pre-commit -Force
 Ba cờ `LLM_TOKEN_ARG` / `LLM_USE_TEMP` / `LLM_USE_EFFORT` trong `.env` phải điền theo kết quả
 `python tools/probe_model.py`, không đoán — sai một cờ là mọi lệnh gọi trả 400.
 
+### Kiểm tra nhanh sau khi cài
+
+Lệnh này **không cần API key** — nó chỉ dựng index và kiểm data sạch:
+
+```powershell
+$env:PYTHONPATH="src"
+.venv\Scripts\python.exe -m rfp.stores.sentence_index --assert-clean
+```
+
+Kết quả đúng:
+
+```
+indexed=273 · blocklist=0 · client_leak=0 · quarantine=4 · leak_dropped=14
+```
+
+Lần chạy đầu sẽ tải model embedding (~458MB) từ HuggingFace, cần mạng.
+`PYTHONPATH=src` là bắt buộc với các lệnh dạng `python -m rfp.*` vì gói nằm trong `src/`;
+`app.py` và mọi thứ trong `eval/` thì tự nạp đường dẫn nên không cần.
+
+> ⚠️ **Mọi thứ còn lại đều cần API key**, kể cả `pytest`. Client LLM được tạo lúc *import*
+> `src/rfp/llm.py`, nên thiếu key thì `pytest eval/test_gates.py` **dừng ngay ở bước collection**
+> chứ không chạy được test nào — dù bản thân các test tầng 1 không hề gọi LLM.
+
 ## Chạy
 
 ```powershell
