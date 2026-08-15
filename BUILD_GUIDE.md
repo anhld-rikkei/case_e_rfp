@@ -475,6 +475,20 @@ Trước khi tin bảng: chấm tay ~10 sample, đối chiếu với judge. Lệ
 
 Mỗi bước có: **Mục tiêu · Tạo file · Contract · Nghiệm thu (lệnh chạy được) · Cấm**.
 
+> **Quy tắc chung về phạm vi — đọc trước khi bắt đầu bất kỳ bước nào.**
+> Mục "Tạo:" liệt kê **file mới**. Ngoài ra, **mọi bước từ Bước 5 trở đi được phép sửa 2 file
+> tích hợp** mà không cần hỏi:
+>
+> | File | Được sửa để làm gì |
+> |---|---|
+> | `src/rfp/graph.py` | nối stage mới vào luồng + thêm cờ CLI mà nghiệm thu bước đó cần (`--trace`, `--json`…) |
+> | `config/settings.py` | thêm hằng số cấu hình của bước đó (trọng số rerank, ngưỡng…) — **không rải hằng số trong code** |
+>
+> Chỉ hai file này. Sửa file của bước trước (parser, sanitizer, index…) vẫn phải hỏi.
+>
+> Lý do: `graph.py` là điểm tích hợp duy nhất — Bước 5 cắm retrieval, Bước 6 cắm generation,
+> Bước 7 cắm guard. Không cho sửa nó thì không bước nào chạy được nghiệm thu của chính mình.
+
 ---
 
 ### BƯỚC 0 — Khung repo + quản lý API key
@@ -919,14 +933,41 @@ không bao giờ rơi vào tình trạng "code nhiều mà chưa demo được g
 
 ### BƯỚC 5 — Retrieval 4 giai đoạn
 
-**Tạo:** `retrieve/attribute.py`, `rerank.py`, `mmr.py`, `config/section_map.py`
+**Tạo:** `retrieve/attribute.py`, `retrieve/rerank.py`, `retrieve/mmr.py`, `config/section_map.py`
+**Được sửa:** `src/rfp/graph.py` (nối pipeline + cờ `--trace`), `config/settings.py` (trọng số §5.3)
 
 **5.1 Kênh thuộc tính** — deterministic, luôn chạy, **0 LLM**. Đối chiếu requirement với từ vựng
 đóng của capability sheet: `クラウド基盤（IaaS）` → `capabilities:クラウド移行（AWS・Azure）`;
 `ISO/IEC 27001相当` → `certifications:ISO/IEC 27001`.
 
-**5.2 Query embed** — chỉ chạy **khi 5.1 chưa phủ hết** requirement của chương. Chương đã phủ đủ →
-skip 5.2/5.3/5.4, ghi `stage.skipped = True` (đây là node xám nét đứt "bỏ qua" trên UI).
+**5.2 Query embed** — điều kiện skip **rất hẹp**, đọc kỹ trước khi implement.
+
+> **Hai kênh trả lời hai câu hỏi KHÁC NHAU:**
+> kênh thuộc tính hỏi *"công ty **có** năng lực này không?"*, precedent hỏi *"có **ví dụ thực tế**
+> nào để viết không?"*. Phủ được câu đầu **không** làm câu sau thành thừa.
+
+Skip chỉ được phép khi **cả 3** điều kiện đúng:
+
+1. Khớp thuộc tính là **chính xác** — text requirement chứa nguyên văn chuỗi capability/certification.
+   Khớp theo từ khoá gần nghĩa **không tính**. (`需要予測機能を備えること` → `データ分析基盤構築` là
+   khớp sai; hai thứ khác nhau.)
+2. Chương đó **không** nằm trong `source_chapters` của mục `導入実績` — mục đó *là* precedent theo
+   định nghĩa, sinh nó mà không có precedent là vô nghĩa.
+3. Sau khi skip, **tổng số câu selected của cả RFP vẫn > 0** cho mọi mục có `source_chapters ≠ []`.
+
+Skip thì ghi `stage.skipped = True` (node xám nét đứt trên UI).
+
+**Đã dính lỗi này một lần** — RFP-003 skip 3/4 chương, cả hồ sơ chỉ còn **5 câu precedent**, output
+gần như thuần capability sheet, vi phạm yêu cầu "dùng cả 2 nguồn" của đề bài.
+
+> ⚠️ **Nợ kỹ thuật đã biết — xử ở Bước 6, đừng sửa ở Bước 5.**
+> Điều kiện 3 khiến chương nào là **nguồn duy nhất** của một mục thì không bao giờ skip được →
+> trên thực tế skip thành tính năng chết, UI không còn node xám "bỏ qua".
+>
+> Trạng thái đó **an toàn** (luôn đủ 2 nguồn), chỉ mất phần hiển thị. Chỗ sửa đúng là Bước 6.5:
+> thay điều kiện 3 bằng *"mục có `selected=0` do skip thì `status = ATTRIBUTE_ONLY`"* — đó chính là
+> ý nghĩa của trạng thái ấy. Skip lúc đó vừa hợp lệ vừa **khai báo công khai** trên UI, thay vì
+> âm thầm cho ra mục rỗng.
 
 **5.3 Rerank** — `score = α·dense + β·bm25 + γ·industry_match + δ·same_section_prior`,
 top-20 → top-8. Hằng số vào `settings.py`, không rải trong code.
@@ -981,6 +1022,12 @@ và có **16 cặp mâu thuẫn** — cùng khách + cùng chỉ số nhưng kh�
 
 Retrieve top-8 cho 導入実績 hoàn toàn có thể kéo cả 「公共機関様…在庫精度を20%向上」 lẫn
 「…45%向上」 vào **cùng một mục** → hồ sơ tự mâu thuẫn.
+
+**Áp dụng SAU MMR, trên tập k câu cuối cùng — không áp ở tầng candidate.**
+Ẩn danh đã gộp nhiều khách hàng thật vào cùng một nhãn (`公共機関`, `中堅メーカー`…), nên
+`公共機関 × 在庫精度` có 20%/30%/45% thực chất là **ba dự án khác nhau**, không phải mâu thuẫn.
+Chúng chỉ thành vấn đề khi **đứng cạnh nhau trong cùng một mục**. Lọc ở tầng candidate (233 câu)
+là vứt nội dung thật trước cả khi rerank kịp chấm điểm — đã dính lỗi này một lần, loại 40 câu/chương.
 
 Data không có `ngày hiệu lực`, nên thang ưu tiên dựa trên **độ gần với RFP đang xử lý**:
 

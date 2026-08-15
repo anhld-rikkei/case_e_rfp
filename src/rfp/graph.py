@@ -2,23 +2,34 @@ import argparse
 from pathlib import Path
 from typing import Any, TypedDict
 
+import numpy as np
+from config.section_map import (
+    SECTION_DEFINITIONS,
+    map_source_chapters,
+    proposal_section_for_chapter,
+    section_key_for_chapter,
+)
+from config.settings import (
+    MMR_TOP_K,
+    RERANK_TOP_K,
+    RETRIEVAL_TOP_K,
+    ROUTE_EMBEDDING_THRESHOLD,
+)
 from langgraph.graph import END, START, StateGraph
 
-from .parsers.rfp_parser import CHAPTER_RE, INDUSTRY_RE, RFPParser
-from .schema import RFP
-
-
-SECTION_DEFINITIONS = (
-    ("company_overview", "会社概要", "Tổng quan công ty"),
-    ("proposal_overview", "提案の概要", "Tổng quan đề xuất"),
-    ("implementation_experience", "導入実績", "Kinh nghiệm triển khai"),
-    (
-        "certification_compliance",
-        "認証・コンプライアンス",
-        "Chứng nhận và tuân thủ",
-    ),
-    ("delivery_structure", "推進体制", "Cơ cấu triển khai"),
+from .parsers.rfp_parser import (
+    CHAPTER_RE,
+    DEFAULT_RFP_DIR,
+    INDUSTRY_RE,
+    RFPParser,
 )
+from .retrieve.attribute import AttributeCoverage, AttributeRetriever
+from .retrieve.hybrid import DEFAULT_EMBEDDING_MODEL, SearchResult
+from .retrieve.mmr import MMRSelection, maximal_marginal_relevance
+from .retrieve.rerank import RerankedResult, rerank_candidates, resolve_conflicts
+from .schema import RFP
+from .stores.sentence_index import SentenceIndex
+
 
 SECTION_KEYS = {
     "key",
@@ -54,6 +65,7 @@ def _empty_trace() -> dict[str, Any]:
         "retrieval_stats": {},
         "dedup": {"before": 0, "after": 0},
         "path": [],
+        "conflicts": [],
     }
 
 
@@ -64,6 +76,7 @@ def _with_trace(state: GraphState, node: str) -> dict[str, Any]:
         "retrieval_stats": dict(current.get("retrieval_stats", {})),
         "dedup": dict(current.get("dedup", {"before": 0, "after": 0})),
         "path": [*current.get("path", []), node],
+        "conflicts": list(current.get("conflicts", [])),
     }
 
 
@@ -125,24 +138,68 @@ def ask_user(state: GraphState) -> GraphState:
 
 def route_reference_rfp(state: GraphState) -> GraphState:
     rfp = state.get("rfp")
+    references = [
+        RFPParser().parse_file(path, allow_llm_fallback=False)
+        for path in sorted(DEFAULT_RFP_DIR.glob("*.txt"))
+    ]
+    industry_matches = [
+        reference
+        for reference in references
+        if rfp is not None and reference.industry == rfp.industry
+    ]
+    if industry_matches:
+        industry_matches.sort(
+            key=lambda reference: (
+                reference.rfp_id != rfp.rfp_id,
+                reference.rfp_id,
+            )
+        )
+        selected = industry_matches[0]
+        reference_rfp = {
+            "rfp_id": selected.rfp_id,
+            "method": "industry",
+            "score": 1.0,
+        }
+    elif rfp is not None and references:
+        from sentence_transformers import SentenceTransformer
+
+        model = SentenceTransformer(DEFAULT_EMBEDDING_MODEL)
+        embeddings = model.encode(
+            [rfp.title, *(reference.title for reference in references)],
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        )
+        scores = np.asarray(embeddings[1:] @ embeddings[0], dtype=np.float32)
+        best_index = int(scores.argmax())
+        best_score = float(scores[best_index])
+        reference_rfp = (
+            {
+                "rfp_id": references[best_index].rfp_id,
+                "method": "embedding",
+                "score": best_score,
+            }
+            if best_score >= ROUTE_EMBEDDING_THRESHOLD
+            else {"rfp_id": "", "method": "none", "score": best_score}
+        )
+    else:
+        reference_rfp = {"rfp_id": "", "method": "none", "score": None}
     return {
-        "reference_rfp": {
-            "rfp_id": rfp.rfp_id if rfp is not None else "",
-            "method": "placeholder",
-            "score": None,
-        },
+        "reference_rfp": reference_rfp,
         "trace": _with_trace(state, "route_reference_rfp"),
     }
 
 
 def plan_sections(state: GraphState) -> GraphState:
+    rfp = state.get("rfp")
+    source_chapters = map_source_chapters(rfp.chapters if rfp is not None else [])
     return {
         "sections": [
             {
                 "key": key,
                 "title_ja": title_ja,
                 "title_vi": title_vi,
-                "source_chapters": [],
+                "source_chapters": source_chapters[key],
                 "sentences": [],
                 "status": None,
                 "note": None,
@@ -155,8 +212,118 @@ def plan_sections(state: GraphState) -> GraphState:
 
 def retrieve_per_chapter(state: GraphState) -> GraphState:
     rfp = state.get("rfp")
-    chapters = (
-        [
+    if rfp is None:
+        return {
+            "chapters": [],
+            "trace": _with_trace(state, "retrieve_per_chapter"),
+        }
+
+    sentence_index = SentenceIndex.build()
+    attribute_retriever = AttributeRetriever()
+    reference_rfp = state.get("reference_rfp", {}).get("rfp_id", "")
+    coverages = {
+        chapter.id: attribute_retriever.cover_chapter(chapter)
+        for chapter in rfp.chapters
+    }
+    section_sources = {
+        section["key"]: list(section["source_chapters"])
+        for section in state.get("sections", [])
+    }
+    skip_decisions = _chapter_skip_decisions(
+        rfp,
+        coverages=coverages,
+        section_sources=section_sources,
+    )
+    chapters: list[dict[str, Any]] = []
+    retrieval_stats: dict[str, Any] = {}
+    conflicts: list[dict[str, str]] = []
+    aggregate_before = 0
+    aggregate_after = 0
+
+    for chapter in rfp.chapters:
+        coverage = coverages[chapter.id]
+        attribute_stage = _attribute_stage(coverage)
+
+        if skip_decisions[chapter.id]:
+            fact_keys = [
+                fact_key
+                for match in coverage.matches
+                for fact_key in match.exact_fact_keys
+            ]
+            dedup = {"before": len(fact_keys), "after": len(set(fact_keys))}
+            stages = {
+                "attribute": attribute_stage,
+                "query_embed": {"skipped": True},
+                "rerank": {"skipped": True},
+                "mmr": {"skipped": True},
+            }
+            candidates: list[dict[str, Any]] = []
+            selected: list[dict[str, Any]] = []
+            unique_texts = 0
+            skipped = True
+            conflict_dropped = 0
+        else:
+            query_text = " ".join(
+                requirement.text for requirement in chapter.requirements
+            )
+            initial_results = sentence_index.search(
+                query_text,
+                k=RETRIEVAL_TOP_K,
+            )
+            reranked, selection, kept, dropped, expanded = _select_precedents(
+                initial_results,
+                sentence_index=sentence_index,
+                query=query_text,
+                target_industry=rfp.industry,
+                target_section=proposal_section_for_chapter(chapter.title),
+                reference_rfp=reference_rfp,
+            )
+            dedup = {"before": selection.before, "after": selection.after}
+            stages = {
+                "attribute": attribute_stage,
+                "query_embed": {
+                    "skipped": False,
+                    "query": query_text,
+                    "candidates": len(initial_results),
+                    "expanded": expanded,
+                },
+                "rerank": {
+                    "skipped": False,
+                    "before": len(initial_results),
+                    "after": min(RERANK_TOP_K, len(reranked)),
+                },
+                "mmr": {
+                    "skipped": False,
+                    "before": selection.before,
+                    "after": selection.after,
+                    "unique_texts": selection.unique_texts,
+                    "k": MMR_TOP_K,
+                },
+            }
+            candidates = [_search_result_dict(item.result) for item in reranked[:RETRIEVAL_TOP_K]]
+            selected = [_reranked_result_dict(item) for item in kept]
+            unique_texts = selection.unique_texts
+            skipped = False
+            conflict_dropped = len(dropped)
+            conflicts.extend(
+                {
+                    "chapter_id": chapter.id,
+                    "sent_id": item.sentence.sent_id,
+                    "reason": "conflicting metric value",
+                }
+                for item in dropped
+            )
+
+        aggregate_before += dedup["before"]
+        aggregate_after += dedup["after"]
+        retrieval_stats[chapter.id] = {
+            "skipped": skipped,
+            "dedup": dedup,
+            "unique_texts": unique_texts,
+            "selected": len(selected),
+            "conflict_dropped": conflict_dropped,
+        }
+        chapters.append(
             {
                 "id": chapter.id,
                 "title": chapter.title,
@@ -165,20 +332,162 @@ def retrieve_per_chapter(state: GraphState) -> GraphState:
                     for requirement in chapter.requirements
                 ],
                 "retrieval": {
-                    "stages": {},
-                    "candidates": [],
-                    "selected": [],
+                    "stages": stages,
+                    "candidates": candidates,
+                    "selected": selected,
+                    "dedup": dedup,
                 },
             }
-            for chapter in rfp.chapters
-        ]
-        if rfp is not None
-        else []
-    )
+        )
+
+    selected_by_chapter = {
+        chapter["id"]: len(chapter["retrieval"]["selected"])
+        for chapter in chapters
+    }
+    for section_key, source_ids in section_sources.items():
+        if source_ids and sum(selected_by_chapter[source_id] for source_id in source_ids) == 0:
+            raise AssertionError(
+                f"Section {section_key} có source_chapters nhưng không có precedent selected"
+            )
+
+    trace = _with_trace(state, "retrieve_per_chapter")
+    trace["retrieval_stats"] = retrieval_stats
+    trace["dedup"] = {"before": aggregate_before, "after": aggregate_after}
+    trace["conflicts"] = conflicts
     return {
         "chapters": chapters,
-        "trace": _with_trace(state, "retrieve_per_chapter"),
+        "trace": trace,
     }
+
+
+def _attribute_stage(coverage: AttributeCoverage) -> dict[str, Any]:
+    return {
+        "skipped": False,
+        "fully_covered": coverage.fully_covered,
+        "covered_req_ids": list(coverage.covered_req_ids),
+        "missing_req_ids": list(coverage.missing_req_ids),
+        "exactly_covered": coverage.exactly_covered,
+        "exact_covered_req_ids": list(coverage.exact_covered_req_ids),
+        "exact_missing_req_ids": list(coverage.exact_missing_req_ids),
+        "matches": [
+            {
+                "req_id": match.req_id,
+                "fact_keys": list(match.fact_keys),
+                "exact_fact_keys": list(match.exact_fact_keys),
+            }
+            for match in coverage.matches
+        ],
+    }
+
+
+def _chapter_skip_decisions(
+    rfp: RFP,
+    *,
+    coverages: dict[str, AttributeCoverage],
+    section_sources: dict[str, list[str]],
+) -> dict[str, bool]:
+    decisions = {
+        chapter.id: (
+            coverages[chapter.id].exactly_covered
+            and section_key_for_chapter(chapter.title) != "implementation_experience"
+        )
+        for chapter in rfp.chapters
+    }
+
+    # A section with sources must retain at least one precedent-producing chapter.
+    # If all of its chapters were exact-match skip candidates, retrieve the chapter
+    # with the smallest id so the choice remains deterministic.
+    for source_ids in section_sources.values():
+        if source_ids and all(decisions[source_id] for source_id in source_ids):
+            decisions[min(source_ids)] = False
+    return decisions
+
+
+def _select_precedents(
+    initial_results: list[SearchResult],
+    *,
+    sentence_index: SentenceIndex,
+    query: str,
+    target_industry: str,
+    target_section: str,
+    reference_rfp: str,
+) -> tuple[
+    list[RerankedResult],
+    MMRSelection,
+    list[RerankedResult],
+    list[RerankedResult],
+    bool,
+]:
+    initial_reranked = rerank_candidates(
+        initial_results,
+        target_industry=target_industry,
+        target_section=target_section,
+        top_k=None,
+    )
+    results = initial_results
+    expanded = False
+    while True:
+        reranked = rerank_candidates(
+            results,
+            target_industry=target_industry,
+            target_section=target_section,
+            top_k=None,
+        )
+        unique_reranked: list[RerankedResult] = []
+        seen_texts: set[str] = set()
+        for item in reranked:
+            if item.sentence.text not in seen_texts:
+                seen_texts.add(item.sentence.text)
+                unique_reranked.append(item)
+            if len(unique_reranked) == RERANK_TOP_K:
+                break
+        try:
+            selection = maximal_marginal_relevance(unique_reranked, k=MMR_TOP_K)
+            kept, dropped = resolve_conflicts(
+                list(selection.selected),
+                reference_rfp=reference_rfp,
+                industry=target_industry,
+                industries=sentence_index.industries,
+            )
+            return initial_reranked, selection, kept, dropped, expanded
+        except ValueError:
+            if len(results) == len(sentence_index.all_sentences()):
+                raise
+            results = sentence_index.search(
+                query,
+                k=len(sentence_index.all_sentences()),
+            )
+            expanded = True
+
+
+def _search_result_dict(result: SearchResult) -> dict[str, Any]:
+    sentence = result.sentence
+    return {
+        "sent_id": sentence.sent_id,
+        "proposal_id": sentence.proposal_id,
+        "responds_to": sentence.responds_to,
+        "section": sentence.section,
+        "text": sentence.text,
+        "claim_kind": sentence.claim_kind,
+        "flags": dict(sentence.flags),
+        "scores": {
+            "hybrid": result.score,
+            "bm25": result.bm25_score,
+            "dense": result.dense_score,
+        },
+    }
+
+
+def _reranked_result_dict(item: RerankedResult) -> dict[str, Any]:
+    result = _search_result_dict(item.result)
+    result["scores"].update(
+        {
+            "rerank": item.score,
+            "industry_match": item.industry_match,
+            "same_section_prior": item.same_section_prior,
+        }
+    )
+    return result
 
 
 def generate_per_section(state: GraphState) -> GraphState:
@@ -281,12 +590,53 @@ def check_schema(state: GraphState) -> None:
         raise AssertionError("trace.dedup phải có before và after")
 
 
+def print_trace(state: GraphState) -> None:
+    reference = state["reference_rfp"]
+    trace = state["trace"]
+    print(
+        f"route method={reference['method']}, "
+        f"rfp_id={reference['rfp_id']}, llm_calls={trace['llm_calls']}"
+    )
+    for chapter in state.get("chapters", []):
+        retrieval = chapter["retrieval"]
+        stats = trace["retrieval_stats"][chapter["id"]]
+        dedup = retrieval["dedup"]
+        mmr_stage = retrieval["stages"]["mmr"]
+        unique = mmr_stage.get("unique_texts", 0)
+        k = mmr_stage.get("k", 0)
+        print(
+            f"chapter {chapter['id']} {chapter['title']}: "
+            f"skipped={stats['skipped']}, "
+            f"dedup: {{before: {dedup['before']}, after: {dedup['after']}}}, "
+            f"unique={unique}/{k}, "
+            f"selected={stats['selected']}, "
+            f"conflict_dropped={stats['conflict_dropped']}"
+        )
+    selected_by_chapter = {
+        chapter["id"]: len(chapter["retrieval"]["selected"])
+        for chapter in state.get("chapters", [])
+    }
+    for section in state.get("sections", []):
+        selected = sum(
+            selected_by_chapter[chapter_id]
+            for chapter_id in section["source_chapters"]
+        )
+        print(
+            f"section {section['key']}: "
+            f"source_chapters={section['source_chapters']}, "
+            f"selected={selected}"
+        )
+    print(f"total_selected={sum(selected_by_chapter.values())}")
+    print(f"conflicts={len(trace.get('conflicts', []))}")
+
+
 def main() -> None:
     argument_parser = argparse.ArgumentParser(description="RFP proposal graph")
     source = argument_parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--rfp", type=Path)
     source.add_argument("--text")
     argument_parser.add_argument("--check-schema", action="store_true")
+    argument_parser.add_argument("--trace", action="store_true")
     args = argument_parser.parse_args()
 
     text = (
@@ -311,6 +661,11 @@ def main() -> None:
         )
         print(f"schema=ok · sections=5 · keys={section_key_text}")
         print("trace=dict · llm_calls · retrieval_stats · dedup · path")
+        return
+
+    if args.trace:
+        print(f"status={result['status']}")
+        print_trace(result)
         return
 
     if result["status"] == "ask_user":
