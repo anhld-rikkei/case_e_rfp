@@ -15,7 +15,9 @@ index/                      # FAISS + cache embedding
 cache/
 outputs/                    # proposal sinh ra
 eval/results/raw/           # log chạy eval từng lần
+eval/results/temp_*         # RFP tạm; runner đời cũ ghi vào đây, bản mới dùng tempfile
 
 # ── NHỚ: những thứ này PHẢI vào git, đừng ignore nhầm ─
 # synthetic/golden_test_set/        <- bộ test, là tài sản của dự án
 # eval/results/report.md            <- bảng §11.3 đã chốt
+# eval/results/*.det.json           <- số deterministic của bảng §11.3

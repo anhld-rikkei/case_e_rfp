@@ -1,11 +1,11 @@
-# BUILD GUIDE — hướng dẫn người thực hiện build hệ sinh hồ sơ thầu (case_e_rfp)
+# BUILD GUIDE — hướng dẫn thi công hệ sinh hồ sơ thầu (case_e_rfp)
 
 Hợp nhất [ARCHITECTURE.md](ARCHITECTURE.md) + [EVAL.md](EVAL.md) thành các bước thi công.
 Mọi số liệu trong file này đã được **đếm trực tiếp từ data**, không phải ước lượng.
 
 ---
 
-## Cách dùng file này với người thực hiện
+## Cách dùng file này
 
 1. Đưa người thực hiện **Phần 1 + Phần 2 + Phần 3** trước (sự thật về data, bất biến, khung repo). Đây là context nền.
 2. Mỗi lần chỉ đưa **một Bước** trong Phần 4. Không dán cả file.
@@ -1686,7 +1686,7 @@ chạy được nhưng có thể xuất ra hồ sơ bịa chứng chỉ.
 
 ---
 
-## PHỤ LỤC A — Prompt mẫu đưa người thực hiện từng bước
+## PHỤ LỤC A — Mẫu giao việc từng bước
 
 ```
 Context: đọc PHẦN 1 (sự thật về data), PHẦN 2 (bất biến), PHẦN 3 (khung repo) trong BUILD_GUIDE.md.
