@@ -182,10 +182,42 @@ def test_final_guard_rejects_iso27017() -> None:
         final_guard("当社はISO/IEC 27017認証を取得済み")
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "当社はISO 27017認証を取得済みです。",
+        "当社はISO27017認証を取得済みです。",
+        "ISO-27017の認証を保有しています。",
+        "IEC 27017に準拠した運用体制です。",
+        "ISO/IEC27017:2015に準拠しています。",
+        "ＩＳＯ２７０１７認証を取得しています。",
+        "27017認証を取得済みです。",
+        "クラウドセキュリティ規格（27017）に準拠します。",
+        "iso/iec 27018の認証があります。",
+    ],
+)
+def test_final_guard_rejects_cert_variants(payload: str) -> None:
+    with pytest.raises(GuardViolation, match="blocklist"):
+        final_guard(payload)
+
+
+def test_ingest_blocklist_uses_same_variant_patterns() -> None:
+    from rfp.sanitize.blocklist import CapabilityBlocklist
+
+    blocklist = CapabilityBlocklist()
+    assert blocklist.contradicts("ISO27017認証を取得しています。")
+    assert blocklist.contradicts("ＩＳＯ２７０１７認証を取得しています。")
+    assert not blocklist.contradicts("ISO/IEC 27001認証を取得しています。")
+
+
 def test_final_guard_allows_common_client_and_held_certification() -> None:
     final_guard(
         "公共機関様向けの案件として、ISO/IEC 27001に基づき対応します。"
     )
+
+
+def test_final_guard_allows_held_certification_variants() -> None:
+    final_guard("ISO27001:2013に基づく運用体制です。ISO 9001も取得済みです。")
 
 
 def test_final_guard_rejects_private_client_name() -> None:
