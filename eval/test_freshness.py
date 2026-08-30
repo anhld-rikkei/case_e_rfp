@@ -200,6 +200,17 @@ def test_state_is_stale_true_after_source_changes(tmp_path: Path) -> None:
     assert state_is_stale(state, manifest_path=path, **kwargs) is True
 
 
+def test_state_not_flagged_when_never_ingested(tmp_path: Path) -> None:
+    """Chưa nạp lần nào = KHÔNG BIẾT, không phải 'đã cũ'.
+
+    Coi là cũ ở đây thì mọi kết quả bị dán cảnh báo ngay lần chạy đầu (và chat
+    bị chặn oan) — cảnh báo luôn bật là cảnh báo không ai đọc.
+    """
+    kwargs = _corpus(tmp_path, {"P1.txt": "a"}, {})
+    state = {"fingerprints": {"corpus": "bat-ky"}}
+    assert state_is_stale(state, manifest_path=tmp_path / "chua-co.json", **kwargs) is False
+
+
 def test_state_without_fingerprint_is_not_flagged(tmp_path: Path) -> None:
     """Không có bằng chứng thì không dựng cảnh báo."""
     kwargs = _corpus(tmp_path, {"P1.txt": "a"}, {})

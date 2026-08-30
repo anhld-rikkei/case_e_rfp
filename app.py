@@ -90,6 +90,7 @@ from rfp.graph import PIPELINE_STAGES, stream_graph
 from rfp.guard import GuardViolation
 from rfp.stores.sentence_index import SentenceIndex
 from rfp.llm import LLMUnavailable, MODEL as LLM_MODEL, generate
+from rfp.refine import refine_all, refine_section
 
 
 # Thứ tự hiển thị của luồng chạy. `ask_user` không nằm đây: nó là nhánh rẽ khi
@@ -412,6 +413,153 @@ def render_section_note(state: dict[str, Any], section: dict[str, Any]) -> None:
     st.warning(label(SECTION_NOTE_VI, note))
 
 
+def _versions() -> list[dict[str, Any]]:
+    return st.session_state.setdefault("versions", [])
+
+
+def push_version(state: dict[str, Any], *, label: str, **extra: Any) -> None:
+    versions = _versions()
+    versions.append({"state": state, "label": label, **extra})
+    st.session_state["version_index"] = len(versions) - 1
+
+
+def current_version() -> dict[str, Any] | None:
+    versions = _versions()
+    index = st.session_state.get("version_index", len(versions) - 1)
+    if not versions or not (0 <= index < len(versions)):
+        return None
+    return versions[index]
+
+
+def version_diff(older: dict[str, Any], newer: dict[str, Any]) -> str:
+    """Diff giữa hai bản, theo dòng. `difflib` là thư viện chuẩn — không thêm
+    dependency, đúng luật repo."""
+    import difflib
+
+    return "\n".join(
+        difflib.unified_diff(
+            older.get("proposal", "").splitlines(),
+            newer.get("proposal", "").splitlines(),
+            fromfile="bản trước",
+            tofile="bản này",
+            lineterm="",
+            n=1,
+        )
+    )
+
+
+def render_chat_refine(state: dict[str, Any]) -> None:
+    """Ô chat chỉnh hồ sơ + lịch sử phiên bản."""
+    st.subheader("Chỉnh lại bằng chỉ thị")
+    st.caption(
+        "Chat chỉnh **cách viết trên căn cứ sẵn có** — không thêm được nội dung "
+        "chưa có bằng chứng, và không đổi được số liệu."
+    )
+
+    if state_is_stale(state):
+        st.warning(
+            "Dữ liệu nguồn đã thay đổi sau khi hồ sơ này được sinh. Chạy lại hồ "
+            "sơ trước khi chỉnh tiếp — chỉnh trên bản cũ là trộn hai thế hệ dữ "
+            "liệu vào cùng một tài liệu.",
+            icon="⚠️",
+        )
+        return
+
+    sections = state.get("sections", [])
+    options = ["Toàn bộ hồ sơ"] + [
+        f"{index}. {section['title_ja']}"
+        for index, section in enumerate(sections, start=1)
+    ]
+    picked = st.selectbox("Chỉnh phần nào", options, key="refine_target")
+    instruction = st.text_area(
+        "Chỉ thị",
+        key="refine_instruction",
+        placeholder="ví dụ: viết phần bảo mật ngắn gọn hơn",
+        height=80,
+    )
+
+    if st.button("Gửi chỉ thị", type="primary", key="refine_submit"):
+        if not instruction.strip():
+            st.warning("Chưa nhập chỉ thị.")
+            return
+        with st.spinner("Đang chỉnh lại…"):
+            try:
+                if picked == options[0]:
+                    result = refine_all(state, instruction=instruction)
+                else:
+                    section = sections[options.index(picked) - 1]
+                    result = refine_section(
+                        state, section_key=section["key"], instruction=instruction
+                    )
+            except LLMUnavailable as error:
+                st.error(
+                    f"Nhà cung cấp LLM không phản hồi sau {error.attempts} lần gọi "
+                    f"(lỗi {error.kind}). Hồ sơ giữ nguyên."
+                )
+                return
+        if result.touched:
+            push_version(
+                result.state,
+                label=f"v{len(_versions()) + 1}",
+                instruction=instruction,
+                target=picked,
+                rejected=result.rejected,
+            )
+            st.session_state["translation"] = ""
+            st.rerun()
+        else:
+            st.info("Không có thay đổi nào được áp dụng.")
+        _render_rejections(result.rejected)
+
+
+def _render_rejections(rejected: list[dict[str, Any]]) -> None:
+    if not rejected:
+        return
+    st.warning(
+        "**Yêu cầu này vượt quá năng lực thật của công ty hoặc vi phạm ràng "
+        "buộc nguồn** — các thay đổi sau đã bị từ chối, hồ sơ giữ nguyên phần đó:",
+        icon="🛑",
+    )
+    for item in rejected:
+        text = f" — `{item['text'][:60]}…`" if item.get("text") else ""
+        st.markdown(f"- {item['reason']}{text}")
+
+
+def render_version_history() -> None:
+    versions = _versions()
+    if len(versions) <= 1:
+        return
+    st.divider()
+    st.subheader("Lịch sử phiên bản")
+    index = st.session_state.get("version_index", len(versions) - 1)
+    labels = [
+        f"{item['label']}"
+        + (f" · {item.get('target', '')}" if item.get("instruction") else " · bản gốc")
+        for item in versions
+    ]
+    picked = st.radio(
+        "Bản đang hiển thị (cũng là bản sẽ tải về)",
+        range(len(versions)),
+        index=index,
+        format_func=lambda i: labels[i],
+        horizontal=True,
+        key="version_picker",
+    )
+    if picked != index:
+        st.session_state["version_index"] = picked
+        st.session_state["translation"] = ""
+        st.rerun()
+
+    chosen = versions[picked]
+    if chosen.get("instruction"):
+        st.caption(f"Chỉ thị: “{chosen['instruction']}”")
+    _render_rejections(chosen.get("rejected", []))
+    if picked > 0:
+        with st.expander("Xem thay đổi so với bản trước", expanded=False):
+            diff = version_diff(versions[picked - 1]["state"], chosen["state"])
+            st.code(diff or "(không có khác biệt trong phần văn bản)", language="diff")
+
+
 def render_proposal(state: dict[str, Any]) -> None:
     trace = state["trace"]
     grounding = trace.get("grounding", {"grounded": 0, "total": 0})
@@ -435,6 +583,9 @@ def render_proposal(state: dict[str, Any]) -> None:
         render_section_note(state, section)
         for sentence in section["sentences"]:
             st.write(sentence["text"])
+    st.divider()
+    render_chat_refine(state)
+    render_version_history()
     st.divider()
     render_mapping(state)
 
@@ -1554,6 +1705,8 @@ def main() -> None:
     st.session_state.setdefault("result_state", None)
     st.session_state.setdefault("translation", "")
     st.session_state.setdefault("failure", None)
+    st.session_state.setdefault("versions", [])
+    st.session_state.setdefault("version_index", 0)
 
     text, submitted = sidebar_controls()
     st.title("RFP Proposal Studio")
@@ -1624,6 +1777,9 @@ def main() -> None:
         st.session_state["result_state"] = latest
         st.session_state["failure"] = failure
         if failure is None and latest and latest.get("status") == "completed":
+            # Bản gốc là v1 của lịch sử phiên bản; mọi lượt chat đẩy thêm bản mới.
+            st.session_state["versions"] = []
+            push_version(latest, label="v1")
             content_hash, content = translated_content(latest)
             with st.spinner("Đang dịch RFP và hồ sơ sang tiếng Việt…"):
                 st.session_state["translation"] = translate_once(content_hash, content)
@@ -1655,12 +1811,17 @@ def main() -> None:
                 with tab:
                     st.info("Cần bổ sung đầu vào trước khi sinh kết quả.")
         elif latest.get("status") == "completed":
+            # Bản đang hiển thị = bản đang chọn trong lịch sử, và đó cũng là bản
+            # được export. Chưa có lịch sử (state nạp lại từ phiên cũ) thì dùng
+            # thẳng kết quả pipeline.
+            version = current_version()
+            shown = version["state"] if version else latest
             with result_area:
-                render_proposal(latest)
+                render_proposal(shown)
             with coverage_tab:
-                render_coverage(latest)
+                render_coverage(shown)
             with sources_tab:
-                render_sources(latest)
+                render_sources(shown)
             with translation_tab:
                 st.caption(
                     "Bản dịch tiếng Việt để đối chiếu. Bản nộp cho khách vẫn là "
