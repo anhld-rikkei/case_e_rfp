@@ -8,7 +8,7 @@ nguyên văn câu nguồn; LLM không được tự sinh.
 
 ## Trạng thái
 
-**v1.4.0** · **159 test pass** (`pytest eval/`) · nhánh phát hành: `main`
+**v1.6.0** · **226 test pass** (`pytest eval/`) · nhánh phát hành: `main`
 
 | Tag | Nội dung chính | Test |
 |---|---|---|
@@ -17,16 +17,18 @@ nguyên văn câu nguồn; LLM không được tự sinh.
 | [v1.2.0](../../releases/tag/v1.2.0) | Cache mức node với vân tay corpus + capability, tắt cứng ở eval · review loop chỉ soi chất lượng văn bản | 83 |
 | [v1.3.0](../../releases/tag/v1.3.0) | Upload RFP · export markdown 5 mục với nhãn nháp **nằm trong file** · review 2 persona song song | 107 |
 | [v1.4.0](../../releases/tag/v1.4.0) | Giao diện tiếng Việt qua một bộ mapping dùng chung · luồng chạy 8 bước cập nhật live · tách hẳn "bị chặn xuất bản" khỏi lỗi kỹ thuật · tab đánh giá có khối 3 con số chính | 159 |
+| [v1.5.0](../../releases/tag/v1.5.0) | Đối chiếu dữ liệu nguồn với lần nạp gần nhất (băm nội dung) · nút nạp lại kho đi đúng pipeline ingest · banner "sinh từ dữ liệu cũ" vào cả file xuất · tách corpus đo lường khỏi corpus vận hành | 202 |
+| [v1.6.0](../../releases/tag/v1.6.0) | Chat-refine từng mục trên đúng căn cứ sẵn có · lịch sử phiên bản có diff và quay lại · lưới an toàn không có ngoại lệ cho chat | 226 |
 
-Hoãn có chủ đích: chat-refine từng mục, section lock, version history — chúng chạm chuỗi phụ thuộc
-`used_fact_keys` trong `generate_per_section`, phải là release riêng có eval riêng (lý do đầy đủ ở
-docstring `src/rfp/cache.py`).
+Hoãn có chủ đích: **section lock** — nó xây trên chat-refine và cần thêm eval riêng. Chat-refine
+(v1.6) đã làm được mà **không** phải đụng `used_fact_keys`, nhờ đặt ngoài graph và chỉ sửa câu đã có
+thay vì sinh lại mục (lý do đầy đủ ở docstring `src/rfp/refine.py`).
 
 ### Ba lệnh hay dùng
 
 ```powershell
 streamlit run app.py                                  # chạy app (http://localhost:8642)
-.venv\Scripts\python.exe -m pytest eval/ -q           # full test suite — 159 passed
+.venv\Scripts\python.exe -m pytest eval/ -q           # full test suite — 226 passed
 .venv\Scripts\python.exe -m eval.generate_report      # sinh lại eval/results/report.md
 ```
 
@@ -78,9 +80,9 @@ có lệnh gọi:
 Không key: `1 failed, 23 passed` — ca fail duy nhất là `test_redteam_27017` vì nó sinh hồ sơ thật.
 Có key: `24 passed`.
 
-Toàn bộ `eval/` là **159 test**: `test_gates` 24 · `test_cache` 29 · `test_review` 28 ·
-`test_display_vi` 26 · `test_app_ui` 26 · `test_export` 16 · `test_resilience` 9 ·
-`test_deepeval` 1. Trừ `test_redteam_27017` và `test_deepeval`, tất cả đều cách ly —
+Toàn bộ `eval/` là **226 test**: `test_gates` 24 · `test_cache` 29 · `test_review` 28 ·
+`test_display_vi` 26 · `test_app_ui` 26 · `test_freshness` 24 · `test_refine` 23 ·
+`test_export` 19 · `test_resilience` 9 · `test_deepeval` 1. Trừ `test_redteam_27017` và `test_deepeval`, tất cả đều cách ly —
 không mạng, không dựng FAISS.
 
 > ⚠️ **Sinh hồ sơ và chạy eval thì bắt buộc có key.** Thiếu key, lỗi nổ đúng lúc gọi LLM với
