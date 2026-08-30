@@ -112,11 +112,18 @@ flowchart TD
   C --> A
   B -->|đủ| D[route_reference_rfp]
   D --> E[plan_sections]
-  E --> F[retrieve_per_chapter]
-  F --> G[generate_per_section]
-  G --> H[assemble + final_guard]
-  H --> I[END]
+  E --> F["retrieve_per_chapter<br/>(có cache)"]
+  F --> G["generate_per_section<br/>(có cache)"]
+  G --> H["review<br/>2 persona song song"]
+  H -->|còn critical & chưa chạm max| H
+  H -->|hết critical / chạm max| I[assemble + final_guard]
+  I --> J[END]
 ```
+
+Hai node có nền cache là `retrieve_per_chapter` và `generate_per_section` (§2.8).
+`review` **không** cache vì kết quả phụ thuộc số vòng đã chạy. `assemble` — nơi
+`final_guard` chạy — cũng không cache, nên **mọi hồ sơ xuất ra đều qua guard**,
+kể cả khi toàn bộ phần sinh là cache hit.
 
 ### 2.1 `parse_input` → `check_complete` → `ask_user`
 Thiếu `業種` hoặc không tách được chương nào → hỏi lại người dùng thay vì đoán bừa.
@@ -181,11 +188,45 @@ Chương RFP lạ (không khớp mục nào) → đẩy vào `導入実績` + lo
    - `INSUFFICIENT_EVIDENCE` — không đủ → **ghi chú công khai** thay vì bịa
      ("業務要件/技術要件 không có chunk trực tiếp đáp ứng yêu cầu").
 
-### 2.6 `final_guard`
-Trước khi xuất: quét lại toàn văn bằng blocklist (§1.5) + pattern tên riêng khách hàng.
-Dính → fail loud, không xuất bản im lặng. Đây là lớp phòng thủ độc lập với LLM.
+### 2.6 `review` — chỉ soi chất lượng văn bản (v1.2 · multi-persona v1.3)
 
-### 2.7 State schema (hợp đồng giữa các node — cũng là thứ render ra toàn bộ UI)
+Nằm **giữa** `generate_per_section` và `assemble`. Hai vị trí khác đều bị loại vì lý do cứng:
+đặt *trong* `generate_per_section` sẽ phá cache (§2.8 — cùng một key ứng với nhiều kết quả tuỳ số
+vòng đã chạy); đặt *sau* `assemble` là xuất bản thứ chưa qua guard, vi phạm BB-2.
+
+**Hai persona chạy song song** — `coverage` (mạch lạc, đủ ý, thứ tự) và `quality` (văn phong, trùng
+lặp, thống nhất cách viết). Chỉ có một model nên phân hoá bằng **prompt**, không bằng model size.
+Issue được gộp theo `(section_key, issue_type)`, **giữ bản severity nặng nhất** — giữ bản gặp trước
+sẽ biến một lỗi `critical` thành `major` tuỳ thứ tự chạy.
+
+> ⚠ **Cố tình KHÔNG có persona Compliance.** Nó sẽ phán về chứng chỉ giả và over-claim, tức giẫm lên
+> BB-2 (§1.5) và BB-1 (§1.4). Judge LLM sai 5–10%; ở đây sai một lần là hồ sơ tuyên bố sai chứng chỉ.
+> Một reviewer "hiền" báo sạch không làm hồ sơ sạch hơn, nhưng tạo cảm giác đã có người canh — kiểu
+> hỏng nguy hiểm nhất. Compliance ở lại tầng deterministic.
+
+`issue_type` là **từ vựng đóng** thuần chất lượng (`structure` · `tone` · `redundancy` ·
+`unclear_reference` · `format`); issue ngoài từ vựng hoặc trỏ sai `section_key` bị bỏ, không đoán ý
+model. Chỉ mục có issue `critical` mới được sinh lại; câu không bị chỉ ra giữ nguyên từng byte, và
+bản sửa bị **từ chối** nếu đổi số liệu/metric, thêm ký tự trang trí, hoặc lỡ thêm chuỗi cấm. Mọi câu
+giữ nguyên `origin`/`source_id`/`req_ids`/`verdict` (BB-4).
+
+Vòng lặp dừng khi: hết `critical`, hoặc vòng vừa rồi không sửa nổi câu nào, hoặc chạm
+`MAX_REVIEW_ROUNDS`. Tắt hẳn bằng `REVIEW_ENABLED`.
+
+### 2.7 `final_guard`
+Trước khi xuất: quét lại toàn văn bằng blocklist (§1.5) + pattern tên riêng khách hàng.
+Dính → fail loud, không xuất bản im lặng. Đây là lớp phòng thủ độc lập với LLM, và là **node cuối
+cùng** — chạy sau cả review loop, nên không đường nào đi vòng qua nó.
+
+Blocklist khớp cả **biến thể** chứ không chỉ nguyên văn: `ISO 27017` · `ISO27017` · `ISO-27017` ·
+`IEC 27017` · `ISO/IEC27017:2015` · full-width · và số trần `27017` khi đứng cạnh ngữ cảnh chứng chỉ.
+Cùng một bộ regex dùng cho cả hai lần kiểm (ingest + xuất bản).
+
+Khi **xuất file** (§3), guard chạy trên **phần hệ sinh ra**, không trên toàn file: bảng đối chiếu
+trích nguyên văn yêu cầu của bên mời thầu, mà một RFP hoàn toàn có thể *yêu cầu* ISO/IEC 27017. Điều
+BB-2 cấm là hệ thống **tự nhận** có chứng chỉ đó.
+
+### 2.8 State schema (hợp đồng giữa các node — cũng là thứ render ra toàn bộ UI)
 
 ```python
 State = {
@@ -199,9 +240,27 @@ State = {
       status: "OK"|"ATTRIBUTE_ONLY"|"INSUFFICIENT_EVIDENCE",
       note: str | None,
   }],
-  "trace": {llm_calls, retrieval_stats, dedup: {before, after}},
+  "trace": {llm_calls, retrieval_stats, dedup: {before, after},
+            review: {enabled, rounds, history: [{round, score, critical_sections, personas}]}},
 }
 ```
+
+### 2.9 Cache (v1.2) — vì sao ở mức node
+
+Cache key gồm **mọi thứ có thể đổi kết quả**: `rfp_text` · `prompt_version` · `template_version` ·
+`model` · `retrieval_config` (gồm cả 3 cờ ablation) · `corpus_fingerprint` · `capability_fingerprint`.
+Hai vân tay băm **nội dung** chứ không băm mtime — clone lại repo hay dựng lại index trên máy khác
+không được sinh miss giả. Corpus băm **sau sanitize** kèm số câu quarantine, nên nới/siết blocklist
+cũng đổi vân tay.
+
+Cache đặt ở **mức node**, không phải mức mục, vì các mục **không độc lập**: `used_fact_keys` tích luỹ
+qua vòng lặp trong `generate_per_section` nên output của mục thứ 3 phụ thuộc mục 1–2 đã dùng fact nào.
+Cache từng mục rồi ghép lại sẽ cho ra hồ sơ **lặp fact**. Muốn hạ đơn vị cache (cần cho chat-refine)
+thì phải tách việc phân bổ fact thành bước tiền xử lý tất định và chạy eval riêng chứng minh hành vi
+không đổi — đó là lý do #12/#13/#14 được hoãn có chủ đích.
+
+Mọi đường chạy trong `eval/` **ép tắt cache**, hardcode 3 tầng không đọc cấu hình: cache hit làm token
+sản phẩm đo được về gần 0 và phá bảng ablation §11.3.
 
 ---
 
