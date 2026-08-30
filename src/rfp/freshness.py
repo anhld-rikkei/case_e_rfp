@@ -187,9 +187,13 @@ def state_is_stale(
     stamped = (state.get("fingerprints") or {}).get("corpus")
     if not stamped:
         return False
-    current = scan_sources(**scan_kwargs)
     manifest = load_manifest(manifest_path)
-    if manifest and manifest.get("files") == current:
+    if not manifest:
+        # Chưa nạp lần nào = KHÔNG BIẾT, không phải "đã cũ". Coi là cũ ở đây thì
+        # mọi kết quả đều bị dán nhãn cảnh báo ngay lần chạy đầu, và cảnh báo
+        # luôn bật là cảnh báo không ai đọc.
+        return False
+    if manifest.get("files") == scan_sources(**scan_kwargs):
         return stamped != manifest.get("corpus_fingerprint")
     # Dữ liệu trên đĩa đã khác manifest -> mọi kết quả cũ đều thuộc thế hệ trước.
     return True
