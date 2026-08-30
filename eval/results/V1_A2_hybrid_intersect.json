@@ -12,10 +12,10 @@
       "abstained_sections": 3,
       "sections": 5,
       "abstain_rate": 0.6,
-      "grounded_sentences": 9,
-      "sentences": 10,
-      "groundedness": 0.9,
-      "accurate_citations": 9,
+      "grounded_sentences": 10,
+      "sentences": 11,
+      "groundedness": 0.9090909090909091,
+      "accurate_citations": 10,
       "citation_accuracy": 1.0,
       "fabrication_count": 0,
       "client_leak_count": 0,
@@ -90,10 +90,10 @@
       "abstained_sections": 3,
       "sections": 5,
       "abstain_rate": 0.6,
-      "grounded_sentences": 10,
-      "sentences": 11,
-      "groundedness": 0.9090909090909091,
-      "accurate_citations": 10,
+      "grounded_sentences": 9,
+      "sentences": 10,
+      "groundedness": 0.9,
+      "accurate_citations": 9,
       "citation_accuracy": 1.0,
       "fabrication_count": 0,
       "client_leak_count": 0,
@@ -194,10 +194,10 @@
       "abstained_sections": 3,
       "sections": 5,
       "abstain_rate": 0.6,
-      "grounded_sentences": 10,
-      "sentences": 11,
-      "groundedness": 0.9090909090909091,
-      "accurate_citations": 10,
+      "grounded_sentences": 9,
+      "sentences": 10,
+      "groundedness": 0.9,
+      "accurate_citations": 9,
       "citation_accuracy": 1.0,
       "fabrication_count": 0,
       "client_leak_count": 0,
@@ -234,90 +234,237 @@
       "client_leak_in_context": 0,
       "fabrication_in_prompt": 0,
       "client_leak_in_prompt": 0,
-      "conflict_dropped": 0,
+      "conflict_dropped": 1,
       "dedup_rate": 0.375,
       "latency_seconds": null,
       "token_cost": null
     }
   ],
   "sample_count": 83,
-  "ragas_sample_count": 36,
+  "ragas_sample_count": 24,
   "unanswered_sample_count": 47,
+  "answered_samples": [
+    [
+      "mutation-capability-not-offered",
+      "1.1"
+    ],
+    [
+      "mutation-capability-not-offered",
+      "3.1"
+    ],
+    [
+      "mutation-capability-not-offered",
+      "4.1"
+    ],
+    [
+      "mutation-capability-not-offered",
+      "5.1"
+    ],
+    [
+      "mutation-capability-not-offered",
+      "5.2"
+    ],
+    [
+      "mutation-certification-not-held",
+      "1.1"
+    ],
+    [
+      "mutation-certification-not-held",
+      "3.1"
+    ],
+    [
+      "mutation-certification-not-held",
+      "4.1"
+    ],
+    [
+      "mutation-certification-not-held",
+      "5.1"
+    ],
+    [
+      "mutation-certification-not-held",
+      "5.2"
+    ],
+    [
+      "mutation-free-text-chapters",
+      "1.1"
+    ],
+    [
+      "mutation-free-text-chapters",
+      "3.1"
+    ],
+    [
+      "mutation-free-text-chapters",
+      "4.1"
+    ],
+    [
+      "mutation-free-text-chapters",
+      "5.1"
+    ],
+    [
+      "mutation-free-text-chapters",
+      "5.2"
+    ],
+    [
+      "mutation-industry-served-public",
+      "1.1"
+    ],
+    [
+      "mutation-industry-served-public",
+      "3.1"
+    ],
+    [
+      "mutation-industry-served-public",
+      "4.1"
+    ],
+    [
+      "mutation-industry-served-public",
+      "5.1"
+    ],
+    [
+      "mutation-industry-served-public",
+      "5.2"
+    ],
+    [
+      "mutation-industry-unserved-medical",
+      "1.1"
+    ],
+    [
+      "mutation-industry-unserved-medical",
+      "3.1"
+    ],
+    [
+      "mutation-industry-unserved-medical",
+      "4.1"
+    ],
+    [
+      "mutation-industry-unserved-medical",
+      "5.1"
+    ],
+    [
+      "mutation-industry-unserved-medical",
+      "5.2"
+    ],
+    [
+      "original-rfp-2025-001",
+      "1.1"
+    ],
+    [
+      "original-rfp-2025-001",
+      "3.1"
+    ],
+    [
+      "original-rfp-2025-001",
+      "4.1"
+    ],
+    [
+      "original-rfp-2025-001",
+      "5.1"
+    ],
+    [
+      "original-rfp-2025-001",
+      "5.2"
+    ],
+    [
+      "original-rfp-2025-002",
+      "1.1"
+    ],
+    [
+      "original-rfp-2025-002",
+      "2.2"
+    ],
+    [
+      "original-rfp-2025-002",
+      "3.1"
+    ],
+    [
+      "original-rfp-2025-002",
+      "4.1"
+    ],
+    [
+      "original-rfp-2025-003",
+      "1.1"
+    ],
+    [
+      "original-rfp-2025-003",
+      "3.1"
+    ]
+  ],
+  "restricted_sample_count": 24,
   "ragas": {
     "faithfulness": {
-      "mean": 0.9938271604938271,
-      "std": 0.004364856673991053,
+      "mean": 1.0,
+      "std": 0.0,
       "runs": [
-        0.9907407407407407,
-        0.9907407407407407,
+        1.0,
+        1.0,
         1.0
       ]
     },
     "answer_relevancy": {
-      "mean": 0.6061239318509469,
-      "std": 0.00876832390439557,
+      "mean": 0.6304617891844794,
+      "std": 0.0034919693451531376,
       "runs": [
-        0.5937278092284886,
-        0.6120438491611204,
-        0.6126001371632319
+        0.631565670404803,
+        0.6257412925233813,
+        0.6340784046252536
       ]
     },
     "context_precision": {
-      "mean": 0.3875073485993424,
-      "std": 0.005358196155980858,
+      "mean": 0.5710758377157938,
+      "std": 0.010083551090185364,
       "runs": [
-        0.39393738975134185,
-        0.38082010580167436,
-        0.387764550245011
+        0.577017195740113,
+        0.5568783068518144,
+        0.5793320105554541
       ]
     },
     "context_recall": {
-      "mean": 0.3333333333333333,
+      "mean": 0.5,
       "std": 0.0,
       "runs": [
-        0.3333333333333333,
-        0.3333333333333333,
-        0.3333333333333333
+        0.5,
+        0.5,
+        0.5
       ]
     },
     "noise_sensitivity": {
-      "mean": 0.3333333333333333,
+      "mean": 0.0,
       "std": 0.0,
       "runs": [
-        0.3333333333333333,
-        0.3333333333333333,
-        0.3333333333333333
+        0.0,
+        0.0,
+        0.0
       ]
     },
     "context_entity_recall": {
-      "mean": 0.43427028058709943,
-      "std": 0.010776782129251997,
+      "mean": 0.5043540544746169,
+      "std": 0.006407175676134875,
       "runs": [
-        0.4458664004910325,
-        0.4199074058693453,
-        0.4370370354009204
+        0.4979166647082424,
+        0.5020502626023547,
+        0.5130952361132536
       ]
     }
   },
   "usage": {
-    "calls": 2933,
-    "prompt_tokens": 2405421,
-    "completion_tokens": 328822,
-    "seconds": 3061.1075145046925,
+    "calls": 1961,
+    "prompt_tokens": 1589145,
+    "completion_tokens": 233192,
+    "seconds": 2492.8866931062657,
     "by_stage": {
       "generate": 80,
       "structured": 81,
-      "judge": 2772
+      "judge": 1800
     },
     "tokens_by_stage": {
-      "generate": 14371,
-      "structured": 28222,
-      "judge": 2691650
+      "generate": 14093,
+      "structured": 28119,
+      "judge": 1780125
     },
     "seconds_by_stage": {
-      "generate": 66.48337559972424,
-      "structured": 73.32701249921229,
-      "judge": 2921.297126405756
+      "generate": 67.33331099897623,
+      "structured": 82.8894975008443,
+      "judge": 2342.663884606445
     }
   }
 }

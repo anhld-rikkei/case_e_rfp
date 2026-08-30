@@ -1,6 +1,7 @@
 import argparse
 import copy
 import json
+import sqlite3
 from collections import Counter
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
@@ -22,6 +23,7 @@ from config.settings import (
     PRECEDENTS_PER_CHAPTER,
     RERANK_TOP_K,
     RETRIEVAL_TOP_K,
+    RETRIEVAL_USE_MMR,
     ROUTE_EMBEDDING_THRESHOLD,
 )
 from langgraph.graph import END, START, StateGraph
@@ -40,6 +42,7 @@ from .generate.coverage import assess_coverage, matched_requirement_ids
 from .generate.merge import deduplicate_sections, merge_channels
 from .generate.precedent import generate_precedents
 from .guard import final_guard
+from .llm import LLMUnavailable
 from .parsers.rfp_parser import (
     CHAPTER_RE,
     DEFAULT_RFP_DIR,
@@ -516,7 +519,23 @@ def _select_precedents(
             if len(unique_reranked) == RERANK_TOP_K:
                 break
         try:
-            selection = maximal_marginal_relevance(unique_reranked, k=MMR_TOP_K)
+            if RETRIEVAL_USE_MMR:
+                selection = maximal_marginal_relevance(unique_reranked, k=MMR_TOP_K)
+            else:
+                # Cờ ablation V0/V1: lấy thẳng top-k theo thứ tự hiện có, không
+                # phạt trùng lặp. Giữ nguyên hợp đồng "đủ k văn bản duy nhất"
+                # để vòng mở rộng candidate bên dưới vẫn hoạt động.
+                top = tuple(unique_reranked[:MMR_TOP_K])
+                if len(top) < MMR_TOP_K:
+                    raise ValueError(
+                        f"Cần {MMR_TOP_K} văn bản duy nhất nhưng chỉ có {len(top)}"
+                    )
+                selection = MMRSelection(
+                    selected=top,
+                    before=len(unique_reranked),
+                    after=len(top),
+                    unique_texts=len({item.sentence.text for item in top}),
+                )
             kept, dropped = resolve_conflicts(
                 list(selection.selected),
                 reference_rfp=reference_rfp,
@@ -824,7 +843,7 @@ def assemble(state: GraphState) -> GraphState:
     }
 
 
-def build_graph():
+def build_graph(checkpointer=None):
     builder = StateGraph(GraphState)
     builder.add_node("parse_input", parse_input)
     builder.add_node("check_complete", check_complete)
@@ -851,14 +870,79 @@ def build_graph():
     builder.add_edge("retrieve_per_chapter", "generate_per_section")
     builder.add_edge("generate_per_section", "assemble")
     builder.add_edge("assemble", END)
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
 
 
 GRAPH = build_graph()
 
+# Checkpoint theo job_id (Bước 4). File sqlite nằm ngoài synthetic/eval để
+# .gitignore chặn được cả thư mục.
+DEFAULT_CHECKPOINT_DB = (
+    Path(__file__).resolve().parents[2] / "checkpoints" / "graph_checkpoints.sqlite"
+)
 
-def run_graph(text: str) -> GraphState:
-    return GRAPH.invoke(_initial_state(text))
+
+def _partial_state(
+    last_state: GraphState | None,
+    error: LLMUnavailable,
+) -> GraphState:
+    state = dict(last_state) if last_state else {}
+    state["status"] = "partial"
+    state["error"] = {
+        "kind": error.kind,
+        "attempts": error.attempts,
+        "detail": str(error.cause),
+    }
+    return state
+
+
+def run_graph(
+    text: str,
+    *,
+    job_id: str | None = None,
+    resume: bool = False,
+    checkpoint_db: str | Path | None = None,
+) -> GraphState:
+    if job_id is None:
+        # Không checkpoint, nhưng vẫn gom state theo từng node: LLM sập giữa
+        # chừng thì trả phần đã xong với status=partial thay vì mất trắng.
+        last_state: GraphState | None = None
+        try:
+            for snapshot in GRAPH.stream(_initial_state(text), stream_mode="values"):
+                last_state = snapshot
+            return last_state
+        except LLMUnavailable as error:
+            return _partial_state(last_state, error)
+
+    # Import tại chỗ: package tuỳ chọn, thiếu nó thì đường không checkpoint
+    # vẫn phải chạy được (app.py, eval không dùng job_id).
+    from langgraph.checkpoint.sqlite import SqliteSaver
+
+    db_path = Path(checkpoint_db or DEFAULT_CHECKPOINT_DB)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(str(db_path), check_same_thread=False)
+    try:
+        graph = build_graph(checkpointer=SqliteSaver(connection))
+        config = {"configurable": {"thread_id": job_id}}
+        if resume:
+            snapshot = graph.get_state(config)
+            if not snapshot.next and snapshot.values:
+                return dict(snapshot.values)  # job đã hoàn tất từ trước
+            # Còn node dở dang -> invoke(None) chạy tiếp từ checkpoint cuối;
+            # chưa có checkpoint nào -> chạy mới từ đầu.
+            payload = None if snapshot.next else _initial_state(text)
+        else:
+            payload = _initial_state(text)
+        try:
+            result = graph.invoke(payload, config)
+            return dict(result)
+        except LLMUnavailable as error:
+            values = graph.get_state(config).values
+            state = _partial_state(values or None, error)
+            state["job_id"] = job_id
+            return state
+    finally:
+        connection.close()
 
 
 def run_graph_eval(text: str) -> GraphState:
@@ -873,6 +957,8 @@ def run_graph_eval(text: str) -> GraphState:
         state["status"] = "guard_blocked"
         state["guard_blocked_publish"] = 1
         return state
+    except LLMUnavailable as e:
+        return _partial_state(last_state, e)
 
 
 def _initial_state(text: str) -> GraphState:
@@ -999,14 +1085,29 @@ def main() -> None:
     argument_parser.add_argument("--check-schema", action="store_true")
     argument_parser.add_argument("--trace", action="store_true")
     argument_parser.add_argument("--json", type=Path)
+    argument_parser.add_argument(
+        "--job-id",
+        help="bật checkpoint sqlite theo job; chạy lại cùng --job-id với --resume "
+        "để tiếp tục job bị ngắt",
+    )
+    argument_parser.add_argument("--resume", action="store_true")
+    argument_parser.add_argument("--checkpoint-db", type=Path)
     args = argument_parser.parse_args()
+
+    if args.resume and not args.job_id:
+        argument_parser.error("--resume cần --job-id")
 
     text = (
         args.rfp.read_text(encoding="utf-8")
         if args.rfp is not None
         else args.text
     )
-    result = run_graph(text)
+    result = run_graph(
+        text,
+        job_id=args.job_id,
+        resume=args.resume,
+        checkpoint_db=args.checkpoint_db,
+    )
 
     if args.json is not None:
         args.json.write_text(
@@ -1043,6 +1144,16 @@ def main() -> None:
     if result["status"] == "ask_user":
         print("route=ask_user")
         print(result["message"])
+        return
+
+    if result["status"] == "partial":
+        error = result.get("error", {})
+        print(
+            f"status=partial · lỗi {error.get('kind')} sau "
+            f"{error.get('attempts')} lần gọi: {error.get('detail')}"
+        )
+        if args.job_id:
+            print(f"resume: python -m rfp.graph --rfp ... --job-id {args.job_id} --resume")
         return
 
     print(f"status={result['status']}")

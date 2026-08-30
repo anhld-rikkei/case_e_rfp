@@ -6,6 +6,7 @@ from config.settings import (
     RERANK_DENSE_WEIGHT,
     RERANK_INDUSTRY_WEIGHT,
     RERANK_SECTION_WEIGHT,
+    RETRIEVAL_USE_RERANK,
 )
 
 from ..schema import Sentence
@@ -42,12 +43,17 @@ def rerank_candidates(
     for result in results:
         industry_match = float(result.industry == target_industry)
         same_section_prior = float(result.sentence.section == target_section)
-        score = (
-            RERANK_DENSE_WEIGHT * result.dense_score
-            + RERANK_BM25_WEIGHT * result.bm25_score
-            + RERANK_INDUSTRY_WEIGHT * industry_match
-            + RERANK_SECTION_WEIGHT * same_section_prior
-        )
+        # Cờ ablation V0/V1: điểm = điểm hybrid nguyên trạng, không cộng prior,
+        # không đổi thứ tự. industry_match/same_section vẫn ghi để trace đọc được.
+        if RETRIEVAL_USE_RERANK:
+            score = (
+                RERANK_DENSE_WEIGHT * result.dense_score
+                + RERANK_BM25_WEIGHT * result.bm25_score
+                + RERANK_INDUSTRY_WEIGHT * industry_match
+                + RERANK_SECTION_WEIGHT * same_section_prior
+            )
+        else:
+            score = result.score
         reranked.append(
             RerankedResult(
                 result=result,
@@ -56,7 +62,8 @@ def rerank_candidates(
                 same_section_prior=same_section_prior,
             )
         )
-    reranked.sort(key=lambda item: (-item.score, item.sentence.sent_id))
+    if RETRIEVAL_USE_RERANK:
+        reranked.sort(key=lambda item: (-item.score, item.sentence.sent_id))
     return reranked if top_k is None else reranked[:top_k]
 
 

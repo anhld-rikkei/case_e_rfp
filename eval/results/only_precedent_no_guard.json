@@ -19,7 +19,13 @@
       "citation_accuracy": 1.0,
       "fabrication_count": 0,
       "client_leak_count": 0,
+      "guard_blocked_publish": 0,
+      "hybrid_in_output": 0,
       "hybrid_blocked": 0,
+      "fabrication_in_context": 0,
+      "client_leak_in_context": 0,
+      "fabrication_in_prompt": 0,
+      "client_leak_in_prompt": 0,
       "conflict_dropped": 0,
       "dedup_rate": 0.36363636363636365,
       "latency_seconds": null,
@@ -39,7 +45,13 @@
       "citation_accuracy": 1.0,
       "fabrication_count": 0,
       "client_leak_count": 0,
+      "guard_blocked_publish": 0,
+      "hybrid_in_output": 0,
       "hybrid_blocked": 0,
+      "fabrication_in_context": 0,
+      "client_leak_in_context": 0,
+      "fabrication_in_prompt": 0,
+      "client_leak_in_prompt": 0,
       "conflict_dropped": 0,
       "dedup_rate": 0.375,
       "latency_seconds": null,
@@ -59,7 +71,13 @@
       "citation_accuracy": 1.0,
       "fabrication_count": 0,
       "client_leak_count": 0,
+      "guard_blocked_publish": 0,
+      "hybrid_in_output": 0,
       "hybrid_blocked": 0,
+      "fabrication_in_context": 0,
+      "client_leak_in_context": 0,
+      "fabrication_in_prompt": 0,
+      "client_leak_in_prompt": 0,
       "conflict_dropped": 0,
       "dedup_rate": 0.36363636363636365,
       "latency_seconds": null,
@@ -79,7 +97,13 @@
       "citation_accuracy": 1.0,
       "fabrication_count": 0,
       "client_leak_count": 0,
+      "guard_blocked_publish": 0,
+      "hybrid_in_output": 0,
       "hybrid_blocked": 0,
+      "fabrication_in_context": 0,
+      "client_leak_in_context": 0,
+      "fabrication_in_prompt": 0,
+      "client_leak_in_prompt": 0,
       "conflict_dropped": 0,
       "dedup_rate": 0.36363636363636365,
       "latency_seconds": null,
@@ -99,7 +123,13 @@
       "citation_accuracy": 1.0,
       "fabrication_count": 0,
       "client_leak_count": 0,
+      "guard_blocked_publish": 0,
+      "hybrid_in_output": 0,
       "hybrid_blocked": 0,
+      "fabrication_in_context": 0,
+      "client_leak_in_context": 0,
+      "fabrication_in_prompt": 0,
+      "client_leak_in_prompt": 0,
       "conflict_dropped": 0,
       "dedup_rate": 0.36363636363636365,
       "latency_seconds": null,
@@ -119,7 +149,13 @@
       "citation_accuracy": 0.0,
       "fabrication_count": 0,
       "client_leak_count": 0,
+      "guard_blocked_publish": 0,
+      "hybrid_in_output": 0,
       "hybrid_blocked": 0,
+      "fabrication_in_context": 0,
+      "client_leak_in_context": 0,
+      "fabrication_in_prompt": 0,
+      "client_leak_in_prompt": 0,
       "conflict_dropped": 0,
       "dedup_rate": 0.0,
       "latency_seconds": null,
@@ -139,7 +175,13 @@
       "citation_accuracy": 1.0,
       "fabrication_count": 0,
       "client_leak_count": 0,
+      "guard_blocked_publish": 0,
+      "hybrid_in_output": 0,
       "hybrid_blocked": 0,
+      "fabrication_in_context": 0,
+      "client_leak_in_context": 0,
+      "fabrication_in_prompt": 0,
+      "client_leak_in_prompt": 0,
       "conflict_dropped": 0,
       "dedup_rate": 0.36363636363636365,
       "latency_seconds": null,
@@ -159,7 +201,13 @@
       "citation_accuracy": 1.0,
       "fabrication_count": 0,
       "client_leak_count": 0,
+      "guard_blocked_publish": 0,
+      "hybrid_in_output": 0,
       "hybrid_blocked": 0,
+      "fabrication_in_context": 0,
+      "client_leak_in_context": 0,
+      "fabrication_in_prompt": 0,
+      "client_leak_in_prompt": 0,
       "conflict_dropped": 0,
       "dedup_rate": 0.2857142857142857,
       "latency_seconds": null,
@@ -179,7 +227,13 @@
       "citation_accuracy": 1.0,
       "fabrication_count": 0,
       "client_leak_count": 0,
+      "guard_blocked_publish": 0,
+      "hybrid_in_output": 0,
       "hybrid_blocked": 0,
+      "fabrication_in_context": 0,
+      "client_leak_in_context": 0,
+      "fabrication_in_prompt": 0,
+      "client_leak_in_prompt": 0,
       "conflict_dropped": 0,
       "dedup_rate": 0.375,
       "latency_seconds": null,
@@ -200,21 +254,21 @@
       ]
     },
     "answer_relevancy": {
-      "mean": 0.5502674036716362,
-      "std": 0.0013369166520012068,
+      "mean": 0.5373876881906162,
+      "std": 0.003663135024380651,
       "runs": [
-        0.5520758758992763,
-        0.5498407556156525,
-        0.5488855794999797
+        0.5336958810864496,
+        0.5423809330873085,
+        0.5360862503980905
       ]
     },
     "context_precision": {
-      "mean": 0.08974358973717948,
-      "std": 0.010467904882642001,
+      "mean": 0.09401709401025642,
+      "std": 0.012087295403689515,
       "runs": [
         0.10256410255641026,
-        0.08974358973717947,
-        0.07692307691794872
+        0.07692307691794872,
+        0.10256410255641026
       ]
     },
     "context_recall": {
@@ -227,38 +281,43 @@
       ]
     },
     "noise_sensitivity": {
-      "mean": 0.9487179487179488,
-      "std": 0.023984983248550872,
+      "mean": 0.9423076923076922,
+      "std": 0.0,
       "runs": [
         0.9423076923076923,
-        0.9230769230769231,
-        0.9807692307692307
+        0.9423076923076923,
+        0.9423076923076923
       ]
     },
     "context_entity_recall": {
-      "mean": 0.21367521306980056,
-      "std": 0.006043647667194508,
+      "mean": 0.21794871731837606,
+      "std": 0.0,
       "runs": [
         0.21794871731837606,
         0.21794871731837606,
-        0.20512820457264958
+        0.21794871731837606
       ]
     }
   },
   "usage": {
     "calls": 1085,
-    "prompt_tokens": 891178,
-    "completion_tokens": 103415,
-    "seconds": 140.2528143033851,
+    "prompt_tokens": 891250,
+    "completion_tokens": 103235,
+    "seconds": 1146.3460311987437,
     "by_stage": {
       "generate": 31,
       "structured": 1,
       "judge": 1053
     },
     "tokens_by_stage": {
-      "generate": 5458,
+      "generate": 5579,
       "structured": 988,
-      "judge": 988147
+      "judge": 987918
+    },
+    "seconds_by_stage": {
+      "generate": 25.827129499753937,
+      "structured": 2.128409400000237,
+      "judge": 1118.3904922989896
     }
   }
 }

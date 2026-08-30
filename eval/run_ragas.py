@@ -349,6 +349,13 @@ def main() -> None:
     parser.add_argument("--out", type=Path)
     parser.add_argument("--disable-guards", action="store_true", help="Vô hiệu hóa guard 6.4 và 7 (dùng cho ablation)")
     parser.add_argument("--disable-quarantine", action="store_true", help="Vô hiệu hóa quarantine lúc ingest (dùng cho ablation)")
+    parser.add_argument(
+        "--restrict-samples",
+        type=Path,
+        help="JSON danh sách [[case_id, req_id], ...]: chỉ chấm RAGAS trên đúng "
+        "các atom này. Dùng để so hai cấu hình khác abstain_rate trên CÙNG tập "
+        "mẫu, thay vì so hai trung bình lấy trên hai tập khác nhau.",
+    )
     args = parser.parse_args()
     if not args.state and not args.rfp:
         parser.error("provide at least one --state or --rfp")
@@ -418,6 +425,35 @@ def main() -> None:
     )
     print("capability_sheet_in_every_context=True")
 
+    answered_keys = [
+        [sample["case_id"], sample["req_id"]] for sample in ragas_samples
+    ]
+
+    restricted_to = None
+    if args.restrict_samples is not None:
+        wanted = {
+            tuple(pair)
+            for pair in json.loads(
+                args.restrict_samples.read_text(encoding="utf-8")
+            )
+        }
+        before = len(ragas_samples)
+        ragas_samples = [
+            sample
+            for sample in ragas_samples
+            if (sample["case_id"], sample["req_id"]) in wanted
+        ]
+        missing = len(wanted) - len(ragas_samples)
+        if missing:
+            # Cấu hình này không trả lời hết tập chỉ định -> so sánh không còn
+            # cùng mẫu. Fail loud thay vì lặng lẽ chấm trên tập nhỏ hơn.
+            raise ValueError(
+                f"--restrict-samples yêu cầu {len(wanted)} atom nhưng cấu hình "
+                f"này chỉ trả lời {len(ragas_samples)} (thiếu {missing})"
+            )
+        restricted_to = len(ragas_samples)
+        print(f"restricted_samples={restricted_to}/{before} (so cùng tập mẫu)")
+
     report: dict[str, Any] = {
         "judge": {
             "model": EVAL_JUDGE_MODEL,
@@ -428,7 +464,10 @@ def main() -> None:
         "sample_count": len(samples),
         "ragas_sample_count": len(ragas_samples),
         "unanswered_sample_count": len(unanswered_samples),
+        "answered_samples": answered_keys,
     }
+    if restricted_to is not None:
+        report["restricted_sample_count"] = restricted_to
     if not args.deterministic_only:
         summary = run_ragas(ragas_samples)
         report["ragas"] = summary

@@ -74,7 +74,17 @@ class SentenceIndex:
 
     def _get_retriever(self) -> HybridRetriever:
         if self._retriever is None:
-            self._retriever = HybridRetriever(self.sentences, self.industries)
+            from config.settings import RETRIEVAL_USE_BM25
+
+            # Cờ ablation V0: dense-only. BM25 vẫn được dựng (điểm ghi vào trace)
+            # nhưng trọng số 0 nên không tham gia xếp hạng.
+            bm25_weight = 0.5 if RETRIEVAL_USE_BM25 else 0.0
+            self._retriever = HybridRetriever(
+                self.sentences,
+                self.industries,
+                bm25_weight=bm25_weight,
+                dense_weight=1.0 - bm25_weight,
+            )
         return self._retriever
 
     def search(

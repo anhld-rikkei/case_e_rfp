@@ -13,6 +13,7 @@ __pycache__/
 .pytest_cache/
 index/                      # FAISS + cache embedding
 cache/
+checkpoints/                # sqlite checkpoint của graph (resume theo job_id)
 outputs/                    # proposal sinh ra
 eval/results/raw/           # log chạy eval từng lần
 eval/results/temp_*         # RFP tạm; runner đời cũ ghi vào đây, bản mới dùng tempfile

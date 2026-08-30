@@ -17,6 +17,12 @@ RETRIEVAL_TOP_K = 20
 RERANK_TOP_K = 8
 MMR_TOP_K = 5
 
+# Cờ ablation retrieval (bảng §11.3, thang V0→V1→V4→đề xuất — mỗi bậc một biến).
+# run_ablation.py ghi đè tạm các cờ này; mặc định là cấu hình đề xuất (bật hết).
+RETRIEVAL_USE_BM25 = True    # False -> dense-only (V0)
+RETRIEVAL_USE_RERANK = True  # False -> giữ nguyên thứ tự hybrid, không cộng prior
+RETRIEVAL_USE_MMR = True     # False -> lấy thẳng top-k văn bản duy nhất sau rerank
+
 RERANK_DENSE_WEIGHT = 0.40
 RERANK_BM25_WEIGHT = 0.30
 RERANK_INDUSTRY_WEIGHT = 0.20

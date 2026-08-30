@@ -1,5 +1,6 @@
 anthropic
 langgraph
+langgraph-checkpoint-sqlite
 streamlit
 graphviz
 rank-bm25

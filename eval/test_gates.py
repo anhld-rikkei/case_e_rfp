@@ -182,10 +182,104 @@ def test_final_guard_rejects_iso27017() -> None:
         final_guard("当社はISO/IEC 27017認証を取得済み")
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "当社はISO 27017認証を取得済みです。",
+        "当社はISO27017認証を取得済みです。",
+        "ISO-27017の認証を保有しています。",
+        "IEC 27017に準拠した運用体制です。",
+        "ISO/IEC27017:2015に準拠しています。",
+        "ＩＳＯ２７０１７認証を取得しています。",
+        "27017認証を取得済みです。",
+        "クラウドセキュリティ規格（27017）に準拠します。",
+        "iso/iec 27018の認証があります。",
+    ],
+)
+def test_final_guard_rejects_cert_variants(payload: str) -> None:
+    with pytest.raises(GuardViolation, match="blocklist"):
+        final_guard(payload)
+
+
+def test_ingest_blocklist_uses_same_variant_patterns() -> None:
+    from rfp.sanitize.blocklist import CapabilityBlocklist
+
+    blocklist = CapabilityBlocklist()
+    assert blocklist.contradicts("ISO27017認証を取得しています。")
+    assert blocklist.contradicts("ＩＳＯ２７０１７認証を取得しています。")
+    assert not blocklist.contradicts("ISO/IEC 27001認証を取得しています。")
+
+
 def test_final_guard_allows_common_client_and_held_certification() -> None:
     final_guard(
         "公共機関様向けの案件として、ISO/IEC 27001に基づき対応します。"
     )
+
+
+def _search_result(sent_id: str, text: str, *, bm25: float, dense: float):
+    from rfp.retrieve.hybrid import SearchResult
+    from rfp.schema import Sentence
+
+    return SearchResult(
+        sentence=Sentence(
+            sent_id=sent_id,
+            proposal_id="PROP-TEST",
+            responds_to="RFP-TEST",
+            section="技術要件",
+            text=text,
+            claim_kind="capability",
+            flags={},
+        ),
+        score=0.5 * bm25 + 0.5 * dense,
+        bm25_score=bm25,
+        dense_score=dense,
+        industry="製造業",
+    )
+
+
+def test_rerank_flag_off_preserves_hybrid_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rfp.retrieve.rerank as rerank_module
+
+    # Hybrid 0.5/0.5: a (0.500) đứng trước b (0.425).
+    # Rerank 0.4*dense+0.3*bm25: b (0.340) vượt a (0.300).
+    a = _search_result("S1", "文A", bm25=1.0, dense=0.0)
+    b = _search_result("S2", "文B", bm25=0.0, dense=0.85)
+
+    monkeypatch.setattr(rerank_module, "RETRIEVAL_USE_RERANK", False)
+    off = rerank_module.rerank_candidates(
+        [a, b], target_industry="金融", target_section="調達概要"
+    )
+    assert [item.sentence.sent_id for item in off] == ["S1", "S2"]
+    assert off[0].score == a.score  # điểm giữ nguyên điểm hybrid
+
+    monkeypatch.setattr(rerank_module, "RETRIEVAL_USE_RERANK", True)
+    on = rerank_module.rerank_candidates(
+        [a, b], target_industry="金融", target_section="調達概要"
+    )
+    assert [item.sentence.sent_id for item in on] == ["S2", "S1"]
+
+
+def test_bm25_flag_off_builds_dense_only_retriever(
+    clean_sentence_index: SentenceIndex,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import config.settings as settings
+
+    saved = clean_sentence_index._retriever
+    try:
+        monkeypatch.setattr(settings, "RETRIEVAL_USE_BM25", False)
+        clean_sentence_index._retriever = None
+        retriever = clean_sentence_index._get_retriever()
+        assert retriever.bm25_weight == 0.0
+        assert retriever.dense_weight == 1.0
+    finally:
+        clean_sentence_index._retriever = saved
+
+
+def test_final_guard_allows_held_certification_variants() -> None:
+    final_guard("ISO27001:2013に基づく運用体制です。ISO 9001も取得済みです。")
 
 
 def test_final_guard_rejects_private_client_name() -> None:
