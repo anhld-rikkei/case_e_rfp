@@ -1,0 +1,507 @@
+"""Test tầng hiển thị của app.py (v1.4) bằng AppTest — headless, không mạng.
+
+Chỉ kiểm **tầng render**: tên tab, nhãn tiếng Việt, cột bảng, và ba trạng thái
+của luồng chạy (bình thường / bị chặn / lỗi). Không chạy pipeline thật, state
+đầu vào là dữ liệu dựng sẵn.
+"""
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path[:0] = [str(PROJECT_ROOT / "src"), str(PROJECT_ROOT)]
+
+pytest.importorskip("streamlit.testing.v1")
+from streamlit.testing.v1 import AppTest  # noqa: E402
+
+from config.display_vi import (  # noqa: E402
+    NO_EVIDENCE_REASON,
+    SECTION_STATUS_VI,
+    STAGE_VI,
+    VERDICT_VI,
+)
+
+APP_PATH = str(PROJECT_ROOT / "app.py")
+
+EXPECTED_TABS = [
+    "Tổng quan",
+    "Độ đáp ứng",
+    "Nguồn từng câu",
+    "Bản dịch",
+    "Truy vết",
+    "Sinh bộ test",
+    "Kết quả đánh giá",
+]
+
+
+def _state() -> dict[str, Any]:
+    return {
+        "input_text": "評価用RFP",
+        "rfp": {"rfp_id": "RFP-TEST"},
+        "status": "completed",
+        "proposal": "本文です。",
+        "reference_rfp": {"rfp_id": "RFP-TEST", "method": "industry", "score": None},
+        "chapters": [
+            {
+                "id": "3",
+                "title": "技術要件",
+                "requirements": [
+                    {"req_id": "3.1", "text": "基幹システム構築に対応できること。"},
+                    {"req_id": "3.2", "text": "24時間監視に対応できること。"},
+                ],
+                "retrieval": {
+                    "selected": [],
+                    "stages": {
+                        "attribute": {"skipped": False, "covered_req_ids": ["3.1"]},
+                        "query_embed": {"skipped": True},
+                        "rerank": {"skipped": True},
+                        "mmr": {"skipped": True},
+                    },
+                },
+            }
+        ],
+        "sections": [
+            {
+                "key": "technical",
+                "title_ja": "技術要件への対応",
+                "title_vi": "Đáp ứng yêu cầu kỹ thuật",
+                "source_chapters": ["3"],
+                "status": "OK",
+                "note": "",
+                "sentences": [
+                    {
+                        "text": "基幹システム構築の実績があります。",
+                        "origin": "capability",
+                        "source_id": "capabilities:基幹システム構築",
+                        "req_ids": ["3.1"],
+                        "verdict": "VERIFIED",
+                    },
+                    {
+                        "text": "つなぎの文です。",
+                        "origin": "bridge",
+                        "source_id": None,
+                        "req_ids": [],
+                        "verdict": "UNVERIFIABLE",
+                    },
+                ],
+            }
+        ],
+        "trace": {
+            "llm_calls": 5,
+            "llm_calls_by_stage": {"parser": 1, "review": 2},
+            "retrieval_stats": {},
+            "dedup": {"before": 2, "after": 2},
+            "path": ["parse_input", "assemble"],
+            "conflicts": [],
+            "hybrid_blocked": [],
+            "grounding": {"grounded": 1, "total": 2},
+            "stages": {
+                name: {"status": "completed"}
+                for name in ("parse_input", "check_complete", "route_reference_rfp")
+            },
+            "review": {
+                "enabled": True,
+                "rounds": 1,
+                "history": [
+                    {
+                        "round": 1,
+                        "score": {"critical": 0, "major": 1, "minor": 0},
+                        "critical_sections": [],
+                        "fixes_applied": 0,
+                        "personas": ["coverage", "quality"],
+                    }
+                ],
+            },
+        },
+    }
+
+
+def _render(body, *args: Any) -> AppTest:
+    # AppTest chép NGUYÊN VĂN source của hàm ra file tạm rồi chạy, nên hàm không
+    # thấy biến module. Mọi thứ nó cần phải đi qua `args`.
+    at = AppTest.from_function(
+        body, default_timeout=180, args=(str(PROJECT_ROOT), *args)
+    )
+    at.run()
+    return at
+
+
+# ── App chạy được và tab đúng tên ─────────────────────────────────────────
+
+def test_app_starts_without_exception_and_has_vietnamese_tabs() -> None:
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.run()
+    assert not at.exception
+    assert [tab.label for tab in at.tabs] == EXPECTED_TABS
+
+
+def test_submit_button_is_vietnamese() -> None:
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.run()
+    assert "Nộp và sinh hồ sơ" in [button.label for button in at.button]
+
+
+# ── Các bảng dùng tiêu đề cột tiếng Việt ──────────────────────────────────
+
+def _columns_of(at: AppTest) -> list[list[str]]:
+    return [list(frame.value.columns) for frame in at.dataframe]
+
+
+def test_result_tables_use_vietnamese_headers() -> None:
+    state = _state()
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_proposal(state)
+        app.render_coverage(state)
+        app.render_sources(state)
+        app.render_trace_details(state)
+
+    at = _render(body, state)
+    assert not at.exception
+    columns = _columns_of(at)
+    assert ["Mã yêu cầu", "Nội dung yêu cầu", "Tình trạng", "Căn cứ đáp ứng"] in columns
+    assert ["Mục", "Câu (tiếng Nhật)", "Nguồn", "Mã nguồn", "Kiểm chứng"] in columns
+    # Không cột nào còn tên enum thô
+    flat = {name for group in columns for name in group}
+    assert not {"origin", "verdict", "source_id", "req_id"} & flat
+
+
+def test_internal_filter_columns_are_hidden_from_table() -> None:
+    """`_origin`/`_verdict` chỉ để lọc, không được lộ ra bảng."""
+    state = _state()
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_sources(state)
+
+    at = _render(body, state)
+    flat = {name for group in _columns_of(at) for name in group}
+    assert not any(name.startswith("_") for name in flat)
+
+
+def test_sentence_rows_keep_raw_values_for_filtering() -> None:
+    """Nhãn hiển thị là lớp áo; giá trị gốc phải còn nguyên để lọc."""
+    import app
+
+    rows = app.sentence_rows(_state())
+    assert rows[0]["_origin"] == "capability"
+    assert rows[0]["_verdict"] == "VERIFIED"
+    assert rows[0]["Nguồn"] == "Năng lực công ty"
+    assert VERDICT_VI["VERIFIED"] in rows[0]["Kiểm chứng"]
+
+
+# ── Nội dung hồ sơ vẫn là tiếng Nhật ──────────────────────────────────────
+
+def test_japanese_proposal_text_is_not_translated() -> None:
+    state = _state()
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_proposal(state)
+
+    at = _render(body, state)
+    # Tiêu đề mục render bằng markdown, nhãn trạng thái bằng caption.
+    rendered = " ".join(
+        item.value for item in list(at.markdown) + list(at.caption)
+    )
+    assert "技術要件への対応" in rendered  # tiêu đề mục giữ tiếng Nhật
+    assert "基幹システム構築の実績があります。" in " ".join(
+        item.value for item in at.markdown
+    )
+    assert SECTION_STATUS_VI["OK"] in rendered  # nhãn trạng thái đã dịch
+
+
+# ── Cảnh báo thiếu căn cứ: không lộ chuỗi enum thô ────────────────────────
+
+NOTE = (
+    "INSUFFICIENT_EVIDENCE: 2.1 電子申請フォームを提供すること。 — "
+    "対応する能力・先行事例の根拠がありません; "
+    "2.2 進捗照会が可能なこと。 — 対応する能力・先行事例の根拠がありません"
+)
+
+
+def test_parse_note_splits_each_requirement() -> None:
+    import app
+
+    items = app.parse_evidence_note(NOTE)
+    assert [item["req_id"] for item in items] == ["2.1", "2.2"]
+    assert items[0]["text"] == "電子申請フォームを提供すること。"
+    assert items[1]["text"] == "進捗照会が可能なこと。"
+    # Không dòng nào còn dính chuỗi enum thô hay lý do tiếng Nhật
+    for item in items:
+        assert "INSUFFICIENT_EVIDENCE" not in item["text"]
+        assert "根拠がありません" not in item["text"]
+
+
+@pytest.mark.parametrize(
+    "weird",
+    [
+        "",
+        "INSUFFICIENT_EVIDENCE:",
+        "INSUFFICIENT_EVIDENCE: không có dấu gạch",
+        "chuỗi lạ hoàn toàn",
+        "INSUFFICIENT_EVIDENCE: 2.1 câu — lý do;;; ",
+    ],
+)
+def test_parse_note_survives_weird_strings(weird: str) -> None:
+    """Tầng hiển thị vỡ ở đây không được phép làm chết cả trang."""
+    import app
+
+    items = app.parse_evidence_note(weird)
+    assert isinstance(items, list)
+    for item in items:
+        assert set(item) == {"req_id", "text"}
+
+
+def test_evidence_gaps_prefers_structured_state_over_note() -> None:
+    """Có dữ liệu cấu trúc thì dựng từ đó, không phụ thuộc câu chữ ghi chú."""
+    import app
+
+    state = _state()
+    state["sections"][0]["status"] = "INSUFFICIENT_EVIDENCE"
+    state["sections"][0]["note"] = "INSUFFICIENT_EVIDENCE: rác không parse được"
+    gaps = app.evidence_gaps(state, state["sections"][0])
+    # 3.1 đã có câu dẫn, 3.2 thì chưa
+    assert [gap["req_id"] for gap in gaps] == ["3.2"]
+    assert gaps[0]["text"] == "24時間監視に対応できること。"
+
+
+def test_evidence_gaps_falls_back_to_note_without_chapters() -> None:
+    import app
+
+    section = {
+        "key": "s",
+        "source_chapters": [],
+        "sentences": [],
+        "status": "INSUFFICIENT_EVIDENCE",
+        "note": NOTE,
+    }
+    gaps = app.evidence_gaps({"chapters": []}, section)
+    assert [gap["req_id"] for gap in gaps] == ["2.1", "2.2"]
+
+
+def test_section_note_never_shows_raw_enum_string() -> None:
+    state = _state()
+    state["sections"][0]["status"] = "INSUFFICIENT_EVIDENCE"
+    state["sections"][0]["note"] = NOTE
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_proposal(state)
+
+    at = _render(body, state)
+    text = " ".join(
+        item.value
+        for item in list(at.markdown) + list(at.caption) + list(at.warning)
+    )
+    assert "INSUFFICIENT_EVIDENCE" not in text
+    assert "Thiếu căn cứ" in text
+    assert "24時間監視に対応できること。" in text  # câu yêu cầu giữ tiếng Nhật
+
+
+def test_attribute_only_note_is_translated() -> None:
+    state = _state()
+    state["sections"][0]["status"] = "ATTRIBUTE_ONLY"
+    state["sections"][0]["note"] = (
+        "参照可能な先行事例がないため、能力表のみで回答しました。"
+    )
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_proposal(state)
+
+    at = _render(body, state)
+    warnings = " ".join(item.value for item in at.warning)
+    assert "hồ sơ quá khứ" in warnings
+
+
+def test_missing_requirements_get_their_own_reason() -> None:
+    """Trước đây dán nguyên ghi chú gộp của cả mục vào từng yêu cầu."""
+    import app
+
+    state = _state()
+    _, missing = app.requirement_coverage(state)
+    assert [item["req_id"] for item in missing] == ["3.2"]
+    assert missing[0]["reason"] == NO_EVIDENCE_REASON
+    assert "INSUFFICIENT_EVIDENCE" not in missing[0]["reason"]
+
+
+# ── Tab Kết quả đánh giá ──────────────────────────────────────────────────
+
+def test_headline_numbers_read_from_results_not_hardcoded() -> None:
+    import app
+
+    runs = {
+        "force_precedent_k5_no_guard.det": {
+            "deterministic": [{"fabrication_count": 9, "sections": 5}]
+        },
+        "force_precedent_k5_with_guard.det": {
+            "deterministic": [
+                {"fabrication_count": 0, "guard_blocked_publish": 3, "sections": 5}
+            ]
+        },
+        "V0_A2_dense_only.det": {"deterministic": [{"coverage": 0.10, "sections": 5}]},
+        "V1_A2_hybrid.det": {"deterministic": [{"coverage": 0.90, "sections": 5}]},
+        "review_cost": {
+            "runs": {
+                "no_review": [{"product_tokens": 1000}],
+                "with_review": [{"product_tokens": 3000}],
+            }
+        },
+    }
+    cards = app.headline_numbers(runs)
+    values = [card["value"] for card in cards]
+    assert "9 → 0" in values
+    assert "0.100 → 0.900" in values
+    assert "1.0k → 3.0k token" in values
+
+
+def test_headline_skips_cards_without_data() -> None:
+    """Thiếu file thì bỏ dòng, không bịa số và cũng không hiện 0."""
+    import app
+
+    assert app.headline_numbers({}) == []
+
+
+def test_headline_mean_ignores_rows_without_sections() -> None:
+    """Ca ask_user (sections=0) không được kéo trung bình xuống — như report."""
+    import app
+
+    runs = {
+        "V0_A2_dense_only.det": {
+            "deterministic": [
+                {"coverage": 0.40, "sections": 5},
+                {"coverage": 0.00, "sections": 0},
+            ]
+        },
+        "V1_A2_hybrid.det": {"deterministic": [{"coverage": 0.60, "sections": 5}]},
+    }
+    card = next(card for card in app.headline_numbers(runs) if "BM25" in card["title"])
+    assert card["value"] == "0.400 → 0.600"
+
+
+def test_run_label_translates_config_ids() -> None:
+    from config.display_vi import run_label
+
+    assert run_label("V4_V5_A2").startswith("Cấu hình đề xuất")
+    assert "TẮT" in run_label("force_precedent_k5_no_guard")
+    assert run_label("V1_A2_hybrid.det").endswith("chỉ đo tất định")
+    assert "cùng tập mẫu" in run_label("V0_A2_dense_only_intersect")
+    assert run_label("ten_la_hoac_moi") == "ten_la_hoac_moi"
+
+
+# ── Luồng chạy: ba trạng thái ─────────────────────────────────────────────
+
+def _flow_text(failure: dict[str, str] | None) -> str:
+    state = _state()
+
+    def body(root, state, failure):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import streamlit as st
+        import app
+
+        holder = st.empty()
+        app.render_flow(state, holder, failure=failure)
+        app.render_flow_legend()
+
+    at = _render(body, state, failure)
+    assert not at.exception
+    parts = [item.value for item in at.markdown]
+    parts += [item.value for item in at.warning]
+    parts += [item.value for item in at.error]
+    parts += [item.value for item in at.caption]
+    return " ".join(parts)
+
+
+def test_flow_lists_every_stage_in_vietnamese() -> None:
+    text = _flow_text(None)
+    for name in ("parse_input", "generate_per_section", "review", "assemble"):
+        assert STAGE_VI[name] in text
+    # `ask_user` là nhánh rẽ, không thuộc luồng chạy thành công
+    assert STAGE_VI["ask_user"] not in text
+
+
+def test_blocked_flow_reads_as_safety_stop_not_technical_error() -> None:
+    text = _flow_text(
+        {
+            "stage": "assemble",
+            "kind": "blocked",
+            "message": "Hồ sơ bị chặn xuất bản do vi phạm quy tắc an toàn.",
+        }
+    )
+    assert "bị chặn xuất bản" in text
+    assert "🛑" in text
+    # Không được đọc thành hỏng hóc kỹ thuật
+    assert "Lỗi kỹ thuật" not in text
+
+
+def test_failed_flow_reads_as_technical_error() -> None:
+    text = _flow_text(
+        {
+            "stage": "generate_per_section",
+            "kind": "failed",
+            "message": "Lỗi kỹ thuật: TimeoutError",
+        }
+    )
+    assert "Lỗi kỹ thuật" in text
+    assert "❌" in text
+
+
+def test_stages_after_failure_never_show_as_completed() -> None:
+    """Kể cả khi state cũ ghi completed — bước sau bước hỏng không được tích xanh.
+
+    Một bước lỗi mà bước sau nó hiện ✅ khiến người đọc tin hồ sơ vẫn chạy tới
+    cuối. Đây là lỗi hiển thị bắt được khi dump giao diện thật.
+    """
+    import app
+
+    state = _state()
+    state["trace"]["stages"] = {
+        name: {"status": "completed"} for name in app.FLOW_STAGES
+    }
+    statuses = app._stage_statuses(
+        state, failure={"stage": "generate_per_section", "kind": "failed"}
+    )
+    assert statuses["generate_per_section"] == "failed"
+    assert statuses["review"] == "pending"
+    assert statuses["assemble"] == "pending"
+    assert statuses["parse_input"] == "completed"  # bước trước vẫn giữ
+
+
+def test_stages_after_failure_are_not_left_running() -> None:
+    import app
+
+    state = _state()
+    state["trace"]["stages"]["generate_per_section"] = {"status": "running"}
+    statuses = app._stage_statuses(
+        state, failure={"stage": "generate_per_section", "kind": "failed"}
+    )
+    assert statuses["generate_per_section"] == "failed"
+    assert statuses["review"] == "pending"
+    assert statuses["assemble"] == "pending"
+    assert "running" not in statuses.values()
