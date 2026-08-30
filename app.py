@@ -49,28 +49,39 @@ from rfp.export import (
     export_filename,
     to_markdown,
 )
+from config.display_vi import (
+    NO_EVIDENCE_REASON,
+    ORIGIN_HINT,
+    ORIGIN_VI,
+    RUN_LABEL_VI,
+    SECTION_NOTE_VI,
+    run_label,
+    PERSONA_VI,
+    RETRIEVAL_STAGE_VI,
+    ROUTE_METHOD_VI,
+    RUN_STATUS_VI,
+    SECTION_STATUS_ICON,
+    SECTION_STATUS_VI,
+    SEVERITY_VI,
+    ISSUE_TYPE_VI,
+    STAGE_STATUS_ICON,
+    STAGE_STATUS_VI,
+    STAGE_VI,
+    VERDICT_HINT,
+    VERDICT_ICON,
+    VERDICT_VI,
+    label,
+    to_raw,
+)
 from rfp.graph import PIPELINE_STAGES, stream_graph
 from rfp.guard import GuardViolation
-from rfp.llm import MODEL as LLM_MODEL, generate
+from rfp.llm import LLMUnavailable, MODEL as LLM_MODEL, generate
 
 
-STAGE_LABELS = {
-    "parse_input": "Phân tích RFP",
-    "check_complete": "Kiểm tra đầu vào",
-    "ask_user": "Yêu cầu bổ sung",
-    "route_reference_rfp": "Chọn RFP tham chiếu",
-    "plan_sections": "Lập khung proposal",
-    "retrieve_per_chapter": "Truy xuất bằng chứng",
-    "generate_per_section": "Sinh 5 mục",
-    "review": "Review chất lượng văn bản",
-    "assemble": "Final guard & ghép bản",
-}
-STAGE_ICONS = {
-    "completed": "✅",
-    "running": "🔵",
-    "skipped": "⏭️",
-    "pending": "⚪",
-}
+# Thứ tự hiển thị của luồng chạy. `ask_user` không nằm đây: nó là nhánh rẽ khi
+# thiếu thông tin, hiện riêng bằng cảnh báo chứ không phải một bước của luồng
+# thành công.
+FLOW_STAGES = tuple(name for name in PIPELINE_STAGES if name != "ask_user")
 
 
 st.set_page_config(
@@ -141,7 +152,7 @@ def sidebar_controls() -> tuple[str, bool]:
                 width="stretch",
             )
         submitted = st.button(
-            "Nộp và sinh proposal",
+            "Nộp và sinh hồ sơ",
             type="primary",
             width="stretch",
         )
@@ -157,7 +168,7 @@ def source_label(sentence: dict[str, Any]) -> str:
 
 
 def render_mapping(state: dict[str, Any]) -> None:
-    st.subheader("Mục proposal ← chương RFP nguồn")
+    st.subheader("Mỗi mục hồ sơ lấy từ chương nào của RFP")
     chapter_titles = {
         chapter["id"]: chapter["title"] for chapter in state.get("chapters", [])
     }
@@ -166,13 +177,16 @@ def render_mapping(state: dict[str, Any]) -> None:
         source_ids = section["source_chapters"]
         rows.append(
             {
-                "Mục proposal": section["title_ja"],
+                "Mục hồ sơ": section["title_ja"],
                 "Chương RFP nguồn": " · ".join(
                     f"{chapter_id} {chapter_titles.get(chapter_id, '')}".strip()
                     for chapter_id in source_ids
                 )
                 or "—",
-                "Trạng thái": section["status"] or "—",
+                "Tình trạng": (
+                    f"{SECTION_STATUS_ICON.get(section['status'], '')} "
+                    f"{label(SECTION_STATUS_VI, section['status'])}"
+                ).strip(),
             }
         )
     st.dataframe(rows, width="stretch", hide_index=True)
@@ -202,19 +216,97 @@ def render_draft_banner(state: dict[str, Any]) -> None:
     )
 
 
+def parse_evidence_note(note: str) -> list[dict[str, str]]:
+    """Tách ghi chú `INSUFFICIENT_EVIDENCE: ...` thành từng yêu cầu.
+
+    Chỉ là đường lui khi state không có sẵn dữ liệu cấu trúc (ví dụ state cũ
+    dump từ phiên bản trước). Chuỗi có dạng:
+        "INSUFFICIENT_EVIDENCE: 2.1 <câu> — <lý do>; 2.2 <câu> — <lý do>"
+    Chuỗi lạ thì trả về nguyên văn trong `text`, không ném lỗi — đây là tầng
+    hiển thị, vỡ ở đây không được phép làm chết cả trang.
+    """
+    if not note:
+        return []
+    body = note.split(":", 1)[1] if note.startswith("INSUFFICIENT_EVIDENCE") else note
+    items: list[dict[str, str]] = []
+    for chunk in body.split(";"):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        head = chunk.split("—", 1)[0].strip()
+        parts = head.split(None, 1)
+        if len(parts) == 2 and any(char.isdigit() for char in parts[0]):
+            items.append({"req_id": parts[0], "text": parts[1].strip()})
+        else:
+            items.append({"req_id": "", "text": head})
+    return items
+
+
+def evidence_gaps(state: dict[str, Any], section: dict[str, Any]) -> list[dict[str, str]]:
+    """Các yêu cầu của một mục chưa có câu nào làm căn cứ.
+
+    Dựng từ dữ liệu cấu trúc trong state (req_ids của từng câu) — chính xác
+    hơn và không phụ thuộc câu chữ của ghi chú. Không dựng được thì mới parse
+    chuỗi ghi chú.
+    """
+    covered = {
+        req_id
+        for sentence in section.get("sentences", [])
+        if sentence.get("source_id") is not None
+        for req_id in sentence.get("req_ids", [])
+    }
+    chapters = {chapter["id"]: chapter for chapter in state.get("chapters", [])}
+    gaps = [
+        {"req_id": requirement["req_id"], "text": requirement["text"]}
+        for chapter_id in section.get("source_chapters", [])
+        if chapter_id in chapters
+        for requirement in chapters[chapter_id].get("requirements", [])
+        if requirement["req_id"] not in covered
+    ]
+    if gaps:
+        return gaps
+    return parse_evidence_note(section.get("note") or "")
+
+
+def render_section_note(state: dict[str, Any], section: dict[str, Any]) -> None:
+    """Ghi chú của mục, đã Việt hoá — không lộ chuỗi enum thô ra giao diện."""
+    note = section.get("note")
+    if not note:
+        return
+    if section.get("status") == "INSUFFICIENT_EVIDENCE":
+        gaps = evidence_gaps(state, section)
+        lines = ["**⚠ Thiếu căn cứ** — các yêu cầu sau chưa có gì để dẫn:", ""]
+        for gap in gaps:
+            prefix = f"`{gap['req_id']}` " if gap["req_id"] else ""
+            lines.append(f"- {prefix}{gap['text']}")
+        lines.append("")
+        lines.append(f"Lý do: {NO_EVIDENCE_REASON}.")
+        st.warning("\n".join(lines))
+        return
+    st.warning(label(SECTION_NOTE_VI, note))
+
+
 def render_proposal(state: dict[str, Any]) -> None:
     trace = state["trace"]
     grounding = trace.get("grounding", {"grounded": 0, "total": 0})
     render_draft_banner(state)
     st.success(
-        f"{grounding['grounded']}/{grounding['total']} câu truy được về một câu nguồn đã verify"
+        f"{grounding['grounded']}/{grounding['total']} câu truy được về nguồn cụ thể "
+        "(phần còn lại là câu nối, không mang thông tin sự thật)"
     )
     st.subheader("Hồ sơ tiếng Nhật")
+    st.caption(
+        "Nội dung hồ sơ giữ nguyên tiếng Nhật — đó là sản phẩm giao cho khách. "
+        "Chỉ nhãn giao diện được dịch."
+    )
     for index, section in enumerate(state.get("sections", []), start=1):
+        status = section.get("status")
         st.markdown(f"### {index}. {section['title_ja']}")
-        st.caption(f"{section['title_vi']} · Trạng thái: {section['status'] or '—'}")
-        if section.get("note"):
-            st.warning(section["note"])
+        st.caption(
+            f"{section['title_vi']} · {SECTION_STATUS_ICON.get(status, '')} "
+            f"{label(SECTION_STATUS_VI, status)}"
+        )
+        render_section_note(state, section)
         for sentence in section["sentences"]:
             st.write(sentence["text"])
     st.divider()
@@ -246,10 +338,10 @@ def requirement_coverage(
             req_id = requirement["req_id"]
             sources = sources_by_req.get(req_id, [])
             row = {
-                "req_id": req_id,
-                "nội dung": requirement["text"],
-                "phủ/thiếu": "PHỦ" if sources else "THIẾU",
-                "nguồn nào phủ": " · ".join(sources) or "—",
+                "Mã yêu cầu": req_id,
+                "Nội dung yêu cầu": requirement["text"],
+                "Tình trạng": "✅ Đã đáp ứng" if sources else "⚠️ Chưa có căn cứ",
+                "Căn cứ đáp ứng": " · ".join(sources) or "—",
             }
             rows.append(row)
             if not sources:
@@ -259,7 +351,10 @@ def requirement_coverage(
                         "req_id": req_id,
                         "text": requirement["text"],
                         "section": section.get("title_ja", "—"),
-                        "note": section.get("note") or "Không có note bổ sung.",
+                        # Lý do RIÊNG của yêu cầu này. Trước đây dán nguyên ghi
+                        # chú gộp của cả mục vào từng dòng, nên 2.1/2.2/2.3 hiện
+                        # ba đoạn giống hệt nhau.
+                        "reason": NO_EVIDENCE_REASON,
                     }
                 )
     return rows, missing
@@ -270,30 +365,52 @@ def render_coverage(state: dict[str, Any]) -> None:
     covered = len(rows) - len(missing)
     metric_col, status_col = st.columns([1, 3])
     with metric_col:
-        st.metric("Coverage", f"{covered}/{len(rows)}")
+        st.metric("Đã đáp ứng", f"{covered}/{len(rows)}")
     with status_col:
         if missing:
-            st.warning(f"Còn {len(missing)} requirement chưa có nguồn tương ứng.")
+            st.warning(
+                f"Còn {len(missing)} yêu cầu chưa có căn cứ — cần người bổ sung "
+                "bằng tay trước khi nộp."
+            )
         else:
-            st.success("Tất cả requirement đã có nguồn tương ứng.")
-    st.subheader("Đối chiếu mọi requirement")
+            st.success("Mọi yêu cầu của RFP đều đã có căn cứ.")
+    st.subheader("Đối chiếu từng yêu cầu của RFP")
     st.dataframe(rows, width="stretch", hide_index=True)
     if missing:
-        warning_lines = [
-            f"- **{item['req_id']} · {item['text']}** — mục {item['section']}: {item['note']}"
-            for item in missing
-        ]
-        st.warning("Requirement chưa phủ:\n\n" + "\n\n".join(warning_lines))
+        st.subheader("Yêu cầu chưa có căn cứ")
+        st.caption(
+            "Mỗi yêu cầu dưới đây cần người bổ sung bằng tay, hoặc ghi nhận là "
+            "không đáp ứng."
+        )
+        st.dataframe(
+            [
+                {
+                    "Mã yêu cầu": item["req_id"],
+                    "Nội dung yêu cầu": item["text"],
+                    "Thuộc mục": item["section"],
+                    "Lý do thiếu căn cứ": item["reason"],
+                }
+                for item in missing
+            ],
+            width="stretch",
+            hide_index=True,
+        )
 
 
 def sentence_rows(state: dict[str, Any]) -> list[dict[str, str]]:
+    """Giữ nguyên giá trị gốc ở `_origin`/`_verdict` để bộ lọc so sánh đúng."""
     return [
         {
-            "mục": section["title_ja"],
-            "câu": sentence["text"],
-            "origin": sentence["origin"],
-            "source_id": sentence["source_id"] or "—",
-            "verdict": sentence["verdict"],
+            "Mục": section["title_ja"],
+            "Câu (tiếng Nhật)": sentence["text"],
+            "Nguồn": label(ORIGIN_VI, sentence["origin"]),
+            "Mã nguồn": sentence["source_id"] or "—",
+            "Kiểm chứng": (
+                f"{VERDICT_ICON.get(sentence['verdict'], '')} "
+                f"{label(VERDICT_VI, sentence['verdict'])}"
+            ).strip(),
+            "_origin": sentence["origin"],
+            "_verdict": sentence["verdict"],
         }
         for section in state.get("sections", [])
         for sentence in section["sentences"]
@@ -302,24 +419,48 @@ def sentence_rows(state: dict[str, Any]) -> list[dict[str, str]]:
 
 def render_sources(state: dict[str, Any]) -> None:
     rows = sentence_rows(state)
-    origins = list(dict.fromkeys(row["origin"] for row in rows))
-    verdicts = list(dict.fromkeys(row["verdict"] for row in rows))
+    origins = list(dict.fromkeys(row["_origin"] for row in rows))
+    verdicts = list(dict.fromkeys(row["_verdict"] for row in rows))
     filter_origin, filter_verdict = st.columns(2)
     with filter_origin:
-        selected_origins = st.multiselect(
-            "Lọc theo origin", origins, default=origins, key="source_origin_filter"
+        picked_origins = st.multiselect(
+            "Lọc theo nguồn",
+            [label(ORIGIN_VI, value) for value in origins],
+            default=[label(ORIGIN_VI, value) for value in origins],
+            key="source_origin_filter",
         )
     with filter_verdict:
-        selected_verdicts = st.multiselect(
-            "Lọc theo verdict", verdicts, default=verdicts, key="source_verdict_filter"
+        picked_verdicts = st.multiselect(
+            "Lọc theo kết quả kiểm chứng",
+            [label(VERDICT_VI, value) for value in verdicts],
+            default=[label(VERDICT_VI, value) for value in verdicts],
+            key="source_verdict_filter",
         )
+    # Map NGƯỢC về giá trị gốc trước khi lọc — nhãn tiếng Việt chỉ là lớp áo.
+    selected_origins = to_raw(ORIGIN_VI, picked_origins)
+    selected_verdicts = to_raw(VERDICT_VI, picked_verdicts)
     filtered = [
         row
         for row in rows
-        if row["origin"] in selected_origins and row["verdict"] in selected_verdicts
+        if row["_origin"] in selected_origins and row["_verdict"] in selected_verdicts
     ]
-    st.dataframe(filtered, width="stretch", hide_index=True, height=640)
+    st.dataframe(
+        [
+            {key: value for key, value in row.items() if not key.startswith("_")}
+            for row in filtered
+        ],
+        width="stretch",
+        hide_index=True,
+        height=600,
+    )
     st.caption(f"Hiển thị {len(filtered)}/{len(rows)} câu.")
+    with st.expander("Các nhãn này nghĩa là gì?"):
+        st.markdown("**Nguồn của câu**")
+        for key, text in ORIGIN_VI.items():
+            st.markdown(f"- **{text}** — {ORIGIN_HINT[key]}")
+        st.markdown("**Kết quả kiểm chứng**")
+        for key, text in VERDICT_VI.items():
+            st.markdown(f"- {VERDICT_ICON[key]} **{text}** — {VERDICT_HINT[key]}")
 
 
 def translated_content(state: dict[str, Any]) -> tuple[str, str]:
@@ -342,17 +483,120 @@ def translated_content(state: dict[str, Any]) -> tuple[str, str]:
 
 
 def _status_state(status: str) -> str:
-    return "running" if status == "running" else "complete"
+    if status == "running":
+        return "running"
+    if status in {"failed", "blocked"}:
+        return "error"
+    return "complete"
 
 
 def _status_label(name: str, status: str) -> str:
-    suffix = {
-        "completed": "xong",
-        "running": "đang chạy",
-        "skipped": "bỏ qua",
-        "pending": "chờ",
-    }.get(status, status)
-    return f"{STAGE_ICONS.get(status, '⚪')} {name} — {suffix}"
+    suffix = label(STAGE_STATUS_VI, status)
+    return f"{STAGE_STATUS_ICON.get(status, '⚪')} {name} — {suffix}"
+
+
+def _stage_statuses(
+    state: dict[str, Any],
+    *,
+    failure: dict[str, str] | None,
+) -> dict[str, str]:
+    """Trạng thái từng bước để vẽ luồng, có tính tới lỗi/bị chặn.
+
+    Bước đang chạy lúc pipeline dừng sẽ mang trạng thái lỗi; các bước sau nó
+    quay về `pending` chứ không để `running` treo mãi.
+    """
+    stages = state.get("trace", {}).get("stages", {})
+    statuses = {
+        name: stages.get(name, {}).get("status", "pending") for name in FLOW_STAGES
+    }
+    if failure is None:
+        return statuses
+
+    failed_stage = failure["stage"]
+    reached_failure = False
+    for name in FLOW_STAGES:
+        if name == failed_stage:
+            statuses[name] = failure["kind"]
+            reached_failure = True
+        elif reached_failure:
+            # Bước sau bước hỏng KHÔNG bao giờ được hiện "xong", kể cả khi state
+            # cũ còn ghi completed. Một bước lỗi mà bước sau nó tích xanh là
+            # hiển thị vô lý, và người đọc sẽ tin là hồ sơ vẫn chạy tới cuối.
+            statuses[name] = "pending"
+        elif statuses[name] == "running":
+            statuses[name] = "completed"
+    return statuses
+
+
+def render_flow(
+    state: dict[str, Any],
+    target: Any,
+    *,
+    failure: dict[str, str] | None = None,
+) -> None:
+    """Luồng chạy 8 bước, cập nhật live theo state trả về từng node.
+
+    Nguồn trạng thái là `trace.stages` trong chính state mà `stream_graph`
+    yield ra sau mỗi node, nên đây là tiến độ thật chứ không phải hoạt ảnh
+    phỏng đoán. Giới hạn: một node dài (sinh 5 mục) chỉ có hai mốc *bắt đầu* và
+    *xong* — bên trong nó không phát tín hiệu, nên thanh tiến độ đứng yên trong
+    lúc node đó chạy.
+    """
+    target.empty()
+    statuses = _stage_statuses(state, failure=failure)
+    done = sum(1 for value in statuses.values() if value == "completed")
+
+    with target.container():
+        st.progress(done / len(FLOW_STAGES), text=f"{done}/{len(FLOW_STAGES)} bước")
+        for name in FLOW_STAGES:
+            status = statuses[name]
+            text = f"{STAGE_STATUS_ICON.get(status, '⚪')} **{STAGE_VI[name]}**"
+            if status == "running":
+                st.markdown(f"{text} — đang chạy…")
+            elif status == "completed":
+                st.markdown(f"{text}")
+            elif status in {"failed", "blocked"}:
+                st.markdown(f"{text} — {label(STAGE_STATUS_VI, status)}")
+                if failure and failure.get("message"):
+                    if status == "blocked":
+                        # Bị chặn là hành vi ĐÚNG: thà không nộp còn hơn nộp hồ
+                        # sơ tuyên bố sai chứng chỉ. Không tô như lỗi hệ thống.
+                        st.warning(failure["message"], icon="🛑")
+                    else:
+                        st.error(failure["message"], icon="❌")
+            elif status == "skipped":
+                st.markdown(f"{text} — {label(STAGE_STATUS_VI, status)}")
+            else:
+                st.markdown(
+                    f":gray[{STAGE_STATUS_ICON['pending']} {STAGE_VI[name]}]"
+                )
+
+
+def _running_stage(state: dict[str, Any] | None) -> str:
+    """Bước đang chạy khi pipeline dừng — để tô đúng ô bị lỗi."""
+    if not state:
+        return FLOW_STAGES[0]
+    stages = state.get("trace", {}).get("stages", {})
+    for name in FLOW_STAGES:
+        if stages.get(name, {}).get("status") == "running":
+            return name
+    # Không có bước nào "running" -> lỗi rơi vào bước ngay sau bước xong cuối.
+    done = [
+        name for name in FLOW_STAGES if stages.get(name, {}).get("status") == "completed"
+    ]
+    if not done:
+        return FLOW_STAGES[0]
+    last_index = FLOW_STAGES.index(done[-1])
+    return FLOW_STAGES[min(last_index + 1, len(FLOW_STAGES) - 1)]
+
+
+def render_flow_legend() -> None:
+    st.caption(
+        "  ·  ".join(
+            f"{STAGE_STATUS_ICON[key]} {STAGE_STATUS_VI[key]}"
+            for key in ("pending", "running", "completed", "skipped", "blocked", "failed")
+        )
+    )
 
 
 def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
@@ -364,7 +608,7 @@ def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
         else "complete"
     )
     with target.container():
-        with st.status("Pipeline", state=overall_state, expanded=True):
+        with st.status("Luồng chạy chi tiết", state=overall_state, expanded=True):
             for stage_name in PIPELINE_STAGES:
                 status = stages.get(stage_name, {}).get("status", "pending")
                 expanded = status == "running" or stage_name in {
@@ -372,7 +616,7 @@ def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
                     "generate_per_section",
                 }
                 with st.status(
-                    _status_label(STAGE_LABELS[stage_name], status),
+                    _status_label(STAGE_VI[stage_name], status),
                     state=_status_state(status),
                     expanded=expanded,
                 ):
@@ -393,7 +637,12 @@ def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
                                     item_status = (
                                         "skipped" if values.get("skipped") else "completed"
                                     )
-                                    st.write(_status_label(retrieval_name, item_status))
+                                    st.write(
+                                        _status_label(
+                                            label(RETRIEVAL_STAGE_VI, retrieval_name),
+                                            item_status,
+                                        )
+                                    )
                     if stage_name == "generate_per_section":
                         for section in state.get("sections", []):
                             section_status = "completed" if section.get("status") else "pending"
@@ -402,7 +651,13 @@ def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
                                 state=_status_state(section_status),
                                 expanded=False,
                             ):
-                                st.write(section.get("status") or "Đang chờ sinh nội dung")
+                                st.write(
+                                    label(
+                                        SECTION_STATUS_VI,
+                                        section.get("status"),
+                                        unknown="Đang chờ sinh nội dung",
+                                    )
+                                )
 
 
 def render_trace_metrics(state: dict[str, Any], target: Any) -> None:
@@ -411,8 +666,16 @@ def render_trace_metrics(state: dict[str, Any], target: Any) -> None:
     with target.container():
         left, middle, right = st.columns(3)
         left.metric("Tổng lệnh gọi LLM", trace.get("llm_calls", 0))
-        middle.metric("hybrid_blocked", len(trace.get("hybrid_blocked", [])))
-        right.metric("conflict_dropped", len(trace.get("conflicts", [])))
+        middle.metric(
+            "Câu bị chặn vì số liệu lạ",
+            len(trace.get("hybrid_blocked", [])),
+            help="Câu có chỉ số định lượng không khớp nguyên văn nguồn nào — bị gỡ.",
+        )
+        right.metric(
+            "Nguồn bị loại vì mâu thuẫn",
+            len(trace.get("conflicts", [])),
+            help="Hai câu nguồn nói khác nhau về cùng một chỉ số; giữ nguồn ưu tiên hơn.",
+        )
 
 
 def render_retrieval(state: dict[str, Any]) -> None:
@@ -420,8 +683,9 @@ def render_retrieval(state: dict[str, Any]) -> None:
     score = reference.get("score")
     score_text = "—" if score is None else f"{score:.4f}"
     st.write(
-        f"RFP tham chiếu: **{reference.get('rfp_id') or 'không có'}** · "
-        f"method: `{reference.get('method', 'none')}` · score: `{score_text}`"
+        f"Hồ sơ tham chiếu: **{reference.get('rfp_id') or 'không có'}** · "
+        f"cách chọn: {label(ROUTE_METHOD_VI, reference.get('method', 'none'))} · "
+        f"độ tương đồng: `{score_text}`"
     )
     rows = []
     for chapter in state.get("chapters", []):
@@ -430,46 +694,108 @@ def render_retrieval(state: dict[str, Any]) -> None:
             scores = item["scores"]
             rows.append(
                 {
-                    "chương": chapter["id"],
-                    "sent_id": item["sent_id"],
-                    "văn bản": item["text"],
-                    "hybrid": round(scores["hybrid"], 4),
-                    "rerank": round(scores["rerank"], 4),
-                    "attribute_req_ids": ", ".join(attribute["covered_req_ids"]),
+                    "Chương": chapter["id"],
+                    "Mã câu nguồn": item["sent_id"],
+                    "Câu nguồn (tiếng Nhật)": item["text"],
+                    "Điểm tìm kiếm": round(scores["hybrid"], 4),
+                    "Điểm sau chấm lại": round(scores["rerank"], 4),
+                    "Đáp ứng yêu cầu": ", ".join(attribute["covered_req_ids"]) or "—",
                 }
             )
     if rows:
         st.dataframe(rows, width="stretch", hide_index=True)
+        st.caption(
+            "Điểm tìm kiếm = độ khớp từ khoá + ngữ nghĩa. Điểm sau chấm lại có "
+            "cộng thêm ưu tiên cùng ngành và cùng mục."
+        )
     else:
-        st.info("Không có precedent được chọn; các chương tương ứng dùng kênh thuộc tính.")
+        st.info(
+            "Không lấy câu nào từ hồ sơ cũ — các chương tương ứng đã được đáp ứng "
+            "bằng thông tin trong bảng năng lực công ty."
+        )
+
+
+LLM_STAGE_VI = {
+    "parser": "Đọc RFP",
+    "retrieval": "Truy xuất nguồn",
+    "precedent_generation": "Viết lại câu từ hồ sơ cũ",
+    "capability_generation": "Viết câu từ bảng năng lực",
+    "claim_check": "Đối chiếu bằng chứng",
+    "review": "Review chất lượng",
+    "final_guard": "Kiểm tra cuối",
+}
+
+
+def render_review_rounds(state: dict[str, Any]) -> None:
+    review = state.get("trace", {}).get("review") or {}
+    if not review.get("enabled"):
+        st.info("Vòng review đang tắt (`REVIEW_ENABLED = False`).")
+        return
+    history = review.get("history", [])
+    if not history:
+        st.info("Chưa chạy vòng review nào.")
+        return
+    st.dataframe(
+        [
+            {
+                "Vòng": entry.get("round"),
+                SEVERITY_VI["critical"]: entry.get("score", {}).get("critical", 0),
+                SEVERITY_VI["major"]: entry.get("score", {}).get("major", 0),
+                SEVERITY_VI["minor"]: entry.get("score", {}).get("minor", 0),
+                "Mục phải sửa lại": ", ".join(entry.get("critical_sections", [])) or "—",
+                "Số câu đã sửa": entry.get("fixes_applied", 0),
+                "Người soi": ", ".join(
+                    label(PERSONA_VI, name) for name in entry.get("personas", [])
+                )
+                or "—",
+            }
+            for entry in history
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    st.caption(
+        "Vòng review chỉ soi chất lượng văn bản. Việc đúng/sai về chứng chỉ, số "
+        "liệu và năng lực do lớp kiểm tra tất định đảm nhiệm — "
+        + " · ".join(f"{key}: {text}" for key, text in ISSUE_TYPE_VI.items())
+    )
 
 
 def render_trace_details(state: dict[str, Any]) -> None:
     trace = state["trace"]
-    st.subheader("Số call theo giai đoạn")
+    st.subheader("Số lệnh gọi LLM theo khâu")
     st.dataframe(
         [
-            {"Giai đoạn": name, "Số lệnh gọi": count}
+            {"Khâu": label(LLM_STAGE_VI, name), "Số lệnh gọi": count}
             for name, count in trace.get("llm_calls_by_stage", {}).items()
         ],
         width="stretch",
         hide_index=True,
     )
-    st.caption("Đường đi: " + " → ".join(trace.get("path", [])))
-    st.subheader("Retrieval")
+    st.caption(
+        "Đường đi: "
+        + " → ".join(label(STAGE_VI, name) for name in trace.get("path", []))
+    )
+    st.subheader("Vòng review")
+    render_review_rounds(state)
+    st.subheader("Nguồn đã truy xuất")
     render_retrieval(state)
     conflicts = trace.get("conflicts", [])
     hybrids = trace.get("hybrid_blocked", [])
     if conflicts:
-        st.warning(f"5.7 đã loại {len(conflicts)} câu mâu thuẫn.")
+        st.warning(
+            f"Đã loại {len(conflicts)} câu nguồn mâu thuẫn nhau về cùng một chỉ số."
+        )
         st.dataframe(conflicts, width="stretch", hide_index=True)
     else:
-        st.info("5.7 không loại câu mâu thuẫn nào.")
+        st.info("Không có câu nguồn nào mâu thuẫn nhau.")
     if hybrids:
-        st.warning(f"6.4-bis đã chặn {len(hybrids)} câu lai.")
+        st.warning(
+            f"Đã chặn {len(hybrids)} câu có số liệu không khớp nguyên văn nguồn nào."
+        )
         st.dataframe(hybrids, width="stretch", hide_index=True)
     else:
-        st.info("6.4-bis không chặn câu lai nào.")
+        st.info("Không có câu nào bị chặn vì số liệu lạ.")
 
 
 def _sync_golden_editor() -> None:
@@ -515,7 +841,7 @@ def _golden_management_rows() -> tuple[list[Path], list[GoldenCase], list[dict[s
 
 def render_golden() -> None:
     st.header("Sinh golden test")
-    st.caption("Golden = RFP + assertion máy kiểm được; không lưu proposal mẫu.")
+    st.caption("Bộ test = RFP + điều kiện máy tự kiểm được; không lưu hồ sơ mẫu.")
 
     st.subheader("1. Cấu hình")
     mode_labels = {
@@ -729,19 +1055,122 @@ def render_golden() -> None:
 
 
 def render_empty_tabs(tabs: tuple[Any, ...]) -> None:
-    labels = (
-        "Hồ sơ sẽ xuất hiện ở đây sau khi pipeline hoàn tất.",
-        "Coverage requirement sẽ xuất hiện ở đây.",
-        "Nguồn của từng câu sẽ xuất hiện ở đây.",
-        "Bản dịch sẽ xuất hiện ở đây sau bước dịch cuối.",
+    # Tên biến tránh trùng hàm `label` đã import ở đầu file.
+    hints = (
+        "Dán hoặc tải RFP ở thanh bên rồi bấm **Nộp và sinh hồ sơ** — luồng chạy "
+        "sẽ hiện ngay tại đây.",
+        "Bảng đối chiếu từng yêu cầu của RFP sẽ hiện ở đây.",
+        "Nguồn của từng câu sẽ hiện ở đây.",
+        "Bản dịch tiếng Việt sẽ hiện ở đây sau bước dịch cuối.",
     )
-    for tab, label in zip(tabs[:4], labels):
+    for tab, hint in zip(tabs[:4], hints):
         with tab:
-            st.info(label)
+            st.info(hint)
+
+
+def _det_rows(runs: dict[str, Any], name: str) -> list[dict[str, Any]]:
+    """Dòng deterministic của một cấu hình, ưu tiên bản `.det`.
+
+    Giống hệt cách `eval/generate_report.py` chọn nguồn, để màn hình này và
+    bảng §11.3 không ra hai con số khác nhau cho cùng một thứ.
+    """
+    for key in (f"{name}.det", name):
+        rows = (runs.get(key) or {}).get("deterministic")
+        if rows:
+            return rows
+    return []
+
+
+def _sum_det(rows: list[dict[str, Any]], key: str) -> int | None:
+    """Tổng một cột đếm; None nếu lượt đó chưa đo cột này (không phải 0)."""
+    if not rows or any(key not in row for row in rows):
+        return None
+    return sum(int(row.get(key, 0)) for row in rows)
+
+
+def _mean_det(rows: list[dict[str, Any]], key: str) -> float | None:
+    # Bỏ dòng không sinh được mục nào (ca ask_user) — đúng như report làm.
+    values = [
+        float(row[key]) for row in rows if key in row and row.get("sections", 0) > 0
+    ]
+    return sum(values) / len(values) if values else None
+
+
+def headline_numbers(runs: dict[str, Any]) -> list[dict[str, str]]:
+    """Ba con số chính, đọc thẳng từ `eval/results` — không hardcode.
+
+    Thiếu file nào thì bỏ dòng đó, không bịa số và cũng không hiện 0.
+    """
+    cards: list[dict[str, str]] = []
+
+    off = _det_rows(runs, "force_precedent_k5_no_guard")
+    on = _det_rows(runs, "force_precedent_k5_with_guard")
+    fab_off, fab_on = _sum_det(off, "fabrication_count"), _sum_det(on, "fabrication_count")
+    blocked = _sum_det(on, "guard_blocked_publish")
+    if fab_off is not None and fab_on is not None:
+        cards.append(
+            {
+                "title": "Lưới an toàn chặn được ảo giác",
+                "value": f"{fab_off} → {fab_on}",
+                "detail": (
+                    f"Cùng ép lấy 5 câu nguồn và cùng tắt lọc lúc nạp, chỉ khác "
+                    f"bật/tắt lưới an toàn: tắt thì **{fab_off} lần** chuỗi cấm lọt "
+                    f"vào hồ sơ, bật thì **{fab_on}**"
+                    + (
+                        f" — và {blocked}/9 hồ sơ bị **chặn xuất bản** thay vì xuất ra bản sai."
+                        if blocked
+                        else "."
+                    )
+                ),
+            }
+        )
+
+    dense = _mean_det(_det_rows(runs, "V0_A2_dense_only"), "coverage")
+    hybrid = _mean_det(_det_rows(runs, "V1_A2_hybrid"), "coverage")
+    if dense is not None and hybrid is not None:
+        cards.append(
+            {
+                "title": "Thêm tìm theo từ khoá (BM25) đáp ứng được nhiều yêu cầu hơn",
+                "value": f"{dense:.3f} → {hybrid:.3f}",
+                "detail": (
+                    "Tỉ lệ yêu cầu của RFP được đáp ứng. Đây mới là chỗ BM25 tạo "
+                    "khác biệt — không phải ở các chỉ số RAGAS."
+                ),
+            }
+        )
+
+    cost = runs.get("review_cost", {}).get("runs", {})
+    if cost.get("no_review") and cost.get("with_review"):
+        def _avg(rows: list[dict[str, Any]]) -> float:
+            return sum(row["product_tokens"] for row in rows) / len(rows)
+
+        before, after = _avg(cost["no_review"]), _avg(cost["with_review"])
+        cards.append(
+            {
+                "title": "Giá của vòng review chất lượng",
+                "value": f"{before/1000:.1f}k → {after/1000:.1f}k token",
+                "detail": (
+                    f"Mỗi hồ sơ tốn thêm ~{(after - before)/1000:.1f}k token "
+                    f"({after/before - 1:+.0%}) cho một lượt soi văn bản. "
+                    "Tắt được bằng `REVIEW_ENABLED`."
+                ),
+            }
+        )
+    return cards
+
+
+def render_headline_numbers(runs: dict[str, Any]) -> None:
+    cards = headline_numbers(runs)
+    if not cards:
+        return
+    st.subheader("Ba con số chính")
+    for card in cards:
+        st.metric(card["title"], card["value"])
+        st.caption(card["detail"])
 
 
 def render_eval() -> None:
-    st.header("Đo lường & Eval (RAGAS)")
+    st.header("Kết quả đánh giá (RAGAS)")
     
     results_dir = ROOT_DIR / "eval" / "results"
     import json
@@ -756,11 +1185,29 @@ def render_eval() -> None:
                 pass
                 
     if not runs:
-        st.info("Chưa có kết quả chạy Eval. Chạy lệnh: `python -m eval.run_ragas ...` để xem kết quả.")
+        st.info("Chưa có kết quả đánh giá nào. Chạy `python -m eval.run_ragas ...` rồi mở lại tab này.")
         return
 
-    # Tóm tắt lần chạy gần nhất để nội suy
-    latest_name, latest_data = runs[0]
+    render_headline_numbers(dict(runs))
+    st.divider()
+
+    # Ước tính chi phí phải lấy từ một LƯỢT ĐÁNH GIÁ thật. `review_cost.json`
+    # cũng nằm trong thư mục này nhưng là bản đo chi phí review, không có
+    # `usage`/`deterministic` — đọc nhầm nó thì mọi ô hiện 0.
+    eval_runs = [
+        (name, data)
+        for name, data in runs
+        if isinstance(data.get("deterministic"), list)
+        and data.get("deterministic")
+        and isinstance(data.get("usage"), dict)
+    ]
+    if not eval_runs:
+        st.info(
+            "Có file kết quả nhưng chưa lượt nào đo được chi phí "
+            "(thiếu `usage`/`deterministic`)."
+        )
+        return
+    latest_name, latest_data = eval_runs[0]
     usage = latest_data.get("usage", {})
     total_seconds = usage.get("seconds", 0)
     # usage.seconds là tổng CẢ lần chạy. Lần chạy ablation có 9 RFP, nên lấy
@@ -776,7 +1223,8 @@ def render_eval() -> None:
         else None
     )
 
-    st.subheader("Ước tính chi phí (Dựa trên lần chạy gần nhất)")
+    st.subheader("Ước tính chi phí")
+    st.caption(f"Dựa trên lượt gần nhất: **{run_label(latest_name)}** (`{latest_name}`)")
     
     # "TÁCH token thành 2 nhóm: sản phẩm (generate+structured) vs đo lường (judge)"
     tokens_by_stage = usage.get("tokens_by_stage", {})
@@ -806,51 +1254,84 @@ def render_eval() -> None:
         st.caption("Chưa cấu hình đơn giá (COST_PER_1M_INPUT/OUTPUT = None). Không tính tiền.")
 
     st.divider()
-    st.subheader("Lịch sử chạy Eval")
+    st.subheader("Lịch sử các lượt đánh giá")
     
+    metric_labels = {
+        "faithfulness": "Trung thành với nguồn↑",
+        "answer_relevancy": "Đúng trọng tâm↑",
+        "context_precision": "Nguồn lấy về có ích↑",
+        "context_recall": "Lấy đủ nguồn cần↑",
+        "noise_sensitivity": "Nhiễu↓",
+        "context_entity_recall": "Bắt đủ thực thể↑",
+    }
+
     rows = []
-    for name, data in runs:
+    for name, data in eval_runs:
         ragas = data.get("ragas", {})
         det = data.get("deterministic", [{}])[0] if data.get("deterministic") else {}
         usage_data = data.get("usage", {})
-        
+        tokens = usage_data.get("tokens_by_stage", {})
+        product = sum(
+            value for key, value in tokens.items() if key in ("generate", "structured")
+        )
+
         row = {
-            "Run ID": name,
+            "Cấu hình": run_label(name),
             "Thời gian": f"{usage_data.get('seconds', 0):.1f}s",
-            "Token (SP/Đo)": f"{sum(v for k, v in usage_data.get('tokens_by_stage', {}).items() if k in ('generate', 'structured'))} / {usage_data.get('tokens_by_stage', {}).get('judge', 0)}",
-            "Mẫu (có đáp án/tổng)": f"{data.get('ragas_sample_count', 0)}/{data.get('sample_count', 0)} (loại {data.get('unanswered_sample_count', 0)} không có answer)",
-            "Coverage / Abstain": f"{det.get('coverage', 0):.2f} / {det.get('abstain_rate', 0):.2f}",
-            "Groundedness": f"{det.get('groundedness', 0):.3f}",
-            "Citation Acc": f"{det.get('citation_accuracy', 0):.3f}",
-            "Fabrication": det.get("fabrication_count", 0),
-            "Leak": det.get("client_leak_count", 0),
+            "Token sản phẩm / đo lường": f"{product:,} / {tokens.get('judge', 0):,}",
+            "Mẫu chấm được / tổng": (
+                f"{data.get('ragas_sample_count', 0)}/{data.get('sample_count', 0)}"
+            ),
+            "Đáp ứng / bỏ trống": (
+                f"{det.get('coverage', 0):.2f} / {det.get('abstain_rate', 0):.2f}"
+            ),
+            "Câu có nguồn": f"{det.get('groundedness', 0):.3f}",
+            "Trích dẫn đúng": f"{det.get('citation_accuracy', 0):.3f}",
+            "Chuỗi cấm lọt": det.get("fabrication_count", 0),
+            "Rò tên khách": det.get("client_leak_count", 0),
         }
-        for metric in ["faithfulness", "answer_relevancy", "context_precision", "context_recall", "noise_sensitivity", "context_entity_recall"]:
-            m_data = ragas.get(metric, {})
-            row[metric] = f"{m_data.get('mean', 0):.3f} ± {m_data.get('std', 0):.3f}" if m_data else "—"
-            
+        for metric, metric_label in metric_labels.items():
+            values = ragas.get(metric, {})
+            row[metric_label] = (
+                f"{values.get('mean', 0):.3f} ± {values.get('std', 0):.3f}"
+                if values
+                else "—"
+            )
+        row["Mã lượt chạy"] = name
         rows.append(row)
-        
+
     st.dataframe(rows, width="stretch", hide_index=True)
+    st.caption(
+        "`—` = lượt đó chưa đo cột này, **không phải** đo ra 0. "
+        "Cột *Mã lượt chạy* là tên file trong `eval/results/`."
+    )
+
+    other = [name for name, _ in runs if name not in {n for n, _ in eval_runs}]
+    if other:
+        st.caption(
+            "Không phải lượt đánh giá, để riêng: "
+            + " · ".join(f"`{name}` ({run_label(name)})" for name in other)
+        )
 
 
 def main() -> None:
     st.session_state.setdefault("rfp_input", "")
     st.session_state.setdefault("result_state", None)
     st.session_state.setdefault("translation", "")
+    st.session_state.setdefault("failure", None)
 
     text, submitted = sidebar_controls()
     st.title("RFP Proposal Studio")
-    st.caption("Sinh hồ sơ thầu tiếng Nhật với nguồn truy vết cho từng câu")
+    st.caption("Sinh hồ sơ thầu tiếng Nhật, mỗi câu đều truy được về nguồn")
     tabs = st.tabs(
         [
-            "Hồ sơ",
+            "Tổng quan",
             "Độ đáp ứng",
             "Nguồn từng câu",
             "Bản dịch",
-            "Trace",
-            "Sinh golden test",
-            "Eval",
+            "Truy vết",
+            "Sinh bộ test",
+            "Kết quả đánh giá",
         ]
     )
     proposal_tab, coverage_tab, sources_tab, translation_tab, trace_tab, golden_tab, eval_tab = tabs
@@ -859,34 +1340,87 @@ def main() -> None:
         trace_metrics = st.empty()
         trace_status = st.empty()
 
+    with proposal_tab:
+        flow_area = st.empty()
+        result_area = st.container()
+
     latest = st.session_state.get("result_state")
+    failure = st.session_state.get("failure")
+
     if submitted:
         st.session_state["result_state"] = None
         st.session_state["translation"] = ""
-        latest = None
-        with st.spinner("Đang chạy pipeline…"):
+        st.session_state["failure"] = None
+        latest, failure = None, None
+        try:
             for latest in stream_graph(text):
+                render_flow(latest, flow_area)
                 render_trace_metrics(latest, trace_metrics)
                 render_pipeline_status(latest, trace_status)
+        except GuardViolation as violation:
+            # Bị chặn là hành vi ĐÚNG, không phải sự cố: thà không xuất hồ sơ
+            # còn hơn xuất một hồ sơ tuyên bố sai chứng chỉ.
+            failure = {
+                "stage": "assemble",
+                "kind": "blocked",
+                "message": (
+                    "Hồ sơ **bị chặn xuất bản do vi phạm quy tắc an toàn** — "
+                    "nội dung sinh ra có nhắc tới năng lực hoặc chứng chỉ mà "
+                    f"công ty không có ({violation}). Đây là hành vi đúng của hệ "
+                    "thống: không xuất bản còn hơn xuất bản sai."
+                ),
+            }
+        except LLMUnavailable as error:
+            failure = {
+                "stage": _running_stage(latest),
+                "kind": "failed",
+                "message": (
+                    f"Nhà cung cấp LLM không phản hồi sau {error.attempts} lần gọi "
+                    f"(lỗi {error.kind}). Phần đã sinh xong vẫn giữ nguyên; "
+                    "chạy lại để tiếp tục."
+                ),
+            }
+        except Exception as error:  # noqa: BLE001 — hiện lỗi thật, không nuốt
+            failure = {
+                "stage": _running_stage(latest),
+                "kind": "failed",
+                "message": f"Lỗi kỹ thuật: {type(error).__name__}: {error}",
+            }
         st.session_state["result_state"] = latest
-        if latest and latest.get("status") == "completed":
+        st.session_state["failure"] = failure
+        if failure is None and latest and latest.get("status") == "completed":
             content_hash, content = translated_content(latest)
-            with st.spinner("Đang dịch RFP và proposal sang tiếng Việt…"):
+            with st.spinner("Đang dịch RFP và hồ sơ sang tiếng Việt…"):
                 st.session_state["translation"] = translate_once(content_hash, content)
 
     if latest is None:
         render_empty_tabs(tabs)
     else:
+        render_flow(latest, flow_area, failure=failure)
         render_trace_metrics(latest, trace_metrics)
         render_pipeline_status(latest, trace_status)
-        if latest.get("status") == "ask_user":
-            with proposal_tab:
+        with proposal_tab:
+            render_flow_legend()
+        if failure is not None:
+            with result_area:
+                if failure["kind"] == "blocked":
+                    st.warning(failure["message"], icon="🛑")
+                else:
+                    st.error(failure["message"], icon="❌")
+            for tab in (coverage_tab, sources_tab, translation_tab):
+                with tab:
+                    st.info(
+                        "Chưa có kết quả để hiển thị — lượt chạy vừa rồi "
+                        f"{label(RUN_STATUS_VI, latest.get('status'), unknown='không hoàn tất')}."
+                    )
+        elif latest.get("status") == "ask_user":
+            with result_area:
                 st.warning(latest["message"])
             for tab in (coverage_tab, sources_tab, translation_tab):
                 with tab:
                     st.info("Cần bổ sung đầu vào trước khi sinh kết quả.")
         elif latest.get("status") == "completed":
-            with proposal_tab:
+            with result_area:
                 render_proposal(latest)
             with coverage_tab:
                 render_coverage(latest)

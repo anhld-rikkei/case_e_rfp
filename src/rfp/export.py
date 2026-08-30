@@ -45,7 +45,7 @@ REVIEWER_CHECKLIST = (
     "- [ ] Không còn tên khách hàng cũ nào trong bản nộp\n"
     "- [ ] Các requirement ghi THIẾU ở bảng đối chiếu đã được bổ sung bằng tay\n"
     "      hoặc đã có quyết định chấp nhận không đáp ứng\n"
-    "- [ ] Mục ghi `INSUFFICIENT_EVIDENCE` đã được viết lại bằng thông tin thật\n"
+    "- [ ] Mục bị đánh dấu **Thiếu căn cứ** đã được viết lại bằng thông tin thật\n"
     "- [ ] Giọng văn và định dạng khớp mẫu hồ sơ của công ty\n"
     "- [ ] Người rà soát: ________________  Ngày: ____________\n"
 )
