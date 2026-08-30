@@ -216,6 +216,68 @@ def test_final_guard_allows_common_client_and_held_certification() -> None:
     )
 
 
+def _search_result(sent_id: str, text: str, *, bm25: float, dense: float):
+    from rfp.retrieve.hybrid import SearchResult
+    from rfp.schema import Sentence
+
+    return SearchResult(
+        sentence=Sentence(
+            sent_id=sent_id,
+            proposal_id="PROP-TEST",
+            responds_to="RFP-TEST",
+            section="技術要件",
+            text=text,
+            claim_kind="capability",
+            flags={},
+        ),
+        score=0.5 * bm25 + 0.5 * dense,
+        bm25_score=bm25,
+        dense_score=dense,
+        industry="製造業",
+    )
+
+
+def test_rerank_flag_off_preserves_hybrid_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import rfp.retrieve.rerank as rerank_module
+
+    # Hybrid 0.5/0.5: a (0.500) đứng trước b (0.425).
+    # Rerank 0.4*dense+0.3*bm25: b (0.340) vượt a (0.300).
+    a = _search_result("S1", "文A", bm25=1.0, dense=0.0)
+    b = _search_result("S2", "文B", bm25=0.0, dense=0.85)
+
+    monkeypatch.setattr(rerank_module, "RETRIEVAL_USE_RERANK", False)
+    off = rerank_module.rerank_candidates(
+        [a, b], target_industry="金融", target_section="調達概要"
+    )
+    assert [item.sentence.sent_id for item in off] == ["S1", "S2"]
+    assert off[0].score == a.score  # điểm giữ nguyên điểm hybrid
+
+    monkeypatch.setattr(rerank_module, "RETRIEVAL_USE_RERANK", True)
+    on = rerank_module.rerank_candidates(
+        [a, b], target_industry="金融", target_section="調達概要"
+    )
+    assert [item.sentence.sent_id for item in on] == ["S2", "S1"]
+
+
+def test_bm25_flag_off_builds_dense_only_retriever(
+    clean_sentence_index: SentenceIndex,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import config.settings as settings
+
+    saved = clean_sentence_index._retriever
+    try:
+        monkeypatch.setattr(settings, "RETRIEVAL_USE_BM25", False)
+        clean_sentence_index._retriever = None
+        retriever = clean_sentence_index._get_retriever()
+        assert retriever.bm25_weight == 0.0
+        assert retriever.dense_weight == 1.0
+    finally:
+        clean_sentence_index._retriever = saved
+
+
 def test_final_guard_allows_held_certification_variants() -> None:
     final_guard("ISO27001:2013に基づく運用体制です。ISO 9001も取得済みです。")
 

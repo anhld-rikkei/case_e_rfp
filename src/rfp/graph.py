@@ -22,6 +22,7 @@ from config.settings import (
     PRECEDENTS_PER_CHAPTER,
     RERANK_TOP_K,
     RETRIEVAL_TOP_K,
+    RETRIEVAL_USE_MMR,
     ROUTE_EMBEDDING_THRESHOLD,
 )
 from langgraph.graph import END, START, StateGraph
@@ -516,7 +517,23 @@ def _select_precedents(
             if len(unique_reranked) == RERANK_TOP_K:
                 break
         try:
-            selection = maximal_marginal_relevance(unique_reranked, k=MMR_TOP_K)
+            if RETRIEVAL_USE_MMR:
+                selection = maximal_marginal_relevance(unique_reranked, k=MMR_TOP_K)
+            else:
+                # Cờ ablation V0/V1: lấy thẳng top-k theo thứ tự hiện có, không
+                # phạt trùng lặp. Giữ nguyên hợp đồng "đủ k văn bản duy nhất"
+                # để vòng mở rộng candidate bên dưới vẫn hoạt động.
+                top = tuple(unique_reranked[:MMR_TOP_K])
+                if len(top) < MMR_TOP_K:
+                    raise ValueError(
+                        f"Cần {MMR_TOP_K} văn bản duy nhất nhưng chỉ có {len(top)}"
+                    )
+                selection = MMRSelection(
+                    selected=top,
+                    before=len(unique_reranked),
+                    after=len(top),
+                    unique_texts=len({item.sentence.text for item in top}),
+                )
             kept, dropped = resolve_conflicts(
                 list(selection.selected),
                 reference_rfp=reference_rfp,
