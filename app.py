@@ -55,6 +55,7 @@ STAGE_LABELS = {
     "plan_sections": "Lập khung proposal",
     "retrieve_per_chapter": "Truy xuất bằng chứng",
     "generate_per_section": "Sinh 5 mục",
+    "review": "Review chất lượng văn bản",
     "assemble": "Final guard & ghép bản",
 }
 STAGE_ICONS = {

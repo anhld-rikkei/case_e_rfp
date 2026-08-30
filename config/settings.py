@@ -65,6 +65,11 @@ CACHE_DIR = ROOT_DIR / "cache"
 CACHE_TTL_SECONDS = 7 * 24 * 3600
 CACHE_ENABLED = True
 
+# Review loop (Bước 6). Chỉ soi chất lượng văn bản — compliance là việc của
+# guard deterministic (BB-1/BB-2), xem docstring src/rfp/review.py.
+REVIEW_ENABLED = True
+MAX_REVIEW_ROUNDS = 3
+
 # Streamlit translation runs once after proposal assembly, outside the graph.
 TRANSLATION_EFFORT = "low"
 TRANSLATION_SYSTEM_PROMPT = (

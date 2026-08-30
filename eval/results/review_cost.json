@@ -1,0 +1,71 @@
+{
+  "method": "run_graph_eval tren 3 RFP goc, cache tat cung (duong eval), do bang rfp.usage.snapshot(). product = tong tokens_by_stage tru judge.",
+  "note_stage_attribution": "usage.py gan stage theo LOAI lenh goi (generate/structured), khong theo node pipeline, nen khong tach rieng duoc token cua review; cot chenh lech duoi day la cach do dung.",
+  "max_review_rounds": 3,
+  "runs": {
+    "no_review": [
+      {
+        "rfp": "RFP-2025-001",
+        "status": "completed",
+        "product_tokens": 5183,
+        "calls": 20,
+        "seconds": 19.7,
+        "review_rounds": 0,
+        "review_tokens": 0,
+        "llm_calls_review": 0
+      },
+      {
+        "rfp": "RFP-2025-002",
+        "status": "completed",
+        "product_tokens": 5173,
+        "calls": 20,
+        "seconds": 18.4,
+        "review_rounds": 0,
+        "review_tokens": 0,
+        "llm_calls_review": 0
+      },
+      {
+        "rfp": "RFP-2025-003",
+        "status": "completed",
+        "product_tokens": 4627,
+        "calls": 18,
+        "seconds": 15.8,
+        "review_rounds": 0,
+        "review_tokens": 0,
+        "llm_calls_review": 0
+      }
+    ],
+    "with_review": [
+      {
+        "rfp": "RFP-2025-001",
+        "status": "completed",
+        "product_tokens": 7848,
+        "calls": 25,
+        "seconds": 25.6,
+        "review_rounds": 1,
+        "review_tokens": 0,
+        "llm_calls_review": 0
+      },
+      {
+        "rfp": "RFP-2025-002",
+        "status": "completed",
+        "product_tokens": 7765,
+        "calls": 25,
+        "seconds": 24.8,
+        "review_rounds": 1,
+        "review_tokens": 0,
+        "llm_calls_review": 0
+      },
+      {
+        "rfp": "RFP-2025-003",
+        "status": "completed",
+        "product_tokens": 7291,
+        "calls": 23,
+        "seconds": 24.3,
+        "review_rounds": 1,
+        "review_tokens": 0,
+        "llm_calls_review": 0
+      }
+    ]
+  }
+}

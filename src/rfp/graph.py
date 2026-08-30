@@ -20,9 +20,11 @@ from config.settings import (
     CAPABILITY_FACTS_PER_SECTION,
     COMPANY_FACTS_PER_SECTION,
     MAX_BRIDGES_PER_PROPOSAL,
+    MAX_REVIEW_ROUNDS,
     MMR_TOP_K,
     PRECEDENTS_PER_CHAPTER,
     RERANK_TOP_K,
+    REVIEW_ENABLED,
     RETRIEVAL_TOP_K,
     RETRIEVAL_USE_MMR,
     ROUTE_EMBEDDING_THRESHOLD,
@@ -51,6 +53,12 @@ from .cache import (
 )
 from .guard import final_guard
 from .llm import LLMUnavailable
+from .review import (
+    apply_fixes,
+    critical_section_keys,
+    review_sections,
+    score as review_score,
+)
 from .parsers.rfp_parser import (
     CHAPTER_RE,
     DEFAULT_RFP_DIR,
@@ -104,6 +112,7 @@ PIPELINE_STAGES = (
     "plan_sections",
     "retrieve_per_chapter",
     "generate_per_section",
+    "review",
     "assemble",
 )
 
@@ -124,6 +133,7 @@ class GraphState(TypedDict, total=False):
     trace: dict[str, Any]
     fingerprints: dict[str, str]
     force_regen: bool
+    review_rounds: int
 
 
 def _empty_trace() -> dict[str, Any]:
@@ -154,6 +164,7 @@ def _empty_trace() -> dict[str, Any]:
             "precedent_generation": 0,
             "capability_generation": 0,
             "claim_check": 0,
+            "review": 0,
             "final_guard": 0,
         },
         "section_statuses": {
@@ -162,6 +173,7 @@ def _empty_trace() -> dict[str, Any]:
             "INSUFFICIENT_EVIDENCE": 0,
         },
         "grounding": {"grounded": 0, "total": 0},
+        "review": {"enabled": REVIEW_ENABLED, "rounds": 0, "history": []},
     }
 
 
@@ -186,6 +198,9 @@ def _with_trace(state: GraphState, node: str) -> dict[str, Any]:
         "llm_calls_by_stage": dict(current.get("llm_calls_by_stage", {})),
         "section_statuses": dict(current.get("section_statuses", {})),
         "grounding": dict(current.get("grounding", {})),
+        "review": copy.deepcopy(
+            current.get("review", {"enabled": REVIEW_ENABLED, "rounds": 0, "history": []})
+        ),
     }
 
 
@@ -904,6 +919,67 @@ def generate_per_section(state: GraphState) -> GraphState:
     return result
 
 
+def review(state: GraphState) -> GraphState:
+    """Một vòng review: soi chất lượng văn bản rồi sửa các mục có issue critical.
+
+    KHÔNG cache node này (xem docstring `rfp.review`): kết quả phụ thuộc số vòng
+    đã chạy nên không phải hàm thuần của cache key. Guard vẫn là chốt cuối ở
+    `assemble`, chạy sau khi vòng lặp này kết thúc.
+    """
+    rounds = state.get("review_rounds", 0)
+    trace = _with_trace(state, "review")
+    if not REVIEW_ENABLED:
+        trace["review"] = {"enabled": False, "rounds": 0, "history": []}
+        return {"review_rounds": 0, "trace": trace}
+
+    sections = state.get("sections", [])
+    issues, review_calls = review_sections(sections)
+    fixed_sections, fix_calls, applied = apply_fixes(sections, issues)
+
+    history = list(state.get("trace", {}).get("review", {}).get("history", []))
+    history.append(
+        {
+            "round": rounds + 1,
+            "score": review_score(issues),
+            "critical_sections": critical_section_keys(issues),
+            "fixes_applied": len(applied),
+        }
+    )
+    trace["llm_calls"] += review_calls + fix_calls
+    trace["llm_calls_by_stage"]["review"] = (
+        trace["llm_calls_by_stage"].get("review", 0) + review_calls + fix_calls
+    )
+    trace["review"] = {
+        "enabled": True,
+        "rounds": rounds + 1,
+        "history": history,
+        "issues": issues,
+        "applied": applied,
+    }
+    return {
+        "sections": fixed_sections,
+        "review_rounds": rounds + 1,
+        "trace": trace,
+    }
+
+
+def route_after_review(state: GraphState) -> str:
+    """Dừng khi hết critical, hoặc vòng này không sửa được gì, hoặc chạm trần."""
+    review_trace = state.get("trace", {}).get("review", {})
+    if not review_trace.get("enabled"):
+        return "done"
+    if state.get("review_rounds", 0) >= MAX_REVIEW_ROUNDS:
+        return "done"
+    history = review_trace.get("history", [])
+    if not history or history[-1]["score"]["critical"] == 0:
+        return "done"
+    # Còn critical nhưng vòng vừa rồi không sửa nổi câu nào -> lặp thêm cũng vô
+    # ích, chỉ tốn lệnh gọi. Dừng và để trace ghi lại là còn critical.
+    if history[-1]["fixes_applied"] == 0:
+        return "done"
+    return "again"
+
+
 def assemble(state: GraphState) -> GraphState:
     proposal = "\n\n".join(
         f"{index}. {section['title_ja']}\n"
@@ -927,6 +1003,7 @@ def build_graph(checkpointer=None):
     builder.add_node("plan_sections", plan_sections)
     builder.add_node("retrieve_per_chapter", retrieve_per_chapter)
     builder.add_node("generate_per_section", generate_per_section)
+    builder.add_node("review", review)
     builder.add_node("assemble", assemble)
 
     builder.add_edge(START, "parse_input")
@@ -943,7 +1020,15 @@ def build_graph(checkpointer=None):
     builder.add_edge("route_reference_rfp", "plan_sections")
     builder.add_edge("plan_sections", "retrieve_per_chapter")
     builder.add_edge("retrieve_per_chapter", "generate_per_section")
-    builder.add_edge("generate_per_section", "assemble")
+    builder.add_edge("generate_per_section", "review")
+    builder.add_conditional_edges(
+        "review",
+        route_after_review,
+        {
+            "again": "review",
+            "done": "assemble",
+        },
+    )
     builder.add_edge("assemble", END)
     return builder.compile(checkpointer=checkpointer)
 
@@ -1077,7 +1162,8 @@ def _next_stage(node: str, state: GraphState) -> str | None:
         "route_reference_rfp": "plan_sections",
         "plan_sections": "retrieve_per_chapter",
         "retrieve_per_chapter": "generate_per_section",
-        "generate_per_section": "assemble",
+        "generate_per_section": "review",
+        "review": "assemble",
     }
     return next_by_node.get(node)
 
