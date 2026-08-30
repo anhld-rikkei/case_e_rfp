@@ -43,7 +43,14 @@ from eval.golden.runner import (
     source_summary,
 )
 from eval.golden.schema import GoldenCase, load_case, save_case
+from rfp.export import (
+    DRAFT_BANNER_TITLE,
+    REVIEWER_CHECKLIST,
+    export_filename,
+    to_markdown,
+)
 from rfp.graph import PIPELINE_STAGES, stream_graph
+from rfp.guard import GuardViolation
 from rfp.llm import MODEL as LLM_MODEL, generate
 
 
@@ -89,9 +96,34 @@ def select_sample(text: str) -> None:
     st.session_state["translation"] = ""
 
 
+def _load_uploaded_rfp(uploaded) -> str | None:
+    try:
+        return uploaded.getvalue().decode("utf-8")
+    except UnicodeDecodeError:
+        st.sidebar.error(
+            f"{uploaded.name} không phải UTF-8. RFP phải là .txt mã hoá UTF-8."
+        )
+        return None
+
+
 def sidebar_controls() -> tuple[str, bool]:
     with st.sidebar:
         st.title("RFP đầu vào")
+        uploaded = st.file_uploader(
+            "Tải file RFP (.txt, UTF-8)",
+            type=["txt"],
+            key="rfp_upload",
+        )
+        if uploaded is not None:
+            content = _load_uploaded_rfp(uploaded)
+            # Chỉ nạp một lần cho mỗi file: nếu ghi đè mỗi lần chạy lại script
+            # thì người dùng không sửa nổi nội dung trong ô text.
+            if content is not None and st.session_state.get(
+                "loaded_upload"
+            ) != uploaded.name:
+                st.session_state["loaded_upload"] = uploaded.name
+                select_sample(content)
+                st.rerun()
         text = st.text_area(
             "Dán RFP",
             key="rfp_input",
@@ -146,9 +178,34 @@ def render_mapping(state: dict[str, Any]) -> None:
     st.dataframe(rows, width="stretch", hide_index=True)
 
 
+def render_draft_banner(state: dict[str, Any]) -> None:
+    """Banner nháp + checklist + nút tải. Nhãn nháp đi theo cả file xuất ra."""
+    st.error(
+        f"**{DRAFT_BANNER_TITLE}**  \n"
+        "Chưa có người thật rà soát. Không nộp và không gửi khách hàng khi "
+        "checklist bên dưới chưa tick đủ."
+    )
+    with st.expander("Checklist bắt buộc trước khi nộp", expanded=False):
+        st.markdown(REVIEWER_CHECKLIST)
+    try:
+        markdown = to_markdown(state)
+    except GuardViolation as violation:
+        # Không bao giờ mở đường tải cho bản chưa qua guard.
+        st.error(f"Không xuất được: final guard chặn — {violation}")
+        return
+    st.download_button(
+        "⬇ Tải bản nháp (.md)",
+        data=markdown.encode("utf-8"),
+        file_name=export_filename(state),
+        mime="text/markdown",
+        width="stretch",
+    )
+
+
 def render_proposal(state: dict[str, Any]) -> None:
     trace = state["trace"]
     grounding = trace.get("grounding", {"grounded": 0, "total": 0})
+    render_draft_banner(state)
     st.success(
         f"{grounding['grounded']}/{grounding['total']} câu truy được về một câu nguồn đã verify"
     )
