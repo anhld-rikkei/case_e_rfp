@@ -1087,7 +1087,8 @@ def test_bilingual_renders_both_languages_per_section() -> None:
 
 
 def test_translated_column_keeps_user_label() -> None:
-    """Nhãn trung thực không được rớt khi qua ngôn ngữ khác."""
+    """Nhãn trung thực không được rớt khi qua ngôn ngữ khác — và phải nằm
+    CÙNG HÀNG với vùng vàng bên cột tiếng Nhật."""
     state = _state()
     state["sections"][0]["sentences"].append(
         {
@@ -1106,13 +1107,100 @@ def test_translated_column_keeps_user_label() -> None:
         import app
         import streamlit as st
 
-        app.translate_proposal = lambda s: "[PROPOSAL]\n1. Đáp ứng yêu cầu kỹ thuật\nCâu đã dịch.\n"
+        # 3 câu Nhật -> 3 dòng dịch: khớp 1:1
+        app.translate_proposal = lambda s: "[PROPOSAL]\n1. Đáp ứng yêu cầu kỹ thuật\nCâu dịch 1.\nCâu dịch 2.\nCâu dịch 3.\n"
         st.session_state["t2_bilingual"] = True
         app.render_bilingual_proposal(state, key_prefix="t2")
 
     at = _render(body, state)
-    captions = " ".join(item.value for item in at.caption)
-    assert "✎" in captions and "Người dùng bổ sung" in captions
+    assert not at.exception
+    warnings = [item.value for item in at.warning]
+    # Vùng vàng xuất hiện ở CẢ HAI cột, mỗi bên mang nhãn ✎
+    user_blocks = [text for text in warnings if "Người dùng bổ sung" in text]
+    assert len(user_blocks) == 2
+    assert any("người dùng thêm" in text for text in user_blocks)
+    assert any("Câu dịch 3." in text for text in user_blocks)
+
+
+def test_align_translation_maps_one_to_one_when_counts_match() -> None:
+    import app
+
+    sentences = [{"text": "a"}, {"text": "b"}, {"text": "c"}]
+    lines = ["1. Tiêu đề", "A.", "B.", "C."]
+    assert app.align_translation(sentences, lines) == [["A."], ["B."], ["C."]]
+
+
+def test_align_translation_spreads_when_counts_differ() -> None:
+    """Model gộp/tách câu thì chia đều — sai vài dòng còn hơn đoán bừa."""
+    import app
+
+    sentences = [{"text": "a"}, {"text": "b"}]
+    chunks = app.align_translation(sentences, ["1. T", "A.", "B.", "C.", "D."])
+    assert [len(c) for c in chunks] == [2, 2]
+    assert sum(len(c) for c in chunks) == 4
+
+
+def test_align_translation_handles_missing_translation() -> None:
+    import app
+
+    chunks = app.align_translation([{"text": "a"}, {"text": "b"}], [])
+    assert chunks == [[], []]
+    assert app.align_translation([], ["1. T", "A."]) == []
+
+
+def test_bilingual_puts_one_sided_elements_outside_columns() -> None:
+    """Tiêu đề / trạng thái / cảnh báo thiếu căn cứ phải ở NGOÀI cặp cột.
+
+    Để chúng trong cột trái sẽ đẩy thân văn bản bên trái tụt xuống và cả mục
+    lệch nhau từ dòng đầu — đúng lỗi đang sửa.
+    """
+    state = _state()
+    state["sections"][0]["status"] = "INSUFFICIENT_EVIDENCE"
+    state["sections"][0]["note"] = NOTE
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+        import streamlit as st
+
+        app.translate_proposal = lambda s: "[PROPOSAL]\n1. Đáp ứng yêu cầu kỹ thuật\nCâu dịch 1.\nCâu dịch 2.\n"
+        st.session_state["align_bilingual"] = True
+        app.render_bilingual_proposal(state, key_prefix="align")
+
+    at = _render(body, state)
+    assert not at.exception
+    # Cảnh báo thiếu căn cứ hiện đúng MỘT lần (không nhân đôi vào hai cột)
+    warnings = [item.value for item in at.warning]
+    assert sum("Thiếu căn cứ" in text for text in warnings) == 1
+    # Tiêu đề mục và dòng trạng thái cũng chỉ một lần
+    assert sum("技術要件への対応" in item.value for item in at.markdown) == 1
+    assert sum(
+        "Đủ căn cứ" in item.value or "Thiếu căn cứ" in item.value
+        for item in at.caption
+    ) == 1
+
+
+def test_stacked_layout_keeps_japanese_first() -> None:
+    state = _state()
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+        import streamlit as st
+
+        app.translate_proposal = lambda s: "[PROPOSAL]\n1. Đáp ứng yêu cầu kỹ thuật\nCâu dịch 1.\nCâu dịch 2.\n"
+        st.session_state["st_bilingual"] = True
+        st.session_state["st_stacked"] = True
+        app.render_bilingual_proposal(state, key_prefix="st")
+
+    at = _render(body, state)
+    assert not at.exception
+    text = " ".join(item.value for item in at.markdown)
+    assert "技術要件への対応" in text
 
 
 def test_bilingual_failure_does_not_hide_japanese() -> None:

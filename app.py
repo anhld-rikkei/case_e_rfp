@@ -831,6 +831,51 @@ def _user_count(section: dict[str, Any]) -> int:
     )
 
 
+def align_translation(
+    sentences: list[dict[str, Any]], vi_lines: list[str]
+) -> list[list[str]]:
+    """Chia các dòng dịch của một mục cho từng câu tiếng Nhật.
+
+    Trường hợp thường gặp là **khớp 1:1** — model dịch từng câu một và bộ tách
+    giữ nguyên mỗi câu một dòng. Khi số dòng lệch (model gộp hoặc tách câu) thì
+    chia đều theo tỉ lệ: sai vài dòng trong một mục thì vẫn đối chiếu được, còn
+    đoán bừa từng câu thì đặt nhãn "người dùng bổ sung" sai chỗ — tệ hơn nhiều.
+    """
+    body = [line for line in vi_lines[1:] if line.strip()]
+    count = len(sentences)
+    if count == 0:
+        return []
+    if len(body) == count:
+        return [[line] for line in body]
+    chunks: list[list[str]] = [[] for _ in range(count)]
+    if not body:
+        return chunks
+    for index, line in enumerate(body):
+        chunks[min(index * count // len(body), count - 1)].append(line)
+    return chunks
+
+
+def render_marked_block(
+    mark: str,
+    lines: list[str],
+    *,
+    label_suffix: str = "",
+) -> None:
+    """Một khối văn bản với đúng kiểu đánh dấu — dùng cho CẢ hai cột ngôn ngữ."""
+    body = "  \n".join(line for line in lines if line.strip())
+    if not body:
+        st.caption("*(chưa có bản dịch cho phần này)*")
+        return
+    if mark == "user":
+        st.warning(f"{body}\n\n**{USER_BLOCK_LABEL}{label_suffix}**", icon="✏️")
+    elif mark == "edited":
+        st.markdown(f"> {body}\n>\n> *{EDITED_LABEL}*")
+    else:
+        for line in lines:
+            if line.strip():
+                st.write(line)
+
+
 def render_bilingual_proposal(
     state: dict[str, Any],
     *,
@@ -870,52 +915,58 @@ def render_bilingual_proposal(
                 show = False
 
     for index, section in enumerate(sections):
-        heading = f"**{index + 1}. {section['title_ja']}**"
+        sentences = section.get("sentences", [])
         status = section.get("status")
-        caption = (
-            f"{section['title_vi']} · {SECTION_STATUS_ICON.get(status, '')} "
-            f"{label(SECTION_STATUS_VI, status)}"
-        )
         vi_lines = translated_sections[index] if index < len(translated_sections) else []
 
-        def render_ja() -> None:
-            st.markdown(heading)
-            st.caption(caption)
-            render_section_note(state, section)
+        # Phần chỉ có MỘT bên (tiêu đề, trạng thái, cảnh báo thiếu căn cứ) nằm
+        # NGOÀI cặp cột và chiếm hết bề ngang. Để chúng trong cột trái sẽ đẩy
+        # thân văn bản bên trái tụt xuống, và cả mục lệch nhau từ dòng đầu.
+        st.markdown(f"**{index + 1}. {section['title_ja']}**")
+        vi_heading = vi_lines[0] if vi_lines else section["title_vi"]
+        st.caption(
+            f"{vi_heading} · {SECTION_STATUS_ICON.get(status, '')} "
+            f"{label(SECTION_STATUS_VI, status)}"
+        )
+        render_section_note(state, section)
+
+        if not (show and not stacked):
+            # Một cột: giữ nguyên thứ tự đọc Nhật -> Việt trong từng mục.
             render_marked_sentences(
-                section["sentences"],
-                section_key=section["key"],
-                allow_unpin=allow_unpin,
+                sentences, section_key=section["key"], allow_unpin=allow_unpin
             )
+            if show:
+                render_marked_block("plain", vi_lines[1:])
+            continue
 
-        def render_vi() -> None:
-            if not vi_lines:
-                st.caption("*(chưa có bản dịch cho mục này)*")
-                return
-            st.markdown(f"**{vi_lines[0]}**")
-            for line in vi_lines[1:]:
-                if line.strip():
-                    st.markdown(line)
-            # Nhãn trung thực không được rớt khi qua ngôn ngữ khác. Bản dịch
-            # không map được từng câu (một lần dịch cả hồ sơ rồi cắt theo mục),
-            # nên nhãn đặt ở MỨC MỤC và nói rõ phải xem cột tiếng Nhật.
-            count = _user_count(section)
-            if count:
-                st.caption(
-                    f"✎ Mục này có {count} câu **Người dùng bổ sung — chưa kiểm "
-                    "chứng**; xem cột tiếng Nhật để biết chính xác câu nào."
-                )
-
-        if show and not stacked:
+        # Hai cột: chia theo TỪNG NHÓM đánh dấu, nên vùng vàng "người dùng bổ
+        # sung" nằm cùng hàng ở cả hai ngôn ngữ.
+        chunks = align_translation(sentences, vi_lines)
+        position = 0
+        for group_index, (mark, group) in enumerate(group_by_mark(sentences)):
+            vi_chunk = [
+                line
+                for offset in range(position, position + len(group))
+                if offset < len(chunks)
+                for line in chunks[offset]
+            ]
+            position += len(group)
             left, right = st.columns(2)
             with left:
-                render_ja()
+                render_marked_block(mark, [item.get("text", "") for item in group])
+                if mark == "user" and allow_unpin:
+                    for item_index, item in enumerate(
+                        [item for item in group if item.get("pinned")]
+                    ):
+                        st.button(
+                            f"📌 Bỏ ghim: {item['text'][:30]}…",
+                            key=f"unpin_{key_prefix}_{section['key']}_{group_index}_{item_index}",
+                            on_click=unpin_sentence,
+                            args=(section["key"], item["text"]),
+                        )
             with right:
-                render_vi()
-        else:
-            render_ja()
-            if show:
-                render_vi()
+                render_marked_block(mark, vi_chunk)
+        st.divider()
 
 
 def render_mark_legend(sentences: list[dict[str, Any]]) -> None:
