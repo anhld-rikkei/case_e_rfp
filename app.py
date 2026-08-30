@@ -926,13 +926,8 @@ def render_mark_legend(sentences: list[dict[str, Any]]) -> None:
 
 
 def render_proposal(state: dict[str, Any]) -> None:
-    trace = state["trace"]
-    grounding = trace.get("grounding", {"grounded": 0, "total": 0})
     render_draft_banner(state)
-    st.success(
-        f"{grounding['grounded']}/{grounding['total']} câu truy được về nguồn cụ thể "
-        "(phần còn lại là câu nối, không mang thông tin sự thật)"
-    )
+    st.success(sentence_breakdown(state))
     # KẾT QUẢ trước, CHI TIẾT sau: người mở tab cần thấy ngay bức tranh tổng —
     # mục nào đủ căn cứ, mục nào cần người bổ sung — rồi mới đọc văn bản.
     st.subheader("Kết quả")
@@ -956,6 +951,57 @@ def render_proposal(state: dict[str, Any]) -> None:
     st.divider()
     render_chat_refine(state)
     render_version_history()
+
+
+def count_phrase(total: int, parts: list[tuple[int, str]], *, unit: str) -> str:
+    """Đếm tường minh từng loại, ẩn thành phần bằng 0.
+
+    Dạng "9/10 … (phần còn lại là …)" bắt người đọc tự trừ để biết phần còn lại
+    là bao nhiêu và gồm những gì — và khi có ba loại thì phép trừ đó sai. Liệt kê
+    thẳng từng loại thì không phải suy luận gì.
+
+    Tiếng Việt không biến đổi danh từ theo số, nên `unit` dùng nguyên cho cả 1
+    lẫn nhiều; tham số vẫn để lộ ra để chỗ gọi tự quyết đơn vị.
+    """
+    if total <= 0:
+        return f"Chưa có {unit} nào"
+    shown = [f"{count} {text}" for count, text in parts if count]
+    if not shown:
+        return f"{total} {unit}"
+    return f"{total} {unit}: " + " · ".join(shown)
+
+
+def sentence_breakdown(state: dict[str, Any]) -> str:
+    """Tóm tắt nguồn gốc các câu trong bản ĐANG xem.
+
+    Đếm thẳng từ `sections` chứ không dùng `trace.grounding`: trace đếm
+    "origin != bridge" là grounded, nên từ v1.7 nó tính cả câu người dùng bổ
+    sung vào nhóm có nguồn — đúng cái mà nhãn v1.7 sinh ra để phân biệt.
+    """
+    sentences = [
+        sentence
+        for section in state.get("sections", [])
+        for sentence in section.get("sentences", [])
+    ]
+    origins = [sentence.get("origin") for sentence in sentences]
+    return count_phrase(
+        len(sentences),
+        [
+            (
+                sum(1 for origin in origins if origin in ("capability", "precedent")),
+                "câu truy được về nguồn cụ thể",
+            ),
+            (
+                sum(1 for origin in origins if origin == "user"),
+                "câu người dùng bổ sung (chưa kiểm chứng)",
+            ),
+            (
+                sum(1 for origin in origins if origin == "bridge"),
+                "câu nối (không mang thông tin sự thật)",
+            ),
+        ],
+        unit="câu",
+    )
 
 
 def section_summary(state: dict[str, Any]) -> str:
@@ -1026,17 +1072,18 @@ def requirement_coverage(
 def render_coverage(state: dict[str, Any]) -> None:
     rows, missing = requirement_coverage(state)
     covered = len(rows) - len(missing)
-    metric_col, status_col = st.columns([1, 3])
-    with metric_col:
-        st.metric("Đã đáp ứng", f"{covered}/{len(rows)}")
-    with status_col:
-        if missing:
-            st.warning(
-                f"Còn {len(missing)} yêu cầu chưa có căn cứ — cần người bổ sung "
-                "bằng tay trước khi nộp."
-            )
-        else:
-            st.success("Mọi yêu cầu của RFP đều đã có căn cứ.")
+    summary = count_phrase(
+        len(rows),
+        [
+            (covered, "yêu cầu đã có căn cứ"),
+            (len(missing), "yêu cầu chưa có căn cứ"),
+        ],
+        unit="yêu cầu",
+    )
+    if missing:
+        st.warning(f"{summary} — phần chưa có căn cứ cần người bổ sung trước khi nộp.")
+    else:
+        st.success(f"{summary} — mọi yêu cầu của RFP đều đã có căn cứ.")
     st.subheader("Đối chiếu từng yêu cầu của RFP")
     st.dataframe(rows, width="stretch", hide_index=True)
     if missing:

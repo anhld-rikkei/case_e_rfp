@@ -910,6 +910,122 @@ def test_overview_puts_result_block_before_detail() -> None:
     )
 
 
+# ── Dòng tóm tắt: đếm tường minh, ẩn thành phần bằng 0 ───────────────────
+
+def test_count_phrase_lists_every_non_zero_part() -> None:
+    import app
+
+    assert app.count_phrase(
+        10, [(9, "câu có nguồn"), (1, "câu nối")], unit="câu"
+    ) == "10 câu: 9 câu có nguồn · 1 câu nối"
+
+
+def test_count_phrase_hides_zero_parts() -> None:
+    """Không được hiện '0 câu nối'."""
+    import app
+
+    text = app.count_phrase(9, [(9, "câu có nguồn"), (0, "câu nối")], unit="câu")
+    assert text == "9 câu: 9 câu có nguồn"
+    assert "0 câu" not in text
+
+
+def test_count_phrase_handles_single_item() -> None:
+    import app
+
+    assert app.count_phrase(1, [(1, "câu có nguồn")], unit="câu") == (
+        "1 câu: 1 câu có nguồn"
+    )
+
+
+def test_count_phrase_handles_empty() -> None:
+    import app
+
+    assert app.count_phrase(0, [(0, "câu có nguồn")], unit="câu") == "Chưa có câu nào"
+
+
+def test_count_phrase_without_any_breakdown() -> None:
+    import app
+
+    assert app.count_phrase(3, [], unit="câu") == "3 câu"
+
+
+def test_sentence_breakdown_counts_three_kinds() -> None:
+    import app
+
+    state = _state()  # 1 capability + 1 bridge
+    state["sections"][0]["sentences"].append(
+        {
+            "text": "người dùng thêm",
+            "origin": "user",
+            "source_id": None,
+            "req_ids": [],
+            "verdict": "USER_PROVIDED",
+        }
+    )
+    text = app.sentence_breakdown(state)
+    assert text.startswith("3 câu:")
+    assert "1 câu truy được về nguồn cụ thể" in text
+    assert "1 câu người dùng bổ sung (chưa kiểm chứng)" in text
+    assert "1 câu nối (không mang thông tin sự thật)" in text
+
+
+def test_sentence_breakdown_omits_missing_kinds() -> None:
+    import app
+
+    state = _state()
+    state["sections"][0]["sentences"] = [
+        {"text": "a", "origin": "precedent", "source_id": "S1", "verdict": "VERIFIED"}
+    ]
+    text = app.sentence_breakdown(state)
+    assert text == "1 câu: 1 câu truy được về nguồn cụ thể"
+    assert "câu nối" not in text and "người dùng" not in text
+
+
+def test_sentence_breakdown_does_not_count_user_as_grounded() -> None:
+    """trace.grounding đếm origin != bridge nên gộp nhầm câu user vào nhóm
+    có nguồn — chính thứ mà nhãn v1.7 sinh ra để phân biệt."""
+    import app
+
+    state = _state()
+    state["sections"][0]["sentences"] = [
+        {
+            "text": "u",
+            "origin": "user",
+            "source_id": None,
+            "verdict": "USER_PROVIDED",
+        }
+    ]
+    text = app.sentence_breakdown(state)
+    assert "truy được về nguồn" not in text
+    assert "1 câu người dùng bổ sung" in text
+
+
+def test_sentence_breakdown_on_empty_proposal() -> None:
+    import app
+
+    assert app.sentence_breakdown({"sections": []}) == "Chưa có câu nào"
+
+
+def test_coverage_summary_uses_explicit_counts() -> None:
+    import app
+
+    state = _state()  # 3.1 có căn cứ, 3.2 thì không
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_coverage(state)
+
+    at = _render(body, state)
+    text = " ".join(item.value for item in list(at.warning) + list(at.success))
+    assert "2 yêu cầu:" in text
+    assert "1 yêu cầu đã có căn cứ" in text
+    assert "1 yêu cầu chưa có căn cứ" in text
+
+
 # ── Song ngữ theo từng mục ───────────────────────────────────────────────
 
 def test_bilingual_off_by_default_makes_no_llm_call() -> None:
