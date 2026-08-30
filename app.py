@@ -423,9 +423,21 @@ def _versions() -> list[dict[str, Any]]:
 
 
 def push_version(state: dict[str, Any], *, label: str, **extra: Any) -> None:
+    """Thêm một bản MỚI. Không bao giờ ghi đè hay xoá bản nào trong session.
+
+    Quay lại bản cũ rồi chat tiếp sẽ sinh bản mới nối vào cuối, có ghi rõ nó
+    xuất phát từ bản nào — các bản sau vẫn còn nguyên để so và quay lại.
+    """
     versions = _versions()
     versions.append({"state": state, "label": label, **extra})
     st.session_state["version_index"] = len(versions) - 1
+
+
+def version_label(versions: list[dict[str, Any]], parent_index: int | None) -> str:
+    label = f"v{len(versions) + 1}"
+    if parent_index is not None and parent_index != len(versions) - 1:
+        return f"{label} · từ {versions[parent_index]['label']}"
+    return label
 
 
 def current_version() -> dict[str, Any] | None:
@@ -503,13 +515,16 @@ def render_chat_refine(state: dict[str, Any]) -> None:
                 )
                 return
         if result.outcome == "changed":
+            parent_index = st.session_state.get("version_index", len(_versions()) - 1)
             push_version(
                 result.state,
-                label=f"v{len(_versions()) + 1}",
+                label=version_label(_versions(), parent_index),
                 instruction=instruction,
                 target=picked,
                 rejected=result.rejected,
                 counts=refine_counts(result),
+                restored=result.restored,
+                parent_index=parent_index,
             )
             st.session_state["translation"] = ""
             st.rerun()
@@ -551,6 +566,13 @@ def render_refine_outcome(result: Any) -> None:
     tính năng hỏng.
     """
     counts = refine_counts(result)
+    if result.restored:
+        st.info(
+            f"📌 **Đã giữ lại {result.restored} câu bạn thêm trước đó.** Mô hình "
+            "định sửa hoặc xoá chúng trong lượt này, nhưng chúng đang được ghim. "
+            "Muốn cho phép sửa thì bấm **Bỏ ghim** ở câu tương ứng, hoặc nhắc "
+            "đích danh nội dung đó trong chỉ thị."
+        )
     if result.outcome == "changed":
         st.success(f"Đã cập nhật: {_counts_line(counts)}")
         if result.rejected:
@@ -592,6 +614,7 @@ def render_version_history() -> None:
     labels = [
         f"{item['label']}"
         + (f" · {item.get('target', '')}" if item.get("instruction") else " · bản gốc")
+        + (" · 📌 giữ lại câu ghim" if item.get("restored") else "")
         for item in versions
     ]
     picked = st.radio(
@@ -617,8 +640,21 @@ def render_version_history() -> None:
         _render_rejections(chosen["rejected"])
     if picked > 0:
         with st.expander("Xem thay đổi so với bản trước", expanded=False):
-            diff = version_diff(versions[picked - 1]["state"], chosen["state"])
+            base = chosen.get("parent_index", picked - 1)
+            diff = version_diff(versions[base]["state"], chosen["state"])
             st.code(diff or "(không có khác biệt trong phần văn bản)", language="diff")
+
+    # Toàn văn bản đang chọn, ngay tại đây: đổi phiên bản là thấy ngay nội dung
+    # của phiên bản đó, không phải suy từ diff.
+    st.markdown(f"#### Bản đầy đủ — {chosen['label']}")
+    render_mark_legend(
+        [
+            sentence
+            for section in chosen["state"].get("sections", [])
+            for sentence in section["sentences"]
+        ]
+    )
+    render_full_proposal(chosen["state"], allow_unpin=True)
 
 
 def sentence_mark(sentence: dict[str, Any]) -> str:
@@ -651,13 +687,49 @@ def group_by_mark(
     return groups
 
 
-def render_marked_sentences(sentences: list[dict[str, Any]]) -> None:
-    for mark, group in group_by_mark(sentences):
+def unpin_sentence(section_key: str, text: str) -> None:
+    """Bỏ ghim một câu trong bản ĐANG hiển thị.
+
+    Bỏ ghim là cho phép lượt chat sau sửa hoặc xoá câu đó — một quyết định của
+    người dùng, nên nó phải là một cú bấm rõ ràng chứ không phải hệ quả phụ.
+    """
+    version = current_version()
+    if not version:
+        return
+    for section in version["state"].get("sections", []):
+        if section["key"] != section_key:
+            continue
+        for sentence in section.get("sentences", []):
+            if sentence.get("text") == text:
+                sentence["pinned"] = False
+
+
+def render_marked_sentences(
+    sentences: list[dict[str, Any]],
+    *,
+    section_key: str = "",
+    allow_unpin: bool = False,
+) -> None:
+    for group_index, (mark, group) in enumerate(group_by_mark(sentences)):
         body = "  \n".join(item.get("text", "") for item in group)
         if mark == "user":
+            pinned = [item for item in group if item.get("pinned")]
+            label_line = USER_BLOCK_LABEL + (" · 📌 đã ghim" if pinned else "")
             # icon phải là emoji thật — Streamlit từ chối "✎" (ký tự dingbat).
             # Giữ ✎ trong nhãn chữ để khớp ký hiệu dùng ở file export.
-            st.warning(f"{body}\n\n**{USER_BLOCK_LABEL}**", icon="✏️")
+            st.warning(f"{body}\n\n**{label_line}**", icon="✏️")
+            if allow_unpin:
+                for item_index, item in enumerate(pinned):
+                    st.button(
+                        f"📌 Bỏ ghim: {item['text'][:36]}…",
+                        key=f"unpin_{section_key}_{group_index}_{item_index}",
+                        on_click=unpin_sentence,
+                        args=(section_key, item["text"]),
+                        help=(
+                            "Bỏ ghim để lượt chat sau được phép sửa hoặc xoá "
+                            "câu này."
+                        ),
+                    )
         elif mark == "edited":
             st.markdown(
                 f"> {body}\n>\n> *{EDITED_LABEL}*"
@@ -665,6 +737,17 @@ def render_marked_sentences(sentences: list[dict[str, Any]]) -> None:
         else:
             for item in group:
                 st.write(item.get("text", ""))
+
+
+def render_full_proposal(state: dict[str, Any], *, allow_unpin: bool = False) -> None:
+    """Toàn văn hồ sơ của một phiên bản, đủ bôi màu."""
+    for index, section in enumerate(state.get("sections", []), start=1):
+        st.markdown(f"**{index}. {section['title_ja']}**")
+        render_marked_sentences(
+            section["sentences"],
+            section_key=section["key"],
+            allow_unpin=allow_unpin,
+        )
 
 
 def render_mark_legend(sentences: list[dict[str, Any]]) -> None:
@@ -702,7 +785,7 @@ def render_proposal(state: dict[str, Any]) -> None:
             f"{label(SECTION_STATUS_VI, status)}"
         )
         render_section_note(state, section)
-        render_marked_sentences(section["sentences"])
+        render_marked_sentences(section["sentences"], section_key=section["key"])
     st.divider()
     render_chat_refine(state)
     render_version_history()

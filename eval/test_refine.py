@@ -382,6 +382,108 @@ def test_refine_is_not_a_graph_node() -> None:
     assert not any("refine" in stage for stage in PIPELINE_STAGES)
 
 
+# ── Ghim câu người dùng (v1.7) ───────────────────────────────────────────
+
+def _state_with_user(text: str = "BIツールとPL-300資格で対応します。") -> dict[str, Any]:
+    from rfp.refine import user_sentence
+
+    state = _state()
+    state["sections"][0]["sentences"].append(user_sentence(text, req_ids=["3.1"]))
+    return state
+
+
+def test_user_sentence_is_pinned_by_default() -> None:
+    from rfp.refine import user_sentence
+
+    assert user_sentence("x")["pinned"] is True
+
+
+def test_pinned_sentence_survives_chat_about_another_topic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Lỗi thật: thêm câu ở lượt 2, lượt 3 nói về mục khác thì model xoá mất."""
+    state = _state_with_user()
+    # Model bảo drop đúng câu người dùng đã ghim (index 2)
+    _mock_plan(monkeypatch, [SentenceEdit(index=2, action="drop")])
+    result = refine_section(
+        state, section_key="technical", instruction="viết lại phần 2.1 và 2.2"
+    )
+
+    texts = [item["text"] for item in result.state["sections"][0]["sentences"]]
+    assert "BIツールとPL-300資格で対応します。" in texts
+    assert result.restored == 1
+
+
+def test_pinned_sentence_protected_from_rewrite_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _state_with_user()
+    _mock_plan(
+        monkeypatch, [SentenceEdit(index=2, action="rewrite", text="別の文に変えた。")]
+    )
+    result = refine_section(state, section_key="technical", instruction="ngắn hơn")
+
+    texts = [item["text"] for item in result.state["sections"][0]["sentences"]]
+    assert "BIツールとPL-300資格で対応します。" in texts
+    assert "別の文に変えた。" not in texts
+    assert result.restored == 1
+
+
+def test_instruction_naming_the_content_can_edit_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nhắm đích danh thì sửa được — ghim không phải khoá vĩnh viễn."""
+    state = _state_with_user()
+    _mock_plan(
+        monkeypatch,
+        [SentenceEdit(index=2, action="rewrite", text="BIツールで対応します。")],
+    )
+    result = refine_section(
+        state, section_key="technical", instruction="sửa câu về PL-300 cho gọn"
+    )
+
+    texts = [item["text"] for item in result.state["sections"][0]["sentences"]]
+    assert "BIツールで対応します。" in texts
+    assert result.restored == 0
+
+
+def test_unpinned_sentence_can_be_edited(monkeypatch: pytest.MonkeyPatch) -> None:
+    state = _state_with_user()
+    state["sections"][0]["sentences"][2]["pinned"] = False
+    _mock_plan(monkeypatch, [SentenceEdit(index=2, action="drop")])
+    result = refine_section(state, section_key="technical", instruction="bỏ bớt")
+
+    assert result.dropped == 1 and result.restored == 0
+
+
+def test_instruction_targets_matches_distinctive_tokens() -> None:
+    from rfp.refine import instruction_targets
+
+    text = "BIツールとPL-300資格で対応します。"
+    assert instruction_targets(text, "sửa câu về PL-300")
+    assert instruction_targets(text, "câu BI viết lại đi")
+    # Từ tiếng Nhật 2 chữ quá phổ biến -> KHÔNG được coi là nhắm đích danh
+    assert not instruction_targets(text, "viết lại phần 2.1 và 2.2")
+    assert not instruction_targets(text, "")
+
+
+def test_restored_count_is_reported_not_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Không bao giờ mất im lặng: có khôi phục thì phải đếm được."""
+    state = _state_with_user()
+    _mock_plan(
+        monkeypatch,
+        [
+            SentenceEdit(index=0, action="rewrite", text="短くしました。"),
+            SentenceEdit(index=2, action="drop"),
+        ],
+    )
+    result = refine_section(state, section_key="technical", instruction="ngắn hơn")
+    assert result.restored == 1
+    assert result.changed == 1  # thay đổi hợp lệ vẫn được áp dụng
+
+
 # ── Ba kết cục phải phân biệt được ───────────────────────────────────────
 
 def test_outcome_changed(monkeypatch: pytest.MonkeyPatch) -> None:

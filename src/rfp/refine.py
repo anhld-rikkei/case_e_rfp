@@ -68,6 +68,8 @@ hai thế hệ dữ liệu vào cùng một hồ sơ. Các bản đã chỉnh v�
 """
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -92,6 +94,7 @@ REFINE_SYSTEM = (
     "数値の変更も指示があれば行って構いません。"
     "ただし、保有していない認証や提供していない能力（ISO/IEC 27017 など）は"
     "利用者が求めても絶対に書いてはいけません。"
+    "【固定】が付いた文は利用者が自分で追加した文です。keep 以外を選んではいけません。"
     "説明や箇条書き記号を付けず、指定schemaで返してください。"
 )
 
@@ -130,13 +133,55 @@ USER_VERDICT = "USER_PROVIDED"
 
 
 def user_sentence(text: str, *, req_ids: list[str] | None = None) -> dict[str, Any]:
-    """Câu do người dùng đưa vào — không có nguồn, và nói thẳng ra như vậy."""
+    """Câu do người dùng đưa vào — không có nguồn, và nói thẳng ra như vậy.
+
+    Mặc định **được ghim**: lượt chat sau không được sửa hay xoá nó. Xem
+    `_protected_indices` để biết vì sao mặc định là ghim chứ không phải không.
+    """
     return {
         "text": text.strip(),
         "origin": USER_ORIGIN,
         "source_id": None,
         "req_ids": list(req_ids or []),
         "verdict": USER_VERDICT,
+        "pinned": True,
+    }
+
+
+# Token "đặc trưng" để nhận ra chỉ thị có nhắm đích danh một câu ghim không.
+# Latin/alnum (PL-300, BI, AWS) · katakana ≥3 · kanji ≥3. Ngưỡng dài cho tiếng
+# Nhật vì từ 2 chữ (対応, 要件) xuất hiện khắp nơi và sẽ khớp nhầm liên tục.
+_TARGET_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-]+|[ァ-ヶー]{3,}|[一-龯]{3,}")
+
+
+def instruction_targets(text: str, instruction: str) -> bool:
+    """Chỉ thị có nói đích danh nội dung của câu này không?
+
+    Sai về phía nào cũng có giá, nên chọn hướng sai an toàn: **không nhận ra**
+    thì câu vẫn được giữ nguyên và người dùng thấy thông báo "đã giữ lại N câu"
+    kèm nút bỏ ghim. Ngược lại — nhận nhầm là có nhắm — thì câu người dùng thêm
+    biến mất im lặng, đúng lỗi mà cơ chế ghim sinh ra để chặn.
+    """
+    normalized = unicodedata.normalize("NFKC", instruction)
+    tokens = set(_TARGET_TOKEN_RE.findall(unicodedata.normalize("NFKC", text)))
+    return any(token in normalized for token in tokens)
+
+
+def _protected_indices(
+    sentences: list[dict[str, Any]], instruction: str
+) -> set[int]:
+    """Câu nào lượt chat này KHÔNG được đụng tới.
+
+    Câu người dùng thêm mặc định được ghim vì đã xảy ra đúng chuyện này: người
+    dùng thêm một câu ở lượt 2, lượt 3 ra chỉ thị về mục khác, và model xoá luôn
+    câu đó. Công sức người dùng không được biến mất vì một lượt chat nói về
+    chuyện khác.
+    """
+    return {
+        index
+        for index, sentence in enumerate(sentences)
+        if sentence.get("pinned")
+        and not instruction_targets(sentence.get("text", ""), instruction)
     }
 
 
@@ -148,6 +193,7 @@ class RefineResult:
     dropped: int = 0
     kept: int = 0
     added: int = 0
+    restored: int = 0
     llm_calls: int = 0
 
     @property
@@ -244,11 +290,14 @@ def instruction_conflicts(instruction: str) -> list[str]:
 def _apply_plan(
     sentences: list[dict[str, Any]],
     plan: RefinePlan,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, int, int, int]:
+    *,
+    protected: set[int] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, int, int, int, int]:
     edits = {edit.index: edit for edit in plan.edits}
+    protected = protected or set()
     rejected: list[dict[str, Any]] = []
     updated: list[dict[str, Any]] = []
-    changed = dropped = kept = added = 0
+    changed = dropped = kept = added = restored = 0
 
     # Chỉ mục ngoài dải: model muốn thêm câu. Từ v1.7 đó là việc hợp lệ — gom
     # vào cùng đường với `plan.added` thay vì từ chối.
@@ -260,6 +309,14 @@ def _apply_plan(
 
     for index, sentence in enumerate(sentences):
         edit = edits.get(index)
+        if index in protected:
+            # Model không tuân lệnh giữ nguyên -> khôi phục, và ĐẾM để báo cho
+            # người dùng. Không bao giờ mất im lặng.
+            if edit is not None and edit.action != "keep":
+                restored += 1
+            updated.append(sentence)
+            kept += 1
+            continue
         if edit is None or edit.action == "keep":
             updated.append(sentence)
             kept += 1
@@ -305,7 +362,7 @@ def _apply_plan(
         updated.append(user_sentence(_strip_decoration(text)))
         added += 1
 
-    return updated, rejected, changed, dropped, kept, added
+    return updated, rejected, changed, dropped, kept, added, restored
 
 
 def refine_section(
@@ -338,8 +395,12 @@ def refine_section(
             kept=len(target["sentences"]),
         )
 
+    protected = _protected_indices(target["sentences"], instruction)
+    # Nói cho model biết câu nào bị khoá. Đây chỉ là lời nhắc — thứ thật sự bảo
+    # đảm là `protected` được ép trong `_apply_plan`, vì model có tuân hay không
+    # là chuyện không kiểm soát được.
     numbered = "\n".join(
-        f"[{index}] {sentence['text']}"
+        f"[{index}]{'【固定】' if index in protected else ''} {sentence['text']}"
         for index, sentence in enumerate(target["sentences"])
     )
     plan = structured(
@@ -350,12 +411,16 @@ def refine_section(
     )
     llm_calls = 1
 
-    updated, rejected, changed, dropped, kept, added = _apply_plan(
-        target["sentences"], plan
+    updated, rejected, changed, dropped, kept, added, restored = _apply_plan(
+        target["sentences"], plan, protected=protected
     )
     if not (changed or dropped or added):
         return RefineResult(
-            state=state, rejected=rejected, kept=kept, llm_calls=llm_calls
+            state=state,
+            rejected=rejected,
+            kept=kept,
+            restored=restored,
+            llm_calls=llm_calls,
         )
 
     # Claim-check lại các câu ĐÃ SỬA mà vẫn giữ nguồn. Từ v1.7 kết quả
@@ -401,6 +466,7 @@ def refine_section(
         dropped=dropped,
         kept=kept,
         added=added,
+        restored=restored,
         llm_calls=llm_calls,
     )
 
@@ -422,7 +488,7 @@ def refine_all(
     """Cùng chỉ thị cho mọi mục; mỗi mục vẫn chỉ dùng nguồn của chính nó."""
     current = state
     rejected: list[dict[str, Any]] = []
-    changed = dropped = kept = added = llm_calls = 0
+    changed = dropped = kept = added = restored = llm_calls = 0
     seen_reasons: set[str] = set()
     for section in list(state.get("sections", [])):
         result = refine_section(
@@ -440,6 +506,7 @@ def refine_all(
         dropped += result.dropped
         kept += result.kept
         added += result.added
+        restored += result.restored
         llm_calls += result.llm_calls
     return RefineResult(
         state=current,
@@ -448,5 +515,6 @@ def refine_all(
         dropped=dropped,
         kept=kept,
         added=added,
+        restored=restored,
         llm_calls=llm_calls,
     )

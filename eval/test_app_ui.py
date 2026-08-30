@@ -736,6 +736,133 @@ def test_user_sentence_appears_in_requirement_coverage() -> None:
     assert [item["req_id"] for item in missing] == []
 
 
+# ── Ghim câu + lịch sử phiên bản (v1.7) ──────────────────────────────────
+
+def _pinned_state() -> dict[str, Any]:
+    state = _state()
+    state["sections"][0]["sentences"].append(
+        {
+            "text": "BIツールとPL-300資格で対応します。",
+            "origin": "user",
+            "source_id": None,
+            "req_ids": ["3.1"],
+            "verdict": "USER_PROVIDED",
+            "pinned": True,
+        }
+    )
+    return state
+
+
+def test_pinned_user_block_shows_pin_icon() -> None:
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_marked_sentences(
+            state["sections"][0]["sentences"], section_key="technical"
+        )
+
+    at = _render(body, _pinned_state())
+    warnings = " ".join(item.value for item in at.warning)
+    assert "📌" in warnings
+
+
+def test_unpin_button_appears_only_where_allowed() -> None:
+    def body(root, state, allow):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_marked_sentences(
+            state["sections"][0]["sentences"],
+            section_key="technical",
+            allow_unpin=allow,
+        )
+
+    with_button = _render(body, _pinned_state(), True)
+    assert any("Bỏ ghim" in b.label for b in with_button.button)
+    without = _render(body, _pinned_state(), False)
+    assert not any("Bỏ ghim" in b.label for b in without.button)
+
+
+def test_full_proposal_renders_every_section_with_marks() -> None:
+    """Bản đầy đủ của phiên bản đang chọn phải hiện, không chỉ diff."""
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_full_proposal(state)
+
+    at = _render(body, _pinned_state())
+    assert not at.exception
+    text = " ".join(item.value for item in at.markdown)
+    assert "技術要件への対応" in text  # tiêu đề mục
+    warnings = " ".join(item.value for item in at.warning)
+    assert "BIツールとPL-300資格で対応します。" in warnings  # vùng vàng user
+
+
+def test_version_label_marks_lineage_when_branching() -> None:
+    import app
+
+    versions = [{"label": "v1"}, {"label": "v2"}, {"label": "v3"}]
+    # Chat từ bản mới nhất -> nhãn thường
+    assert app.version_label(versions, 2) == "v4"
+    # Quay lại v2 rồi chat -> ghi rõ xuất phát từ đâu
+    assert app.version_label(versions, 1) == "v4 · từ v2"
+
+
+def test_push_version_never_deletes_later_versions() -> None:
+    import app
+    import streamlit as st
+
+    st.session_state.clear()
+    st.session_state["versions"] = []
+    app.push_version({"proposal": "a"}, label="v1")
+    app.push_version({"proposal": "b"}, label="v2")
+    app.push_version({"proposal": "c"}, label="v3")
+    st.session_state["version_index"] = 1  # quay lại v2
+    app.push_version({"proposal": "d"}, label="v4 · từ v2", parent_index=1)
+
+    labels = [item["label"] for item in st.session_state["versions"]]
+    assert labels == ["v1", "v2", "v3", "v4 · từ v2"]  # v3 còn nguyên
+    assert st.session_state["version_index"] == 3
+
+
+def test_unpin_sentence_clears_the_flag() -> None:
+    import app
+    import streamlit as st
+
+    state = _pinned_state()
+    st.session_state.clear()
+    st.session_state["versions"] = [{"state": state, "label": "v1"}]
+    st.session_state["version_index"] = 0
+
+    app.unpin_sentence("technical", "BIツールとPL-300資格で対応します。")
+    assert state["sections"][0]["sentences"][-1]["pinned"] is False
+
+
+def test_restored_count_surfaces_in_outcome_message() -> None:
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+        from rfp.refine import RefineResult
+
+        app.render_refine_outcome(RefineResult(state={}, changed=1, restored=2))
+
+    at = _render(body)
+    text = " ".join(item.value for item in list(at.info) + list(at.success))
+    assert "giữ lại 2 câu" in text
+    assert "Bỏ ghim" in text
+
+
 # ── Tab Kết quả đánh giá ──────────────────────────────────────────────────
 
 def test_headline_numbers_read_from_results_not_hardcoded() -> None:
