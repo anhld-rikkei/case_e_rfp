@@ -1,4 +1,4 @@
-"""Review loop tối giản: chỉ soi CHẤT LƯỢNG VĂN BẢN (Bước 6, v1.2).
+"""Review loop: chỉ soi CHẤT LƯỢNG VĂN BẢN (Bước 6 v1.2 · multi-persona #10 v1.3).
 
 ## Ranh giới với guard — đọc trước khi sửa file này
 
@@ -36,8 +36,10 @@ cache key vẫn ứng với đúng một kết quả.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Literal
 
+from config.settings import MAX_REVIEW_WORKERS
 from pydantic import BaseModel
 
 from .generate.precedent import (
@@ -60,8 +62,7 @@ ISSUE_TYPES = (
 )
 SEVERITIES = ("critical", "major", "minor")
 
-REVIEW_SYSTEM = (
-    "あなたは提案書の日本語文章の校閲者です。**文章品質のみ**を見てください。"
+_COMMON_RULES = (
     "認証・実績・数値・企業能力の正しさは別の仕組みが担当するため、"
     "それらについては一切指摘しないでください。"
     f"issue_type は次のいずれか: {', '.join(ISSUE_TYPES)}。"
@@ -69,6 +70,42 @@ REVIEW_SYSTEM = (
     "critical は提案書として提出できない水準の文章上の欠陥に限ります。"
     "問題がなければ issues を空にしてください。指定schemaで返してください。"
 )
+
+REVIEW_SYSTEM = (
+    "あなたは提案書の日本語文章の校閲者です。**文章品質のみ**を見てください。"
+    + _COMMON_RULES
+)
+
+# ── Persona (#10) ─────────────────────────────────────────────────────────
+#
+# Chỉ có model duy nhất (gpt-5.4-mini), nên phân hoá bằng PROMPT chứ không bằng
+# model size — đúng ràng buộc của đề bài.
+#
+# ⚠ CỐ TÌNH KHÔNG CÓ PERSONA "COMPLIANCE".
+# Đề bài gốc đề xuất ba persona: Compliance / Coverage / Quality. Hai persona
+# sau an toàn, persona Compliance thì KHÔNG: nó sẽ phán về chứng chỉ giả và
+# over-claim, tức giẫm đúng lên việc của BB-2 (blocklist regex 2 lần) và BB-1
+# (capability sheet là trọng tài). Judge LLM sai 5–10%; ở đây sai một lần là hồ
+# sơ tuyên bố sai chứng chỉ. Một reviewer "hiền" báo sạch không làm hồ sơ sạch
+# hơn, nhưng nó tạo ra cảm giác đã có người canh — và đó là kiểu hỏng nguy hiểm
+# nhất. Compliance ở lại tầng deterministic, không lên tầng LLM.
+#
+# Cả hai persona dưới đây vẫn bị giới hạn trong ISSUE_TYPES (từ vựng đóng thuần
+# chất lượng), nên "Coverage" ở đây là *mạch lạc/đủ ý về mặt hành văn*, không
+# phải requirement coverage — cái đó do coverage.py đo tất định.
+PERSONAS = {
+    "coverage": (
+        "あなたは提案書の構成レビュアーです。各節が主題に対して抜けなく、"
+        "順序立てて書かれているかだけを見てください。"
+        "文の指す対象が曖昧、話が飛ぶ、導入文がないといった点を指摘します。"
+        + _COMMON_RULES
+    ),
+    "quality": (
+        "あなたは提案書の文体レビュアーです。日本語の提案書としての"
+        "文体・敬体・簡潔さ・表記ゆれ・重複表現だけを見てください。"
+        + _COMMON_RULES
+    ),
+}
 
 
 class ReviewIssue(BaseModel):
@@ -91,35 +128,102 @@ def _section_text(section: dict[str, Any]) -> str:
     )
 
 
+_SEVERITY_RANK = {"critical": 0, "major": 1, "minor": 2}
+
+
+def deduplicate_issues(issues: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Gộp theo (section_key, issue_type), giữ bản severity NẶNG NHẤT.
+
+    Hai persona soi cùng một mục rất hay chỉ ra cùng một chỗ. Giữ bản nặng nhất
+    chứ không phải bản gặp trước: hạ severity vì thứ tự chạy là biến một lỗi
+    critical thành major một cách ngẫu nhiên.
+    """
+    best: dict[tuple[str, str], dict[str, Any]] = {}
+    for issue in issues:
+        key = (issue["section_key"], issue["issue_type"])
+        current = best.get(key)
+        if current is None or (
+            _SEVERITY_RANK[issue["severity"]] < _SEVERITY_RANK[current["severity"]]
+        ):
+            best[key] = issue
+    return list(best.values())
+
+
+def _review_one(
+    section: dict[str, Any],
+    *,
+    persona: str,
+    system: str,
+) -> list[dict[str, Any]]:
+    user = (
+        f"【章】{section.get('title_ja', '')}\n"
+        f"【section_key】{section['key']}\n"
+        f"【本文】\n{_section_text(section)}"
+    )
+    result = structured(system, user, ReviewResult)
+    kept: list[dict[str, Any]] = []
+    for issue in result.issues:
+        # Model có thể trả section_key bịa hoặc issue_type ngoài từ vựng đóng.
+        # Bỏ, không sửa hộ: đây là ranh giới compliance, không phải chỗ để
+        # đoán ý model.
+        if issue.section_key != section["key"]:
+            continue
+        if issue.issue_type not in ISSUE_TYPES:
+            continue
+        row = issue.model_dump()
+        row["persona"] = persona
+        kept.append(row)
+    return kept
+
+
 def review_sections(
     sections: list[dict[str, Any]],
+    *,
+    personas: dict[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
-    """Trả (issues, số lệnh gọi LLM). Mục rỗng không tốn lệnh gọi nào."""
+    """Chạy các persona SONG SONG trên từng mục rồi dedupe.
+
+    Trả (issues, số lệnh gọi LLM). Mục rỗng không tốn lệnh gọi nào. Một persona
+    lỗi không được làm hỏng cả vòng review: bỏ kết quả của nó, giữ phần còn lại
+    — hồ sơ vẫn qua guard ở `assemble` nên bỏ sót một lượt soi văn phong không
+    phải rủi ro compliance.
+    """
+    active = PERSONAS if personas is None else personas
+    jobs = [
+        (section, persona, system)
+        for section in sections
+        if _section_text(section).strip()
+        for persona, system in active.items()
+    ]
+    if not jobs:
+        return [], 0
+
     issues: list[dict[str, Any]] = []
     llm_calls = 0
+    with ThreadPoolExecutor(max_workers=min(len(jobs), MAX_REVIEW_WORKERS)) as pool:
+        futures = {
+            pool.submit(_review_one, section, persona=persona, system=system): persona
+            for section, persona, system in jobs
+        }
+        for future in as_completed(futures):
+            llm_calls += 1
+            try:
+                issues.extend(future.result())
+            except Exception:
+                continue
 
-    for section in sections:
-        body = _section_text(section)
-        if not body.strip():
-            continue
-        user = (
-            f"【章】{section.get('title_ja', '')}\n"
-            f"【section_key】{section['key']}\n"
-            f"【本文】\n{body}"
+    # Sắp ổn định trước khi dedupe: ThreadPoolExecutor trả về theo thứ tự hoàn
+    # thành, để nguyên thì cùng một đầu vào ra hai kết quả khác nhau giữa các
+    # lần chạy.
+    issues.sort(
+        key=lambda item: (
+            item["section_key"],
+            item["issue_type"],
+            _SEVERITY_RANK[item["severity"]],
+            item.get("persona", ""),
         )
-        result = structured(REVIEW_SYSTEM, user, ReviewResult)
-        llm_calls += 1
-        for issue in result.issues:
-            # Model có thể trả section_key bịa hoặc issue_type ngoài từ vựng
-            # đóng. Bỏ, không sửa hộ: đây là ranh giới compliance, không phải
-            # chỗ để đoán ý model.
-            if issue.section_key != section["key"]:
-                continue
-            if issue.issue_type not in ISSUE_TYPES:
-                continue
-            issues.append(issue.model_dump())
-
-    return issues, llm_calls
+    )
+    return deduplicate_issues(issues), llm_calls
 
 
 def critical_section_keys(issues: list[dict[str, Any]]) -> list[str]:

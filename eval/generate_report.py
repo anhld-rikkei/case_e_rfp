@@ -298,18 +298,27 @@ def review_cost_rows(lines):
     calls_off, calls_on = mean(off, "calls"), mean(on, "calls")
     delta_pct = (tokens_on / tokens_off - 1) * 100 if tokens_off else 0.0
 
-    lines.append("### Chi phí review loop (Bước 6)")
+    personas = data.get("personas", [])
+    lines.append("### Chi phí review loop (Bước 6 · multi-persona #10)")
     lines.append("")
     lines.append("| Cấu hình | token sản phẩm / hồ sơ | lệnh gọi LLM / hồ sơ | giây / hồ sơ |")
     lines.append("|---|---|---|---|")
     lines.append(
         f"| review tắt | {tokens_off:,.0f} | {calls_off:.0f} | {mean(off, 'seconds'):.1f} |"
     )
+    solo = runs.get("with_review_1_persona")
+    if solo:
+        lines.append(
+            f"| review 1 persona | {mean(solo, 'product_tokens'):,.0f} "
+            f"| {mean(solo, 'calls'):.0f} | {mean(solo, 'seconds'):.1f} |"
+        )
     lines.append(
-        f"| review bật | {tokens_on:,.0f} | {calls_on:.0f} | {mean(on, 'seconds'):.1f} |"
+        f"| review {len(personas)} persona ({', '.join(personas)}) "
+        f"| {tokens_on:,.0f} | {calls_on:.0f} | {mean(on, 'seconds'):.1f} |"
     )
     lines.append(
-        f"| **chênh lệch** | **+{tokens_on - tokens_off:,.0f} ({delta_pct:+.0f}%)** "
+        f"| **chênh lệch (tắt → {len(personas)} persona)** "
+        f"| **+{tokens_on - tokens_off:,.0f} ({delta_pct:+.0f}%)** "
         f"| **+{calls_on - calls_off:.0f}** | "
         f"**+{mean(on, 'seconds') - mean(off, 'seconds'):.1f}** |"
     )
@@ -332,6 +341,41 @@ def review_cost_rows(lines):
         "không theo node pipeline, nên không tách riêng được token của review — con số"
     )
     lines.append("> đúng là phần chênh lệch giữa hai dòng trên.")
+    if personas:
+        lines.append(">")
+        lines.append(
+            f"> **Persona ({', '.join(personas)}) — và persona CỐ TÌNH không có.** "
+            "Đề bài đề xuất ba persona"
+        )
+        lines.append(
+            "> Compliance / Coverage / Quality. Hai persona sau an toàn; persona "
+            "**Compliance thì không** —"
+        )
+        lines.append(
+            "> nó phán về chứng chỉ giả và over-claim, tức giẫm lên BB-2 (blocklist regex) và "
+            "BB-1"
+        )
+        lines.append(
+            "> (capability sheet là trọng tài). Judge LLM sai 5–10%; ở đây sai một lần là hồ sơ "
+            "tuyên bố"
+        )
+        lines.append(
+            "> sai chứng chỉ. Một reviewer \"hiền\" báo sạch không làm hồ sơ sạch hơn, nhưng tạo "
+            "cảm giác"
+        )
+        lines.append(
+            "> đã có người canh — kiểu hỏng nguy hiểm nhất. Compliance ở lại tầng deterministic."
+        )
+        lines.append(">")
+        lines.append(
+            "> Mỗi persona soi mọi mục, chạy song song, rồi dedupe theo "
+            "`(section_key, issue_type)` giữ"
+        )
+        lines.append(
+            "> bản **severity nặng nhất** — hạ severity vì thứ tự chạy sẽ biến một lỗi critical "
+            "thành major"
+        )
+        lines.append("> một cách ngẫu nhiên.")
 
 
 def interpretation(reach):
