@@ -125,6 +125,39 @@ def select_sample(text: str) -> None:
     st.session_state["translation"] = ""
 
 
+def render_rfp_translation(text: str) -> None:
+    """Dịch RFP đầu vào — giữ tính năng của tab Bản dịch cũ, đưa về cạnh ô dán.
+
+    Dịch theo yêu cầu (chỉ khi mở expander và bấm), không tự chạy mỗi lần nhập.
+    """
+    if not st.button("Dịch RFP", key="translate_rfp", width="stretch"):
+        cached = st.session_state.get("rfp_translation", "")
+        if cached:
+            render_translation(cached)
+        return
+    content = f"[RFP]\n{text}"
+    key_material = "\n".join(
+        (
+            content,
+            LLM_MODEL or "",
+            PROMPT_VERSION,
+            TRANSLATION_EFFORT,
+            TRANSLATION_SYSTEM_PROMPT,
+        )
+    )
+    content_hash = hashlib.sha256(key_material.encode("utf-8")).hexdigest()
+    with st.spinner("Đang dịch RFP…"):
+        try:
+            st.session_state["rfp_translation"] = translate_once(content_hash, content)
+        except LLMUnavailable as error:
+            st.warning(
+                f"Chưa dịch được: nhà cung cấp LLM không phản hồi sau "
+                f"{error.attempts} lần gọi."
+            )
+            return
+    render_translation(st.session_state["rfp_translation"])
+
+
 def _load_uploaded_rfp(uploaded) -> str | None:
     try:
         return uploaded.getvalue().decode("utf-8")
@@ -263,6 +296,9 @@ def sidebar_controls() -> tuple[str, bool]:
             height=430,
             placeholder="Dán nội dung RFP tiếng Nhật tại đây…",
         )
+        if text.strip():
+            with st.expander("Bản dịch RFP (tiếng Việt)", expanded=False):
+                render_rfp_translation(text)
         st.markdown("#### RFP mẫu")
         for path in sorted(Path(RFP_DIR).glob("*.txt"))[:3]:
             sample_text = path.read_text(encoding="utf-8")
@@ -654,7 +690,9 @@ def render_version_history() -> None:
             for sentence in section["sentences"]
         ]
     )
-    render_full_proposal(chosen["state"], allow_unpin=True)
+    render_bilingual_proposal(
+        chosen["state"], key_prefix=f"version_{picked}", allow_unpin=True
+    )
 
 
 def sentence_mark(sentence: dict[str, Any]) -> str:
@@ -750,6 +788,136 @@ def render_full_proposal(state: dict[str, Any], *, allow_unpin: bool = False) ->
         )
 
 
+def split_translated_sections(translated: str) -> list[list[str]]:
+    """Cắt bản dịch thành từng mục, dùng dòng tiêu đề `N. …` làm mốc.
+
+    Dịch **một lần cho cả hồ sơ** rồi cắt, thay vì gọi LLM cho từng mục: rẻ hơn
+    nhiều lần và giữ được giọng văn nhất quán giữa các mục.
+    """
+    blocks = split_translation(translated)
+    lines = blocks[0]["lines"] if blocks else []
+    sections: list[list[str]] = []
+    current: list[str] | None = None
+    for line in lines:
+        if is_translation_heading(line):
+            current = [line]
+            sections.append(current)
+        elif current is not None:
+            current.append(line)
+    return sections
+
+
+def translate_proposal(state: dict[str, Any]) -> str:
+    """Bản dịch của ĐÚNG phiên bản đang xem. Cache theo nội dung nên đổi phiên
+    bản là dịch lại, còn quay lại bản cũ thì trúng cache."""
+    body = state.get("proposal", "")
+    content = f"[PROPOSAL]\n{body}"
+    key_material = "\n".join(
+        (
+            content,
+            LLM_MODEL or "",
+            PROMPT_VERSION,
+            TRANSLATION_EFFORT,
+            TRANSLATION_SYSTEM_PROMPT,
+        )
+    )
+    content_hash = hashlib.sha256(key_material.encode("utf-8")).hexdigest()
+    return translate_once(content_hash, content)
+
+
+def _user_count(section: dict[str, Any]) -> int:
+    return sum(
+        1 for item in section.get("sentences", []) if item.get("origin") == "user"
+    )
+
+
+def render_bilingual_proposal(
+    state: dict[str, Any],
+    *,
+    key_prefix: str,
+    allow_unpin: bool = False,
+) -> None:
+    """Hồ sơ tiếng Nhật, kèm bản dịch song song theo TỪNG MỤC khi được bật.
+
+    Dịch **theo yêu cầu**: chỉ gọi LLM khi người dùng bật công tắc, không dịch
+    tự động sau mỗi lượt chat. Cache băm nội dung lo phần trùng lặp, nên bật/tắt
+    hay quay lại một phiên bản cũ đều không tốn thêm lệnh gọi.
+    """
+    sections = state.get("sections", [])
+    show = st.toggle(
+        "Hiện bản dịch tiếng Việt",
+        key=f"{key_prefix}_bilingual",
+        help="Dịch bản đang hiển thị để đối chiếu. Bản nộp vẫn là bản tiếng Nhật.",
+    )
+    translated_sections: list[list[str]] = []
+    stacked = False
+    if show:
+        stacked = st.checkbox(
+            "Xếp dọc (màn hình hẹp)",
+            key=f"{key_prefix}_stacked",
+            help="Hai cột quá chật thì xếp tiếng Nhật trước, tiếng Việt sau.",
+        )
+        with st.spinner("Đang dịch bản đang hiển thị…"):
+            try:
+                translated_sections = split_translated_sections(
+                    translate_proposal(state)
+                )
+            except LLMUnavailable as error:
+                st.warning(
+                    f"Chưa dịch được: nhà cung cấp LLM không phản hồi sau "
+                    f"{error.attempts} lần gọi. Bản tiếng Nhật vẫn hiển thị bình thường."
+                )
+                show = False
+
+    for index, section in enumerate(sections):
+        heading = f"**{index + 1}. {section['title_ja']}**"
+        status = section.get("status")
+        caption = (
+            f"{section['title_vi']} · {SECTION_STATUS_ICON.get(status, '')} "
+            f"{label(SECTION_STATUS_VI, status)}"
+        )
+        vi_lines = translated_sections[index] if index < len(translated_sections) else []
+
+        def render_ja() -> None:
+            st.markdown(heading)
+            st.caption(caption)
+            render_section_note(state, section)
+            render_marked_sentences(
+                section["sentences"],
+                section_key=section["key"],
+                allow_unpin=allow_unpin,
+            )
+
+        def render_vi() -> None:
+            if not vi_lines:
+                st.caption("*(chưa có bản dịch cho mục này)*")
+                return
+            st.markdown(f"**{vi_lines[0]}**")
+            for line in vi_lines[1:]:
+                if line.strip():
+                    st.markdown(line)
+            # Nhãn trung thực không được rớt khi qua ngôn ngữ khác. Bản dịch
+            # không map được từng câu (một lần dịch cả hồ sơ rồi cắt theo mục),
+            # nên nhãn đặt ở MỨC MỤC và nói rõ phải xem cột tiếng Nhật.
+            count = _user_count(section)
+            if count:
+                st.caption(
+                    f"✎ Mục này có {count} câu **Người dùng bổ sung — chưa kiểm "
+                    "chứng**; xem cột tiếng Nhật để biết chính xác câu nào."
+                )
+
+        if show and not stacked:
+            left, right = st.columns(2)
+            with left:
+                render_ja()
+            with right:
+                render_vi()
+        else:
+            render_ja()
+            if show:
+                render_vi()
+
+
 def render_mark_legend(sentences: list[dict[str, Any]]) -> None:
     marks = {sentence_mark(item) for item in sentences}
     if marks <= {"plain"}:
@@ -765,7 +933,14 @@ def render_proposal(state: dict[str, Any]) -> None:
         f"{grounding['grounded']}/{grounding['total']} câu truy được về nguồn cụ thể "
         "(phần còn lại là câu nối, không mang thông tin sự thật)"
     )
-    st.subheader("Hồ sơ tiếng Nhật")
+    # KẾT QUẢ trước, CHI TIẾT sau: người mở tab cần thấy ngay bức tranh tổng —
+    # mục nào đủ căn cứ, mục nào cần người bổ sung — rồi mới đọc văn bản.
+    st.subheader("Kết quả")
+    st.markdown(f"**{section_summary(state)}**")
+    render_mapping(state)
+    st.divider()
+
+    st.subheader("Chi tiết hồ sơ")
     st.caption(
         "Nội dung hồ sơ giữ nguyên tiếng Nhật — đó là sản phẩm giao cho khách. "
         "Chỉ nhãn giao diện được dịch."
@@ -777,20 +952,25 @@ def render_proposal(state: dict[str, Any]) -> None:
             for sentence in section["sentences"]
         ]
     )
-    for index, section in enumerate(state.get("sections", []), start=1):
-        status = section.get("status")
-        st.markdown(f"### {index}. {section['title_ja']}")
-        st.caption(
-            f"{section['title_vi']} · {SECTION_STATUS_ICON.get(status, '')} "
-            f"{label(SECTION_STATUS_VI, status)}"
-        )
-        render_section_note(state, section)
-        render_marked_sentences(section["sentences"], section_key=section["key"])
+    render_bilingual_proposal(state, key_prefix="detail")
     st.divider()
     render_chat_refine(state)
     render_version_history()
-    st.divider()
-    render_mapping(state)
+
+
+def section_summary(state: dict[str, Any]) -> str:
+    """Một dòng tóm tắt tình trạng các mục — thứ đọc trước tiên."""
+    sections = state.get("sections", [])
+    counts: dict[str, int] = defaultdict(int)
+    for section in sections:
+        counts[section.get("status") or "—"] += 1
+    parts = [
+        f"{count}/{len(sections)} mục {label(SECTION_STATUS_VI, status).lower()}"
+        if status == "OK"
+        else f"{count} mục {label(SECTION_STATUS_VI, status).lower()}"
+        for status, count in counts.items()
+    ]
+    return " · ".join(parts) if parts else "Chưa có mục nào"
 
 
 def requirement_coverage(
@@ -944,25 +1124,6 @@ def render_sources(state: dict[str, Any]) -> None:
         st.markdown("**Kết quả kiểm chứng**")
         for key, text in VERDICT_VI.items():
             st.markdown(f"- {VERDICT_ICON[key]} **{text}** — {VERDICT_HINT[key]}")
-
-
-def translated_content(state: dict[str, Any]) -> tuple[str, str]:
-    content = f"[RFP]\n{state['input_text']}\n\n[PROPOSAL]\n{state['proposal']}"
-    # Key phải gồm model + phiên bản prompt dịch: bản cũ chỉ băm nội dung, nên
-    # sửa TRANSLATION_SYSTEM_PROMPT hay đổi model vẫn trả về bản dịch cũ.
-    key_material = "\n".join(
-        (
-            content,
-            LLM_MODEL or "",
-            PROMPT_VERSION,
-            TRANSLATION_EFFORT,
-            # Băm thẳng prompt: sửa câu chữ trong nó là đủ để cache miss, không
-            # phải nhớ bump PROMPT_VERSION bằng tay.
-            TRANSLATION_SYSTEM_PROMPT,
-        )
-    )
-    content_hash = hashlib.sha256(key_material.encode("utf-8")).hexdigest()
-    return content_hash, content
 
 
 TRANSLATION_BLOCK_TITLE = {
@@ -1653,9 +1814,8 @@ def render_empty_tabs(tabs: tuple[Any, ...]) -> None:
         "sẽ hiện ngay tại đây.",
         "Bảng đối chiếu từng yêu cầu của RFP sẽ hiện ở đây.",
         "Nguồn của từng câu sẽ hiện ở đây.",
-        "Bản dịch tiếng Việt sẽ hiện ở đây sau bước dịch cuối.",
     )
-    for tab, hint in zip(tabs[:4], hints):
+    for tab, hint in zip(tabs[:3], hints):
         with tab:
             st.info(hint)
 
@@ -1922,13 +2082,12 @@ def main() -> None:
             "Tổng quan",
             "Độ đáp ứng",
             "Nguồn từng câu",
-            "Bản dịch",
             "Truy vết",
             "Sinh bộ test",
             "Kết quả đánh giá",
         ]
     )
-    proposal_tab, coverage_tab, sources_tab, translation_tab, trace_tab, golden_tab, eval_tab = tabs
+    proposal_tab, coverage_tab, sources_tab, trace_tab, golden_tab, eval_tab = tabs
 
     with trace_tab:
         trace_metrics = st.empty()
@@ -1984,11 +2143,10 @@ def main() -> None:
         st.session_state["failure"] = failure
         if failure is None and latest and latest.get("status") == "completed":
             # Bản gốc là v1 của lịch sử phiên bản; mọi lượt chat đẩy thêm bản mới.
+            # KHÔNG dịch tự động ở đây: bản dịch lấy theo yêu cầu ở khối song ngữ,
+            # nên một lượt sinh không còn kéo theo một lệnh gọi dịch bắt buộc.
             st.session_state["versions"] = []
             push_version(latest, label="v1")
-            content_hash, content = translated_content(latest)
-            with st.spinner("Đang dịch RFP và hồ sơ sang tiếng Việt…"):
-                st.session_state["translation"] = translate_once(content_hash, content)
 
     if latest is None:
         render_empty_tabs(tabs)
@@ -2004,7 +2162,7 @@ def main() -> None:
                     st.warning(failure["message"], icon="🛑")
                 else:
                     st.error(failure["message"], icon="❌")
-            for tab in (coverage_tab, sources_tab, translation_tab):
+            for tab in (coverage_tab, sources_tab):
                 with tab:
                     st.info(
                         "Chưa có kết quả để hiển thị — lượt chạy vừa rồi "
@@ -2013,7 +2171,7 @@ def main() -> None:
         elif latest.get("status") == "ask_user":
             with result_area:
                 st.warning(latest["message"])
-            for tab in (coverage_tab, sources_tab, translation_tab):
+            for tab in (coverage_tab, sources_tab):
                 with tab:
                     st.info("Cần bổ sung đầu vào trước khi sinh kết quả.")
         elif latest.get("status") == "completed":
@@ -2028,12 +2186,6 @@ def main() -> None:
                 render_coverage(shown)
             with sources_tab:
                 render_sources(shown)
-            with translation_tab:
-                st.caption(
-                    "Bản dịch tiếng Việt để đối chiếu. Bản nộp cho khách vẫn là "
-                    "bản tiếng Nhật ở tab Tổng quan."
-                )
-                render_translation(st.session_state.get("translation", ""))
             with trace_tab:
                 render_trace_details(latest)
 

@@ -31,7 +31,6 @@ EXPECTED_TABS = [
     "Tổng quan",
     "Độ đáp ứng",
     "Nguồn từng câu",
-    "Bản dịch",
     "Truy vết",
     "Sinh bộ test",
     "Kết quả đánh giá",
@@ -861,6 +860,168 @@ def test_restored_count_surfaces_in_outcome_message() -> None:
     text = " ".join(item.value for item in list(at.info) + list(at.success))
     assert "giữ lại 2 câu" in text
     assert "Bỏ ghim" in text
+
+
+# ── Tổng quan: Kết quả trước, Chi tiết sau (v1.7) ────────────────────────
+
+def test_no_translation_tab_anymore() -> None:
+    """Tab Bản dịch đã thành khối song ngữ tại chỗ."""
+    assert "Bản dịch" not in EXPECTED_TABS
+
+
+def test_section_summary_counts_by_status() -> None:
+    import app
+
+    state = _state()
+    state["sections"] = [
+        {"key": "a", "status": "OK", "sentences": []},
+        {"key": "b", "status": "OK", "sentences": []},
+        {"key": "c", "status": "INSUFFICIENT_EVIDENCE", "sentences": []},
+    ]
+    summary = app.section_summary(state)
+    assert "2/3 mục" in summary
+    assert "1 mục" in summary and "thiếu căn cứ" in summary.lower()
+
+
+def test_section_summary_handles_empty_state() -> None:
+    import app
+
+    assert app.section_summary({"sections": []}) == "Chưa có mục nào"
+
+
+def test_overview_puts_result_block_before_detail() -> None:
+    state = _state()
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_proposal(state)
+
+    at = _render(body, state)
+    assert not at.exception
+    headers = [item.value for item in at.subheader]
+    assert headers.index("Kết quả") < headers.index("Chi tiết hồ sơ")
+    # Bảng ánh xạ mục ← chương nằm trong khối Kết quả
+    assert any(
+        "Mục hồ sơ" in list(frame.value.columns) for frame in at.dataframe
+    )
+
+
+# ── Song ngữ theo từng mục ───────────────────────────────────────────────
+
+def test_bilingual_off_by_default_makes_no_llm_call() -> None:
+    """Không bật công tắc thì không tốn một lệnh gọi dịch nào."""
+    state = _state()
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        def explode(*args, **kwargs):
+            raise AssertionError("dịch khi chưa bật toggle")
+
+        app.translate_proposal = explode
+        app.render_bilingual_proposal(state, key_prefix="t")
+
+    at = _render(body, state)
+    assert not at.exception
+    assert any("Hiện bản dịch tiếng Việt" in t.label for t in at.toggle)
+
+
+def test_split_translated_sections_aligns_by_heading() -> None:
+    import app
+
+    translated = "[PROPOSAL]\n1. Tổng quan công ty\nCâu A.\n\n2. Đề xuất\nCâu B.\nCâu C.\n"
+    sections = app.split_translated_sections(translated)
+    assert len(sections) == 2
+    assert sections[0][0] == "1. Tổng quan công ty"
+    assert sections[1][1:] == ["Câu B.", "Câu C."]
+
+
+def test_split_translated_sections_survives_empty() -> None:
+    import app
+
+    assert app.split_translated_sections("") == []
+
+
+def test_bilingual_renders_both_languages_per_section() -> None:
+    state = _state()
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+        import streamlit as st
+
+        app.translate_proposal = lambda s: "[PROPOSAL]\n1. Đáp ứng yêu cầu kỹ thuật\nCâu đã dịch.\n"
+        st.session_state["t_bilingual"] = True
+        app.render_bilingual_proposal(state, key_prefix="t")
+
+    at = _render(body, state)
+    assert not at.exception
+    text = " ".join(item.value for item in at.markdown)
+    assert "技術要件への対応" in text  # cột tiếng Nhật
+    assert "Câu đã dịch." in text  # cột tiếng Việt
+
+
+def test_translated_column_keeps_user_label() -> None:
+    """Nhãn trung thực không được rớt khi qua ngôn ngữ khác."""
+    state = _state()
+    state["sections"][0]["sentences"].append(
+        {
+            "text": "người dùng thêm",
+            "origin": "user",
+            "source_id": None,
+            "req_ids": [],
+            "verdict": "USER_PROVIDED",
+        }
+    )
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+        import streamlit as st
+
+        app.translate_proposal = lambda s: "[PROPOSAL]\n1. Đáp ứng yêu cầu kỹ thuật\nCâu đã dịch.\n"
+        st.session_state["t2_bilingual"] = True
+        app.render_bilingual_proposal(state, key_prefix="t2")
+
+    at = _render(body, state)
+    captions = " ".join(item.value for item in at.caption)
+    assert "✎" in captions and "Người dùng bổ sung" in captions
+
+
+def test_bilingual_failure_does_not_hide_japanese() -> None:
+    """LLM chết thì vẫn phải thấy bản tiếng Nhật."""
+    state = _state()
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+        import streamlit as st
+        from rfp.llm import LLMUnavailable
+
+        def boom(_s):
+            raise LLMUnavailable("timeout", 4, RuntimeError("x"))
+
+        app.translate_proposal = boom
+        st.session_state["t3_bilingual"] = True
+        app.render_bilingual_proposal(state, key_prefix="t3")
+
+    at = _render(body, state)
+    assert not at.exception
+    assert any("Chưa dịch được" in w.value for w in at.warning)
+    assert "技術要件への対応" in " ".join(item.value for item in at.markdown)
 
 
 # ── Tab Kết quả đánh giá ──────────────────────────────────────────────────
