@@ -17,8 +17,10 @@ pytest.importorskip("streamlit.testing.v1")
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 from config.display_vi import (  # noqa: E402
+    ATTRIBUTE_COVERED_REASON,
     NO_EVIDENCE_REASON,
     SECTION_STATUS_VI,
+    SKIP_LEGEND,
     STAGE_VI,
     VERDICT_VI,
 )
@@ -347,6 +349,168 @@ def test_missing_requirements_get_their_own_reason() -> None:
     assert [item["req_id"] for item in missing] == ["3.2"]
     assert missing[0]["reason"] == NO_EVIDENCE_REASON
     assert "INSUFFICIENT_EVIDENCE" not in missing[0]["reason"]
+
+
+# ── Tab Bản dịch: giữ cấu trúc, không dồn thành một khối ──────────────────
+
+TRANSLATION = (
+    "[RFP]\n"
+    "Tài liệu yêu cầu mua sắm\n"
+    "Ngành mua sắm: Sản xuất\n"
+    "\n"
+    "Chương 1 Tổng quan mua sắm\n"
+    "1.1 Mục đích là tái cấu trúc hệ thống lõi.\n"
+    "1.2 Thời hạn hợp đồng là 18 tháng.\n"
+    "\n"
+    "[PROPOSAL]\n"
+    "1. Tổng quan công ty\n"
+    "Chúng tôi đáp ứng các yêu cầu.\n"
+    "\n"
+    "2. Tổng quan đề xuất\n"
+    "Chúng tôi hỗ trợ xuyên suốt.\n"
+)
+
+
+def test_split_translation_separates_rfp_and_proposal() -> None:
+    import app
+
+    blocks = app.split_translation(TRANSLATION)
+    assert [block["label"] for block in blocks] == ["RFP", "PROPOSAL"]
+    assert blocks[0]["lines"][0] == "Tài liệu yêu cầu mua sắm"
+    assert blocks[1]["lines"][0] == "1. Tổng quan công ty"
+    # Nhãn [RFP]/[PROPOSAL] không còn nằm trong nội dung
+    for block in blocks:
+        assert "[RFP]" not in block["lines"]
+        assert "[PROPOSAL]" not in block["lines"]
+
+
+def test_split_translation_keeps_each_line_separate() -> None:
+    """Đây chính là lỗi cũ: mọi dòng bị dồn thành một khối chữ."""
+    import app
+
+    rfp = app.split_translation(TRANSLATION)[0]["lines"]
+    assert "1.1 Mục đích là tái cấu trúc hệ thống lõi." in rfp
+    assert "1.2 Thời hạn hợp đồng là 18 tháng." in rfp
+
+
+@pytest.mark.parametrize(
+    "line,expected",
+    [
+        ("Chương 1 Tổng quan mua sắm", True),
+        ("1. Tổng quan công ty", True),
+        ("1.1 Mục đích là tái cấu trúc.", False),  # dòng con, không phải tiêu đề
+        ("Chúng tôi đáp ứng các yêu cầu.", False),
+        ("", False),
+    ],
+)
+def test_translation_heading_detection(line: str, expected: bool) -> None:
+    import app
+
+    assert app.is_translation_heading(line) is expected
+
+
+@pytest.mark.parametrize("weird", ["", "   ", "\n\n", "không có nhãn nào cả"])
+def test_split_translation_survives_weird_input(weird: str) -> None:
+    import app
+
+    blocks = app.split_translation(weird)
+    assert isinstance(blocks, list)
+    # Văn bản không có nhãn vẫn phải hiện được, không mất trắng
+    if weird.strip():
+        assert blocks and blocks[0]["label"] is None
+
+
+def test_render_translation_emits_one_element_per_line() -> None:
+    def body(root, text):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_translation(text)
+
+    at = _render(body, TRANSLATION)
+    assert not at.exception
+    values = [item.value for item in at.markdown]
+    # Mỗi dòng là một phần tử riêng -> không dồn thành một khối
+    assert "1.1 Mục đích là tái cấu trúc hệ thống lõi." in values
+    assert "1.2 Thời hạn hợp đồng là 18 tháng." in values
+    assert "**Chương 1 Tổng quan mua sắm**" in values
+    headers = [item.value for item in at.subheader]
+    assert "RFP (bản dịch)" in headers
+    assert "Hồ sơ thầu (bản dịch)" in headers
+
+
+# ── Tab Truy vết: "bỏ qua" phải nói lý do ─────────────────────────────────
+
+def test_skip_reason_for_ask_user_when_input_complete() -> None:
+    import app
+
+    assert app.skip_reason({"missing": []}, "ask_user") == (
+        "RFP đã đủ thông tin bắt buộc"
+    )
+
+
+def test_skip_reason_falls_back_to_stage_table() -> None:
+    import app
+
+    assert app.skip_reason({}, "generate_per_section") is not None
+    assert app.skip_reason({}, "khong_ton_tai") is None
+
+
+def test_status_label_shows_reason_in_parentheses() -> None:
+    import app
+
+    text = app._status_label("Hỏi thêm người dùng", "skipped", reason="RFP đã đủ")
+    assert text == "⏭️ Hỏi thêm người dùng — bỏ qua (RFP đã đủ)"
+
+
+def test_trace_tab_explains_every_skip() -> None:
+    """Không dòng 'bỏ qua' nào được để trống lý do."""
+    state = _state()
+    state["missing"] = []
+    state["trace"]["stages"] = {
+        "parse_input": {"status": "completed"},
+        "check_complete": {"status": "completed"},
+        "ask_user": {"status": "skipped"},
+        "retrieve_per_chapter": {"status": "completed"},
+    }
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import streamlit as st
+        import app
+
+        holder = st.empty()
+        app.render_pipeline_status(state, holder)
+
+    at = _render(body, state)
+    assert not at.exception
+    # Nhãn "bỏ qua" nằm ở label của st.status; gom cả markdown lẫn label lại.
+    combined = " ".join(
+        [item.value for item in at.markdown]
+        + [str(getattr(item, "label", "")) for item in at.status]
+    )
+    assert "RFP đã đủ thông tin bắt buộc" in combined
+    # Chương đã phủ bằng bảng năng lực -> nói rõ lý do, không để trống
+    assert ATTRIBUTE_COVERED_REASON in combined
+
+
+def test_legend_explains_skip_is_not_an_error() -> None:
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_flow_legend()
+
+    at = _render(body)
+    captions = " ".join(item.value for item in at.caption)
+    assert SKIP_LEGEND in captions
+    assert "⏭️" in captions
 
 
 # ── Tab Kết quả đánh giá ──────────────────────────────────────────────────

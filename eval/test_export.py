@@ -200,6 +200,33 @@ def test_export_blocked_when_client_name_leaks() -> None:
 
 # ── Tên file ──────────────────────────────────────────────────────────────
 
+def test_export_without_stale_flag_has_no_data_warning() -> None:
+    from rfp.export import STALE_DATA_BANNER
+
+    markdown = to_markdown(_state())
+    assert STALE_DATA_BANNER.strip().split("\n")[0] not in markdown
+
+
+def test_export_carries_stale_data_warning_into_the_file() -> None:
+    """Banner UI biến mất khi tải về; file thì đi tiếp — cảnh báo phải ở trong."""
+    markdown = to_markdown(_state(), stale=True)
+    assert "Sinh từ dữ liệu nguồn đã cũ" in markdown
+    # Nằm trước nội dung hồ sơ, không nhét cuối file
+    assert markdown.index("Sinh từ dữ liệu nguồn đã cũ") < markdown.index(
+        "## Hồ sơ thầu"
+    )
+    # Nhãn bản nháp vẫn còn nguyên, không bị thay thế
+    assert DRAFT_BANNER_TITLE in markdown
+
+
+def test_stale_export_still_blocked_by_guard() -> None:
+    """Cờ stale không mở đường vòng cho nội dung vi phạm."""
+    state = _state()
+    state["sections"][0]["sentences"][0]["text"] = "当社はISO 27017認証を取得済み"
+    with pytest.raises(GuardViolation):
+        to_markdown(state, stale=True)
+
+
 def test_export_filename_uses_rfp_id() -> None:
     assert export_filename(_state()) == "proposal_draft_RFP-2025-001.md"
 

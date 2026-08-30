@@ -4,7 +4,9 @@ from collections import defaultdict
 from dataclasses import replace
 import hashlib
 from pathlib import Path
+import re
 import sys
+import time
 from typing import Any
 
 import pandas as pd
@@ -50,8 +52,11 @@ from rfp.export import (
     to_markdown,
 )
 from config.display_vi import (
+    ATTRIBUTE_COVERED_REASON,
     NO_EVIDENCE_REASON,
     ORIGIN_HINT,
+    SKIP_LEGEND,
+    SKIP_REASON_VI,
     ORIGIN_VI,
     RUN_LABEL_VI,
     SECTION_NOTE_VI,
@@ -73,8 +78,17 @@ from config.display_vi import (
     label,
     to_raw,
 )
+from rfp.freshness import (
+    current_diff,
+    load_manifest,
+    quarantine_report,
+    scan_sources,
+    state_is_stale,
+    write_manifest,
+)
 from rfp.graph import PIPELINE_STAGES, stream_graph
 from rfp.guard import GuardViolation
+from rfp.stores.sentence_index import SentenceIndex
 from rfp.llm import LLMUnavailable, MODEL as LLM_MODEL, generate
 
 
@@ -117,9 +131,113 @@ def _load_uploaded_rfp(uploaded) -> str | None:
         return None
 
 
+def _format_ingested_at(manifest: dict[str, Any] | None) -> str:
+    if not manifest or not manifest.get("ingested_at"):
+        return "chưa rõ"
+    return time.strftime("%H:%M %d/%m/%Y", time.localtime(manifest["ingested_at"]))
+
+
+def reload_knowledge_base() -> None:
+    """Nạp lại kho: chạy ĐÚNG pipeline ingest, không đường tắt.
+
+    `SentenceIndex.build()` là chính con đường mà pipeline thật dùng — quarantine
+    blocklist và lọc rò rỉ tên khách hàng chạy nguyên vẹn bên trong nó. Không có
+    phiên bản "nạp nhanh" bỏ qua hai lớp đó (BB-2).
+    """
+    index = SentenceIndex.build()
+    counts = index.assert_clean()
+    previous = load_manifest()
+    write_manifest(index, files=scan_sources())
+    st.session_state["reload_report"] = {
+        "counts": counts,
+        "previous": (previous or {}).get("counts"),
+        "quarantine": quarantine_report(index),
+    }
+    # Bản đang xem sinh từ dữ liệu trước đó -> lượt chat tiếp theo bị chặn
+    # (xem docstring freshness.py). Giữ nguyên bản, không xoá công sức người dùng.
+    st.session_state["kb_reloaded_at"] = time.time()
+
+
+def render_source_status() -> None:
+    diff, manifest = current_diff()
+    if not diff.has_manifest:
+        st.info(
+            "Chưa nạp kho tri thức lần nào trong phiên làm việc này. "
+            "Bấm **Nạp lại kho tri thức** để ghi mốc đối chiếu."
+        )
+    elif not diff.changed:
+        st.success(
+            f"Dữ liệu nguồn khớp lần nạp gần nhất ({_format_ingested_at(manifest)})"
+        )
+    else:
+        if diff.capability_changed:
+            st.error(
+                "🔴 **Bảng năng lực đã đổi.** Đây là trọng tài quyết định câu nào "
+                "được phép nói — nạp lại trước khi sinh hồ sơ."
+            )
+        st.warning(
+            f"⚠ Dữ liệu nguồn đã thay đổi so với lần nạp gần nhất "
+            f"({_format_ingested_at(manifest)}) — {diff.total} file."
+        )
+        with st.expander(f"Xem {diff.total} thay đổi", expanded=False):
+            for title, names in (
+                ("Thêm", diff.added),
+                ("Sửa", diff.modified),
+                ("Xoá", diff.removed),
+            ):
+                if names:
+                    st.markdown(f"**{title}** ({len(names)})")
+                    for name in names:
+                        st.markdown(f"- `{name}`")
+
+    if st.button("Nạp lại kho tri thức", width="stretch", key="reload_kb"):
+        with st.spinner("Đang nạp lại — parse, lọc rò rỉ, cách ly chuỗi cấm…"):
+            reload_knowledge_base()
+        st.rerun()
+
+    report = st.session_state.get("reload_report")
+    if report:
+        counts = report["counts"]
+        previous = report["previous"] or {}
+
+        def _delta(key: str, previous_key: str) -> str:
+            if previous_key not in previous:
+                return ""
+            change = counts[key] - previous[previous_key]
+            return f" ({change:+d})" if change else " (không đổi)"
+
+        st.success(
+            f"Đã nạp: **{counts['indexed']}** câu vào kho"
+            f"{_delta('indexed', 'indexed')} · "
+            f"**{counts['capability_quarantine']}** câu bị cách ly vì chuỗi cấm"
+            f"{_delta('capability_quarantine', 'quarantine')} · "
+            f"**{counts['leak_quarantine']}** câu bị bỏ vì lộ tên khách hàng"
+            f"{_delta('leak_quarantine', 'leak_dropped')}"
+        )
+        if report["quarantine"]:
+            with st.expander(
+                f"Vì sao {len(report['quarantine'])} câu bị loại", expanded=False
+            ):
+                st.dataframe(
+                    [
+                        {
+                            "Mã câu": row["sent_id"],
+                            "Loại": row["loai"],
+                            "Lý do": row["ly_do"],
+                            "Câu": row["text"],
+                        }
+                        for row in report["quarantine"]
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+
+
 def sidebar_controls() -> tuple[str, bool]:
     with st.sidebar:
         st.title("RFP đầu vào")
+        with st.expander("Dữ liệu nguồn", expanded=False):
+            render_source_status()
         uploaded = st.file_uploader(
             "Tải file RFP (.txt, UTF-8)",
             type=["txt"],
@@ -199,10 +317,18 @@ def render_draft_banner(state: dict[str, Any]) -> None:
         "Chưa có người thật rà soát. Không nộp và không gửi khách hàng khi "
         "checklist bên dưới chưa tick đủ."
     )
+    stale = state_is_stale(state)
+    if stale:
+        st.warning(
+            "⚠ **Hồ sơ này sinh từ dữ liệu nguồn đã cũ.** Dữ liệu nguồn đã thay "
+            "đổi sau khi hồ sơ được sinh — nạp lại kho tri thức và sinh lại "
+            "trước khi dùng. Cảnh báo này cũng nằm trong file tải về.",
+            icon="⚠️",
+        )
     with st.expander("Checklist bắt buộc trước khi nộp", expanded=False):
         st.markdown(REVIEWER_CHECKLIST)
     try:
-        markdown = to_markdown(state)
+        markdown = to_markdown(state, stale=stale)
     except GuardViolation as violation:
         # Không bao giờ mở đường tải cho bản chưa qua guard.
         st.error(f"Không xuất được: final guard chặn — {violation}")
@@ -482,6 +608,78 @@ def translated_content(state: dict[str, Any]) -> tuple[str, str]:
     return content_hash, content
 
 
+TRANSLATION_BLOCK_TITLE = {
+    "RFP": "RFP (bản dịch)",
+    "PROPOSAL": "Hồ sơ thầu (bản dịch)",
+}
+
+# Dòng tiêu đề: "Chương 3 Yêu cầu kỹ thuật" (RFP) hoặc "3. Thực tế triển khai"
+# (mục hồ sơ). Dòng con "3.1 …" KHÔNG phải tiêu đề — nó là một yêu cầu.
+_HEADING_RE = re.compile(r"^(?:Chương\s+\d+\b|\d+\.\s)")
+
+
+def split_translation(text: str) -> list[dict[str, Any]]:
+    """Tách bản dịch thành khối [RFP] / [PROPOSAL], mỗi khối giữ từng dòng.
+
+    Bản dịch từ LLM **đã giữ đúng xuống dòng của bản gốc** (đo được: vào 48
+    dấu, ra 48 dấu). Chữ dính liền một khối là do `st.markdown` gộp `\\n` đơn
+    theo đúng ngữ nghĩa Markdown — nên đây là việc của tầng hiển thị, không
+    phải sửa prompt dịch.
+
+    Văn bản không có nhãn nào thì trả về một khối duy nhất `label=None`, để
+    bản dịch lạ vẫn hiện ra được thay vì mất trắng.
+    """
+    if not text or not text.strip():
+        return []
+    blocks: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        marker = line.strip()
+        if marker in ("[RFP]", "[PROPOSAL]"):
+            current = {"label": marker.strip("[]"), "lines": []}
+            blocks.append(current)
+            continue
+        if current is None:
+            current = {"label": None, "lines": []}
+            blocks.append(current)
+        current["lines"].append(line)
+    for block in blocks:
+        # Bỏ dòng trống ở hai đầu, giữ dòng trống giữa các đoạn.
+        lines = block["lines"]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+    return [block for block in blocks if block["lines"]]
+
+
+def is_translation_heading(line: str) -> bool:
+    return bool(_HEADING_RE.match(line.strip()))
+
+
+def render_translation(text: str) -> None:
+    blocks = split_translation(text)
+    if not blocks:
+        st.info("Chưa có bản dịch.")
+        return
+    for index, block in enumerate(blocks):
+        if index:
+            st.divider()
+        title = TRANSLATION_BLOCK_TITLE.get(block["label"])
+        if title:
+            st.subheader(title)
+        for line in block["lines"]:
+            if not line.strip():
+                continue
+            if is_translation_heading(line):
+                st.markdown(f"**{line}**")
+            else:
+                # Mỗi dòng một lần gọi: st.markdown gộp \n đơn thành dấu cách,
+                # nên nối cả khối rồi in một lần là ra đúng cục chữ dính liền.
+                st.markdown(line)
+
+
 def _status_state(status: str) -> str:
     if status == "running":
         return "running"
@@ -490,9 +688,23 @@ def _status_state(status: str) -> str:
     return "complete"
 
 
-def _status_label(name: str, status: str) -> str:
+def _status_label(name: str, status: str, *, reason: str | None = None) -> str:
     suffix = label(STAGE_STATUS_VI, status)
+    if reason:
+        suffix = f"{suffix} ({reason})"
     return f"{STAGE_STATUS_ICON.get(status, '⚪')} {name} — {suffix}"
+
+
+def skip_reason(state: dict[str, Any], stage_name: str) -> str | None:
+    """Lý do một bước bị bỏ qua — ưu tiên suy từ state, thiếu thì tra bảng.
+
+    `ask_user` bị bỏ qua khi `check_complete` không tìm thấy thiếu sót nào, và
+    điều đó đọc thẳng được từ state. Các bước còn lại chỉ bị bỏ khi ngược lại —
+    thiếu đầu vào — nên tra bảng theo loại node là đủ.
+    """
+    if stage_name == "ask_user" and not state.get("missing"):
+        return SKIP_REASON_VI["ask_user"]
+    return SKIP_REASON_VI.get(stage_name)
 
 
 def _stage_statuses(
@@ -597,6 +809,11 @@ def render_flow_legend() -> None:
             for key in ("pending", "running", "completed", "skipped", "blocked", "failed")
         )
     )
+    st.caption(
+        f"{STAGE_STATUS_ICON['skipped']} {SKIP_LEGEND}.  ·  "
+        f"{STAGE_STATUS_ICON['blocked']} guard chặn xuất bản là hành vi đúng: "
+        "thà không nộp còn hơn nộp hồ sơ sai."
+    )
 
 
 def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
@@ -616,7 +833,15 @@ def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
                     "generate_per_section",
                 }
                 with st.status(
-                    _status_label(STAGE_VI[stage_name], status),
+                    _status_label(
+                        STAGE_VI[stage_name],
+                        status,
+                        reason=(
+                            skip_reason(state, stage_name)
+                            if status == "skipped"
+                            else None
+                        ),
+                    ),
                     state=_status_state(status),
                     expanded=expanded,
                 ):
@@ -629,6 +854,11 @@ def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
                                 _status_label(
                                     f"Chương {chapter['id']} · {chapter['title']}",
                                     chapter_status,
+                                    reason=(
+                                        ATTRIBUTE_COVERED_REASON
+                                        if precedent_skipped
+                                        else None
+                                    ),
                                 ),
                                 state="complete",
                                 expanded=False,
@@ -641,6 +871,11 @@ def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
                                         _status_label(
                                             label(RETRIEVAL_STAGE_VI, retrieval_name),
                                             item_status,
+                                            reason=(
+                                                ATTRIBUTE_COVERED_REASON
+                                                if item_status == "skipped"
+                                                else None
+                                            ),
                                         )
                                     )
                     if stage_name == "generate_per_section":
@@ -1427,8 +1662,11 @@ def main() -> None:
             with sources_tab:
                 render_sources(latest)
             with translation_tab:
-                st.subheader("Bản dịch tiếng Việt của RFP và proposal")
-                st.markdown(st.session_state.get("translation", ""))
+                st.caption(
+                    "Bản dịch tiếng Việt để đối chiếu. Bản nộp cho khách vẫn là "
+                    "bản tiếng Nhật ở tab Tổng quan."
+                )
+                render_translation(st.session_state.get("translation", ""))
             with trace_tab:
                 render_trace_details(latest)
 

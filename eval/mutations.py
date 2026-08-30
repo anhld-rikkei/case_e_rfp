@@ -6,9 +6,10 @@ from pathlib import Path
 import re
 from typing import Any, Callable
 
+from config.settings import EVAL_RFP_DIR as RFP_DIR
+
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-RFP_DIR = ROOT_DIR / "synthetic" / "rfps"
 DEFAULT_OUTPUT_DIR = ROOT_DIR / "synthetic" / "golden_test_set"
 BASE_RFP = RFP_DIR / "RFP-2025-001.txt"
 REQUIREMENT_RE = re.compile(r"^\d+\.\d+\s+", re.MULTILINE)

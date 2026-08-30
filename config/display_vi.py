@@ -147,6 +147,29 @@ PERSONA_VI = {
 }
 
 
+# ── Vì sao một bước bị bỏ qua ──────────────────────────────────────────────
+# "Bỏ qua" ở đây là tối ưu có chủ đích, không phải hỏng. Không nói lý do thì
+# người xem đọc ⏭ thành "chỗ này lỗi/thiếu", và đó là hiểu sai đắt nhất trên
+# màn hình này.
+SKIP_REASON_VI = {
+    "ask_user": "RFP đã đủ thông tin bắt buộc",
+    "route_reference_rfp": "cần bổ sung thông tin đầu vào trước",
+    "plan_sections": "cần bổ sung thông tin đầu vào trước",
+    "retrieve_per_chapter": "cần bổ sung thông tin đầu vào trước",
+    "generate_per_section": "cần bổ sung thông tin đầu vào trước",
+    "review": "cần bổ sung thông tin đầu vào trước",
+    "assemble": "cần bổ sung thông tin đầu vào trước",
+}
+
+# Lý do dùng cho một CHƯƠNG và cho các bước con của khâu truy xuất: chương nào
+# mọi yêu cầu đã khớp thẳng bảng năng lực thì không cần tìm trong hồ sơ cũ.
+ATTRIBUTE_COVERED_REASON = (
+    "mọi yêu cầu khớp thẳng bảng năng lực, không cần tìm trong hồ sơ quá khứ"
+)
+
+SKIP_LEGEND = "bỏ qua có chủ đích để tiết kiệm — không phải lỗi"
+
+
 # ── Bước con của khâu truy xuất ────────────────────────────────────────────
 RETRIEVAL_STAGE_VI = {
     "attribute": "Đối chiếu bảng năng lực",
