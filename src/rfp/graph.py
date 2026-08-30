@@ -3,6 +3,7 @@ import copy
 import json
 import sqlite3
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, TypedDict
@@ -41,6 +42,13 @@ from .generate.claim_check import (
 from .generate.coverage import assess_coverage, matched_requirement_ids
 from .generate.merge import deduplicate_sections, merge_channels
 from .generate.precedent import generate_precedents
+from . import llm
+from .cache import (
+    Cache,
+    capability_fingerprint,
+    corpus_fingerprint,
+    make_key,
+)
 from .guard import final_guard
 from .llm import LLMUnavailable
 from .parsers.rfp_parser import (
@@ -72,6 +80,22 @@ SECTION_KEYS = {
     "note",
 }
 TRACE_KEYS = {"llm_calls", "retrieval_stats", "dedup"}
+
+# Cache đang hiệu lực cho các node. None = dùng Cache() mặc định theo settings.
+# eval/ đặt Cache(enabled=False) qua use_cache() để cache hit không làm token
+# sản phẩm đo được về gần 0 và phá bảng ablation §11.3.
+_ACTIVE_CACHE: "Cache | None" = None
+
+
+@contextmanager
+def use_cache(cache: "Cache"):
+    global _ACTIVE_CACHE
+    previous = _ACTIVE_CACHE
+    _ACTIVE_CACHE = cache
+    try:
+        yield cache
+    finally:
+        _ACTIVE_CACHE = previous
 PIPELINE_STAGES = (
     "parse_input",
     "check_complete",
@@ -98,6 +122,8 @@ class GraphState(TypedDict, total=False):
     sections: list[dict[str, Any]]
     proposal: str
     trace: dict[str, Any]
+    fingerprints: dict[str, str]
+    force_regen: bool
 
 
 def _empty_trace() -> dict[str, Any]:
@@ -310,6 +336,26 @@ def plan_sections(state: GraphState) -> GraphState:
     }
 
 
+def _node_cache() -> "Cache":
+    """Cache dùng cho node. eval/ ép enabled=False qua use_cache()."""
+    return _ACTIVE_CACHE if _ACTIVE_CACHE is not None else Cache()
+
+
+def _cache_key_for(state: GraphState, scope: str) -> str | None:
+    fingerprints = state.get("fingerprints") or {}
+    corpus = fingerprints.get("corpus")
+    capability = fingerprints.get("capability")
+    if not corpus or not capability:
+        return None
+    return make_key(
+        rfp_text=state.get("input_text", ""),
+        model=llm.MODEL or "",
+        corpus=corpus,
+        capability=capability,
+        scope=scope,
+    )
+
+
 def retrieve_per_chapter(state: GraphState) -> GraphState:
     rfp = state.get("rfp")
     if rfp is None:
@@ -318,7 +364,23 @@ def retrieve_per_chapter(state: GraphState) -> GraphState:
             "trace": _with_trace(state, "retrieve_per_chapter"),
         }
 
+    # Dựng index trước để có vân tay corpus. Bước này chỉ parse + sanitize;
+    # phần đắt (embedding, FAISS) nằm ở HybridRetriever và chỉ chạy khi có
+    # search đầu tiên — nên cache hit bên dưới vẫn tiết kiệm được đúng phần đắt.
     sentence_index = SentenceIndex.build()
+    fingerprints = {
+        "corpus": corpus_fingerprint(sentence_index),
+        "capability": capability_fingerprint(),
+    }
+    state = {**state, "fingerprints": fingerprints}
+    cache = _node_cache()
+    force_regen = bool(state.get("force_regen"))
+    cache_key = _cache_key_for(state, "retrieve_per_chapter")
+    if cache_key is not None:
+        cached = cache.get(cache_key, force_regen=force_regen)
+        if cached is not None:
+            return {**cached, "fingerprints": fingerprints}
+
     attribute_retriever = AttributeRetriever()
     reference_rfp = state.get("reference_rfp", {}).get("rfp_id", "")
     coverages = {
@@ -440,10 +502,13 @@ def retrieve_per_chapter(state: GraphState) -> GraphState:
     trace["dedup"] = {"before": aggregate_before, "after": aggregate_after}
     trace["conflicts"] = conflicts
     trace["claim_whitelist"] = sorted(build_claim_whitelist(sentence_index))
-    return {
+    result = {
         "chapters": chapters,
         "trace": trace,
     }
+    if cache_key is not None:
+        cache.put(cache_key, result)
+    return {**result, "fingerprints": fingerprints}
 
 
 def _attribute_stage(coverage: AttributeCoverage) -> dict[str, Any]:
@@ -584,6 +649,13 @@ def _reranked_result_dict(item: RerankedResult) -> dict[str, Any]:
 
 
 def generate_per_section(state: GraphState) -> GraphState:
+    cache = _node_cache()
+    cache_key = _cache_key_for(state, "generate_per_section")
+    if cache_key is not None:
+        cached = cache.get(cache_key, force_regen=bool(state.get("force_regen")))
+        if cached is not None:
+            return cached
+
     capability_store = CapabilityStore()
     source_texts = {
         sentence["sent_id"]: sentence["text"]
@@ -823,10 +895,13 @@ def generate_per_section(state: GraphState) -> GraphState:
         "grounded": sum(sentence["origin"] != "bridge" for sentence in all_sentences),
         "total": len(all_sentences),
     }
-    return {
+    result = {
         "sections": generated_sections,
         "trace": trace,
     }
+    if cache_key is not None:
+        cache.put(cache_key, result)
+    return result
 
 
 def assemble(state: GraphState) -> GraphState:
@@ -902,13 +977,17 @@ def run_graph(
     job_id: str | None = None,
     resume: bool = False,
     checkpoint_db: str | Path | None = None,
+    force_regen: bool = False,
 ) -> GraphState:
     if job_id is None:
         # Không checkpoint, nhưng vẫn gom state theo từng node: LLM sập giữa
         # chừng thì trả phần đã xong với status=partial thay vì mất trắng.
         last_state: GraphState | None = None
         try:
-            for snapshot in GRAPH.stream(_initial_state(text), stream_mode="values"):
+            for snapshot in GRAPH.stream(
+                _initial_state(text, force_regen=force_regen),
+                stream_mode="values",
+            ):
                 last_state = snapshot
             return last_state
         except LLMUnavailable as error:
@@ -930,9 +1009,13 @@ def run_graph(
                 return dict(snapshot.values)  # job đã hoàn tất từ trước
             # Còn node dở dang -> invoke(None) chạy tiếp từ checkpoint cuối;
             # chưa có checkpoint nào -> chạy mới từ đầu.
-            payload = None if snapshot.next else _initial_state(text)
+            payload = (
+                None
+                if snapshot.next
+                else _initial_state(text, force_regen=force_regen)
+            )
         else:
-            payload = _initial_state(text)
+            payload = _initial_state(text, force_regen=force_regen)
         try:
             result = graph.invoke(payload, config)
             return dict(result)
@@ -946,11 +1029,17 @@ def run_graph(
 
 
 def run_graph_eval(text: str) -> GraphState:
+    """Đường chạy cho eval — cache LUÔN tắt, không đọc cờ từ settings.
+
+    Cache hit làm token sản phẩm đo được về gần 0 và phá bảng ablation §11.3,
+    nên chốt cứng ở đây thay vì tin vào cấu hình.
+    """
     from rfp.guard import GuardViolation
     last_state = None
     try:
-        for s in GRAPH.stream(_initial_state(text), stream_mode="values"):
-            last_state = s
+        with use_cache(Cache(enabled=False)):
+            for s in GRAPH.stream(_initial_state(text), stream_mode="values"):
+                last_state = s
         return last_state
     except GuardViolation as e:
         state = dict(last_state) if last_state else {}
@@ -961,13 +1050,14 @@ def run_graph_eval(text: str) -> GraphState:
         return _partial_state(last_state, e)
 
 
-def _initial_state(text: str) -> GraphState:
+def _initial_state(text: str, *, force_regen: bool = False) -> GraphState:
     return {
         "input_text": text,
         "reference_rfp": {"rfp_id": "", "method": "none", "score": None},
         "chapters": [],
         "sections": [],
         "trace": _empty_trace(),
+        "force_regen": force_regen,
     }
 
 
@@ -1092,6 +1182,11 @@ def main() -> None:
     )
     argument_parser.add_argument("--resume", action="store_true")
     argument_parser.add_argument("--checkpoint-db", type=Path)
+    argument_parser.add_argument(
+        "--force-regen",
+        action="store_true",
+        help="bỏ qua cache lần chạy này (vẫn ghi lại kết quả mới)",
+    )
     args = argument_parser.parse_args()
 
     if args.resume and not args.job_id:
@@ -1107,6 +1202,7 @@ def main() -> None:
         job_id=args.job_id,
         resume=args.resume,
         checkpoint_db=args.checkpoint_db,
+        force_regen=args.force_regen,
     )
 
     if args.json is not None:
