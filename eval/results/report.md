@@ -71,6 +71,20 @@ Cấu hình đề xuất, mỗi RFP: sản phẩm ~4,723 token · judge ~299,072
 > bịa vào prompt chính là số câu được chọn, không phải thuật toán chọn) — nhưng ở cấu
 > hình hiện tại nó **không** phải thứ tạo ra chất lượng, và bảng này nói đúng như vậy.
 
+### Chi phí review loop (Bước 6)
+
+| Cấu hình | token sản phẩm / hồ sơ | lệnh gọi LLM / hồ sơ | giây / hồ sơ |
+|---|---|---|---|
+| review tắt | 4,994 | 19 | 18.0 |
+| review bật | 7,635 | 24 | 24.9 |
+| **chênh lệch** | **+2,640 (+53%)** | **+5** | **+6.9** |
+
+> Đo trên 3 RFP gốc, cache tắt cứng (đường eval). `MAX_REVIEW_ROUNDS = 3` nhưng thực đo dừng ở **1 vòng**: reviewer không tìm thấy issue `critical` nào nên vòng lặp thoát ngay — đây là
+> hành vi adaptive đúng thiết kế, không phải trần vòng bị chạm. Phần tăng thêm là
+> chi phí **cố định** của một lượt soi 5 mục (+5 lệnh gọi), không phải chi phí sửa lỗi.
+> Lưu ý đọc số: `usage.py` gắn stage theo LOẠI lệnh gọi (`generate`/`structured`), không theo node pipeline, nên không tách riêng được token của review — con số
+> đúng là phần chênh lệch giữa hai dòng trên.
+
 ### Chất độc đi tới đâu (giải thích cột fabric./leak ở trên)
 
 | Cấu hình | trong context retrieval | vào prompt sinh | guard chặn xuất bản | còn trong hồ sơ |

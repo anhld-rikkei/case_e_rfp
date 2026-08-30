@@ -279,6 +279,61 @@ def mmr_finding_note():
     ]
 
 
+def review_cost_rows(lines):
+    """Chi phí review loop (Bước 6, v1.2) — đọc từ file đo, không hardcode."""
+    path = results_dir / "review_cost.json"
+    if not path.exists():
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    runs = data.get("runs", {})
+    off = runs.get("no_review", [])
+    on = runs.get("with_review", [])
+    if not off or not on:
+        return
+
+    def mean(rows, key):
+        return sum(row[key] for row in rows) / len(rows)
+
+    tokens_off, tokens_on = mean(off, "product_tokens"), mean(on, "product_tokens")
+    calls_off, calls_on = mean(off, "calls"), mean(on, "calls")
+    delta_pct = (tokens_on / tokens_off - 1) * 100 if tokens_off else 0.0
+
+    lines.append("### Chi phí review loop (Bước 6)")
+    lines.append("")
+    lines.append("| Cấu hình | token sản phẩm / hồ sơ | lệnh gọi LLM / hồ sơ | giây / hồ sơ |")
+    lines.append("|---|---|---|---|")
+    lines.append(
+        f"| review tắt | {tokens_off:,.0f} | {calls_off:.0f} | {mean(off, 'seconds'):.1f} |"
+    )
+    lines.append(
+        f"| review bật | {tokens_on:,.0f} | {calls_on:.0f} | {mean(on, 'seconds'):.1f} |"
+    )
+    lines.append(
+        f"| **chênh lệch** | **+{tokens_on - tokens_off:,.0f} ({delta_pct:+.0f}%)** "
+        f"| **+{calls_on - calls_off:.0f}** | "
+        f"**+{mean(on, 'seconds') - mean(off, 'seconds'):.1f}** |"
+    )
+    lines.append("")
+    rounds = {row["review_rounds"] for row in on}
+    lines.append(
+        f"> Đo trên {len(on)} RFP gốc, cache tắt cứng (đường eval). `MAX_REVIEW_ROUNDS = "
+        f"{data.get('max_review_rounds')}` nhưng thực đo dừng ở **{max(rounds)} vòng**: "
+        "reviewer không tìm thấy issue `critical` nào nên vòng lặp thoát ngay — đây là"
+    )
+    lines.append(
+        "> hành vi adaptive đúng thiết kế, không phải trần vòng bị chạm. Phần tăng thêm là"
+    )
+    lines.append(
+        f"> chi phí **cố định** của một lượt soi 5 mục (+{calls_on - calls_off:.0f} lệnh gọi), "
+        "không phải chi phí sửa lỗi."
+    )
+    lines.append(
+        "> Lưu ý đọc số: `usage.py` gắn stage theo LOẠI lệnh gọi (`generate`/`structured`), "
+        "không theo node pipeline, nên không tách riêng được token của review — con số"
+    )
+    lines.append("> đúng là phần chênh lệch giữa hai dòng trên.")
+
+
 def interpretation(reach):
     no_guard = reach.get("force_precedent_k5_no_guard", {})
     with_guard = reach.get("force_precedent_k5_with_guard", {})
@@ -417,6 +472,9 @@ def main():
     lines.extend(sample_composition_note(same_sample))
     lines.append("")
     lines.extend(mmr_finding_note())
+    lines.append("")
+
+    review_cost_rows(lines)
     lines.append("")
 
     reach = poison_reach_rows(lines)

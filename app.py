@@ -17,6 +17,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from config.settings import (
+    PROMPT_VERSION,
     RFP_DIR,
     TRANSLATION_EFFORT,
     TRANSLATION_SYSTEM_PROMPT,
@@ -43,7 +44,7 @@ from eval.golden.runner import (
 )
 from eval.golden.schema import GoldenCase, load_case, save_case
 from rfp.graph import PIPELINE_STAGES, stream_graph
-from rfp.llm import generate
+from rfp.llm import MODEL as LLM_MODEL, generate
 
 
 STAGE_LABELS = {
@@ -54,6 +55,7 @@ STAGE_LABELS = {
     "plan_sections": "Lập khung proposal",
     "retrieve_per_chapter": "Truy xuất bằng chứng",
     "generate_per_section": "Sinh 5 mục",
+    "review": "Review chất lượng văn bản",
     "assemble": "Final guard & ghép bản",
 }
 STAGE_ICONS = {
@@ -265,7 +267,20 @@ def render_sources(state: dict[str, Any]) -> None:
 
 def translated_content(state: dict[str, Any]) -> tuple[str, str]:
     content = f"[RFP]\n{state['input_text']}\n\n[PROPOSAL]\n{state['proposal']}"
-    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    # Key phải gồm model + phiên bản prompt dịch: bản cũ chỉ băm nội dung, nên
+    # sửa TRANSLATION_SYSTEM_PROMPT hay đổi model vẫn trả về bản dịch cũ.
+    key_material = "\n".join(
+        (
+            content,
+            LLM_MODEL or "",
+            PROMPT_VERSION,
+            TRANSLATION_EFFORT,
+            # Băm thẳng prompt: sửa câu chữ trong nó là đủ để cache miss, không
+            # phải nhớ bump PROMPT_VERSION bằng tay.
+            TRANSLATION_SYSTEM_PROMPT,
+        )
+    )
+    content_hash = hashlib.sha256(key_material.encode("utf-8")).hexdigest()
     return content_hash, content
 
 

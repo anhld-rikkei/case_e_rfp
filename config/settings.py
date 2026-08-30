@@ -56,6 +56,20 @@ EVAL_JUDGE_EFFORT = "low"
 COST_PER_1M_INPUT = None
 COST_PER_1M_OUTPUT = None
 
+# Cache (Bước 5). PROMPT_VERSION/TEMPLATE_VERSION bump TAY mỗi khi sửa prompt
+# hoặc template sinh câu: cache key gồm chúng, nên quên bump là dùng lại kết quả
+# của prompt cũ mà không ai biết.
+PROMPT_VERSION = "1"
+TEMPLATE_VERSION = "1"
+CACHE_DIR = ROOT_DIR / "cache"
+CACHE_TTL_SECONDS = 7 * 24 * 3600
+CACHE_ENABLED = True
+
+# Review loop (Bước 6). Chỉ soi chất lượng văn bản — compliance là việc của
+# guard deterministic (BB-1/BB-2), xem docstring src/rfp/review.py.
+REVIEW_ENABLED = True
+MAX_REVIEW_ROUNDS = 3
+
 # Streamlit translation runs once after proposal assembly, outside the graph.
 TRANSLATION_EFFORT = "low"
 TRANSLATION_SYSTEM_PROMPT = (

@@ -404,17 +404,23 @@ def main() -> None:
         p.start()
 
     try:
-        states = load_states(
-            state_paths=args.state, 
-            rfp_paths=args.rfp
-        )
-        samples: list[dict[str, Any]] = []
-        deterministic_rows = []
-        for state in states:
-            row = deterministic_metrics(state)
-            deterministic_rows.append(row)
-            print_deterministic(state, row)
-            samples.extend(to_eval_samples(state))
+        # Cache TẮT cứng ở mọi đường chạy eval, không đọc cờ từ settings: cache
+        # hit làm token sản phẩm đo được về gần 0 và phá bảng ablation §11.3.
+        from rfp.cache import Cache
+        from rfp.graph import use_cache
+
+        with use_cache(Cache(enabled=False)):
+            states = load_states(
+                state_paths=args.state,
+                rfp_paths=args.rfp
+            )
+            samples: list[dict[str, Any]] = []
+            deterministic_rows = []
+            for state in states:
+                row = deterministic_metrics(state)
+                deterministic_rows.append(row)
+                print_deterministic(state, row)
+                samples.extend(to_eval_samples(state))
     finally:
         for p in patchers:
             p.stop()

@@ -3,6 +3,7 @@ import copy
 import json
 import sqlite3
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Any, TypedDict
@@ -19,9 +20,11 @@ from config.settings import (
     CAPABILITY_FACTS_PER_SECTION,
     COMPANY_FACTS_PER_SECTION,
     MAX_BRIDGES_PER_PROPOSAL,
+    MAX_REVIEW_ROUNDS,
     MMR_TOP_K,
     PRECEDENTS_PER_CHAPTER,
     RERANK_TOP_K,
+    REVIEW_ENABLED,
     RETRIEVAL_TOP_K,
     RETRIEVAL_USE_MMR,
     ROUTE_EMBEDDING_THRESHOLD,
@@ -41,8 +44,21 @@ from .generate.claim_check import (
 from .generate.coverage import assess_coverage, matched_requirement_ids
 from .generate.merge import deduplicate_sections, merge_channels
 from .generate.precedent import generate_precedents
+from . import llm
+from .cache import (
+    Cache,
+    capability_fingerprint,
+    corpus_fingerprint,
+    make_key,
+)
 from .guard import final_guard
 from .llm import LLMUnavailable
+from .review import (
+    apply_fixes,
+    critical_section_keys,
+    review_sections,
+    score as review_score,
+)
 from .parsers.rfp_parser import (
     CHAPTER_RE,
     DEFAULT_RFP_DIR,
@@ -72,6 +88,22 @@ SECTION_KEYS = {
     "note",
 }
 TRACE_KEYS = {"llm_calls", "retrieval_stats", "dedup"}
+
+# Cache đang hiệu lực cho các node. None = dùng Cache() mặc định theo settings.
+# eval/ đặt Cache(enabled=False) qua use_cache() để cache hit không làm token
+# sản phẩm đo được về gần 0 và phá bảng ablation §11.3.
+_ACTIVE_CACHE: "Cache | None" = None
+
+
+@contextmanager
+def use_cache(cache: "Cache"):
+    global _ACTIVE_CACHE
+    previous = _ACTIVE_CACHE
+    _ACTIVE_CACHE = cache
+    try:
+        yield cache
+    finally:
+        _ACTIVE_CACHE = previous
 PIPELINE_STAGES = (
     "parse_input",
     "check_complete",
@@ -80,6 +112,7 @@ PIPELINE_STAGES = (
     "plan_sections",
     "retrieve_per_chapter",
     "generate_per_section",
+    "review",
     "assemble",
 )
 
@@ -98,6 +131,9 @@ class GraphState(TypedDict, total=False):
     sections: list[dict[str, Any]]
     proposal: str
     trace: dict[str, Any]
+    fingerprints: dict[str, str]
+    force_regen: bool
+    review_rounds: int
 
 
 def _empty_trace() -> dict[str, Any]:
@@ -128,6 +164,7 @@ def _empty_trace() -> dict[str, Any]:
             "precedent_generation": 0,
             "capability_generation": 0,
             "claim_check": 0,
+            "review": 0,
             "final_guard": 0,
         },
         "section_statuses": {
@@ -136,6 +173,7 @@ def _empty_trace() -> dict[str, Any]:
             "INSUFFICIENT_EVIDENCE": 0,
         },
         "grounding": {"grounded": 0, "total": 0},
+        "review": {"enabled": REVIEW_ENABLED, "rounds": 0, "history": []},
     }
 
 
@@ -160,6 +198,9 @@ def _with_trace(state: GraphState, node: str) -> dict[str, Any]:
         "llm_calls_by_stage": dict(current.get("llm_calls_by_stage", {})),
         "section_statuses": dict(current.get("section_statuses", {})),
         "grounding": dict(current.get("grounding", {})),
+        "review": copy.deepcopy(
+            current.get("review", {"enabled": REVIEW_ENABLED, "rounds": 0, "history": []})
+        ),
     }
 
 
@@ -310,6 +351,26 @@ def plan_sections(state: GraphState) -> GraphState:
     }
 
 
+def _node_cache() -> "Cache":
+    """Cache dùng cho node. eval/ ép enabled=False qua use_cache()."""
+    return _ACTIVE_CACHE if _ACTIVE_CACHE is not None else Cache()
+
+
+def _cache_key_for(state: GraphState, scope: str) -> str | None:
+    fingerprints = state.get("fingerprints") or {}
+    corpus = fingerprints.get("corpus")
+    capability = fingerprints.get("capability")
+    if not corpus or not capability:
+        return None
+    return make_key(
+        rfp_text=state.get("input_text", ""),
+        model=llm.MODEL or "",
+        corpus=corpus,
+        capability=capability,
+        scope=scope,
+    )
+
+
 def retrieve_per_chapter(state: GraphState) -> GraphState:
     rfp = state.get("rfp")
     if rfp is None:
@@ -318,7 +379,23 @@ def retrieve_per_chapter(state: GraphState) -> GraphState:
             "trace": _with_trace(state, "retrieve_per_chapter"),
         }
 
+    # Dựng index trước để có vân tay corpus. Bước này chỉ parse + sanitize;
+    # phần đắt (embedding, FAISS) nằm ở HybridRetriever và chỉ chạy khi có
+    # search đầu tiên — nên cache hit bên dưới vẫn tiết kiệm được đúng phần đắt.
     sentence_index = SentenceIndex.build()
+    fingerprints = {
+        "corpus": corpus_fingerprint(sentence_index),
+        "capability": capability_fingerprint(),
+    }
+    state = {**state, "fingerprints": fingerprints}
+    cache = _node_cache()
+    force_regen = bool(state.get("force_regen"))
+    cache_key = _cache_key_for(state, "retrieve_per_chapter")
+    if cache_key is not None:
+        cached = cache.get(cache_key, force_regen=force_regen)
+        if cached is not None:
+            return {**cached, "fingerprints": fingerprints}
+
     attribute_retriever = AttributeRetriever()
     reference_rfp = state.get("reference_rfp", {}).get("rfp_id", "")
     coverages = {
@@ -440,10 +517,13 @@ def retrieve_per_chapter(state: GraphState) -> GraphState:
     trace["dedup"] = {"before": aggregate_before, "after": aggregate_after}
     trace["conflicts"] = conflicts
     trace["claim_whitelist"] = sorted(build_claim_whitelist(sentence_index))
-    return {
+    result = {
         "chapters": chapters,
         "trace": trace,
     }
+    if cache_key is not None:
+        cache.put(cache_key, result)
+    return {**result, "fingerprints": fingerprints}
 
 
 def _attribute_stage(coverage: AttributeCoverage) -> dict[str, Any]:
@@ -584,6 +664,13 @@ def _reranked_result_dict(item: RerankedResult) -> dict[str, Any]:
 
 
 def generate_per_section(state: GraphState) -> GraphState:
+    cache = _node_cache()
+    cache_key = _cache_key_for(state, "generate_per_section")
+    if cache_key is not None:
+        cached = cache.get(cache_key, force_regen=bool(state.get("force_regen")))
+        if cached is not None:
+            return cached
+
     capability_store = CapabilityStore()
     source_texts = {
         sentence["sent_id"]: sentence["text"]
@@ -823,10 +910,74 @@ def generate_per_section(state: GraphState) -> GraphState:
         "grounded": sum(sentence["origin"] != "bridge" for sentence in all_sentences),
         "total": len(all_sentences),
     }
-    return {
+    result = {
         "sections": generated_sections,
         "trace": trace,
     }
+    if cache_key is not None:
+        cache.put(cache_key, result)
+    return result
+
+
+def review(state: GraphState) -> GraphState:
+    """Một vòng review: soi chất lượng văn bản rồi sửa các mục có issue critical.
+
+    KHÔNG cache node này (xem docstring `rfp.review`): kết quả phụ thuộc số vòng
+    đã chạy nên không phải hàm thuần của cache key. Guard vẫn là chốt cuối ở
+    `assemble`, chạy sau khi vòng lặp này kết thúc.
+    """
+    rounds = state.get("review_rounds", 0)
+    trace = _with_trace(state, "review")
+    if not REVIEW_ENABLED:
+        trace["review"] = {"enabled": False, "rounds": 0, "history": []}
+        return {"review_rounds": 0, "trace": trace}
+
+    sections = state.get("sections", [])
+    issues, review_calls = review_sections(sections)
+    fixed_sections, fix_calls, applied = apply_fixes(sections, issues)
+
+    history = list(state.get("trace", {}).get("review", {}).get("history", []))
+    history.append(
+        {
+            "round": rounds + 1,
+            "score": review_score(issues),
+            "critical_sections": critical_section_keys(issues),
+            "fixes_applied": len(applied),
+        }
+    )
+    trace["llm_calls"] += review_calls + fix_calls
+    trace["llm_calls_by_stage"]["review"] = (
+        trace["llm_calls_by_stage"].get("review", 0) + review_calls + fix_calls
+    )
+    trace["review"] = {
+        "enabled": True,
+        "rounds": rounds + 1,
+        "history": history,
+        "issues": issues,
+        "applied": applied,
+    }
+    return {
+        "sections": fixed_sections,
+        "review_rounds": rounds + 1,
+        "trace": trace,
+    }
+
+
+def route_after_review(state: GraphState) -> str:
+    """Dừng khi hết critical, hoặc vòng này không sửa được gì, hoặc chạm trần."""
+    review_trace = state.get("trace", {}).get("review", {})
+    if not review_trace.get("enabled"):
+        return "done"
+    if state.get("review_rounds", 0) >= MAX_REVIEW_ROUNDS:
+        return "done"
+    history = review_trace.get("history", [])
+    if not history or history[-1]["score"]["critical"] == 0:
+        return "done"
+    # Còn critical nhưng vòng vừa rồi không sửa nổi câu nào -> lặp thêm cũng vô
+    # ích, chỉ tốn lệnh gọi. Dừng và để trace ghi lại là còn critical.
+    if history[-1]["fixes_applied"] == 0:
+        return "done"
+    return "again"
 
 
 def assemble(state: GraphState) -> GraphState:
@@ -852,6 +1003,7 @@ def build_graph(checkpointer=None):
     builder.add_node("plan_sections", plan_sections)
     builder.add_node("retrieve_per_chapter", retrieve_per_chapter)
     builder.add_node("generate_per_section", generate_per_section)
+    builder.add_node("review", review)
     builder.add_node("assemble", assemble)
 
     builder.add_edge(START, "parse_input")
@@ -868,7 +1020,15 @@ def build_graph(checkpointer=None):
     builder.add_edge("route_reference_rfp", "plan_sections")
     builder.add_edge("plan_sections", "retrieve_per_chapter")
     builder.add_edge("retrieve_per_chapter", "generate_per_section")
-    builder.add_edge("generate_per_section", "assemble")
+    builder.add_edge("generate_per_section", "review")
+    builder.add_conditional_edges(
+        "review",
+        route_after_review,
+        {
+            "again": "review",
+            "done": "assemble",
+        },
+    )
     builder.add_edge("assemble", END)
     return builder.compile(checkpointer=checkpointer)
 
@@ -902,13 +1062,17 @@ def run_graph(
     job_id: str | None = None,
     resume: bool = False,
     checkpoint_db: str | Path | None = None,
+    force_regen: bool = False,
 ) -> GraphState:
     if job_id is None:
         # Không checkpoint, nhưng vẫn gom state theo từng node: LLM sập giữa
         # chừng thì trả phần đã xong với status=partial thay vì mất trắng.
         last_state: GraphState | None = None
         try:
-            for snapshot in GRAPH.stream(_initial_state(text), stream_mode="values"):
+            for snapshot in GRAPH.stream(
+                _initial_state(text, force_regen=force_regen),
+                stream_mode="values",
+            ):
                 last_state = snapshot
             return last_state
         except LLMUnavailable as error:
@@ -930,9 +1094,13 @@ def run_graph(
                 return dict(snapshot.values)  # job đã hoàn tất từ trước
             # Còn node dở dang -> invoke(None) chạy tiếp từ checkpoint cuối;
             # chưa có checkpoint nào -> chạy mới từ đầu.
-            payload = None if snapshot.next else _initial_state(text)
+            payload = (
+                None
+                if snapshot.next
+                else _initial_state(text, force_regen=force_regen)
+            )
         else:
-            payload = _initial_state(text)
+            payload = _initial_state(text, force_regen=force_regen)
         try:
             result = graph.invoke(payload, config)
             return dict(result)
@@ -946,11 +1114,17 @@ def run_graph(
 
 
 def run_graph_eval(text: str) -> GraphState:
+    """Đường chạy cho eval — cache LUÔN tắt, không đọc cờ từ settings.
+
+    Cache hit làm token sản phẩm đo được về gần 0 và phá bảng ablation §11.3,
+    nên chốt cứng ở đây thay vì tin vào cấu hình.
+    """
     from rfp.guard import GuardViolation
     last_state = None
     try:
-        for s in GRAPH.stream(_initial_state(text), stream_mode="values"):
-            last_state = s
+        with use_cache(Cache(enabled=False)):
+            for s in GRAPH.stream(_initial_state(text), stream_mode="values"):
+                last_state = s
         return last_state
     except GuardViolation as e:
         state = dict(last_state) if last_state else {}
@@ -961,13 +1135,14 @@ def run_graph_eval(text: str) -> GraphState:
         return _partial_state(last_state, e)
 
 
-def _initial_state(text: str) -> GraphState:
+def _initial_state(text: str, *, force_regen: bool = False) -> GraphState:
     return {
         "input_text": text,
         "reference_rfp": {"rfp_id": "", "method": "none", "score": None},
         "chapters": [],
         "sections": [],
         "trace": _empty_trace(),
+        "force_regen": force_regen,
     }
 
 
@@ -987,7 +1162,8 @@ def _next_stage(node: str, state: GraphState) -> str | None:
         "route_reference_rfp": "plan_sections",
         "plan_sections": "retrieve_per_chapter",
         "retrieve_per_chapter": "generate_per_section",
-        "generate_per_section": "assemble",
+        "generate_per_section": "review",
+        "review": "assemble",
     }
     return next_by_node.get(node)
 
@@ -1092,6 +1268,11 @@ def main() -> None:
     )
     argument_parser.add_argument("--resume", action="store_true")
     argument_parser.add_argument("--checkpoint-db", type=Path)
+    argument_parser.add_argument(
+        "--force-regen",
+        action="store_true",
+        help="bỏ qua cache lần chạy này (vẫn ghi lại kết quả mới)",
+    )
     args = argument_parser.parse_args()
 
     if args.resume and not args.job_id:
@@ -1107,6 +1288,7 @@ def main() -> None:
         job_id=args.job_id,
         resume=args.resume,
         checkpoint_db=args.checkpoint_db,
+        force_regen=args.force_regen,
     )
 
     if args.json is not None:
