@@ -12,6 +12,20 @@ RFP_DIR = SYNTHETIC_DIR / "rfps"
 PROPOSAL_DIR = SYNTHETIC_DIR / "proposals"
 CAPABILITY_PATH = SYNTHETIC_DIR / "capability_sheet.json"
 
+# Corpus dùng cho ĐO LƯỜNG, tách khỏi corpus vận hành (v1.5).
+#
+# Hôm nay hai bên trỏ cùng chỗ nên không đổi hành vi gì. Tách ra vì bảng ablation
+# §11.3, golden set và một test cổng (`test_hybrid_hallucination` cần câu
+# 「在庫精度を20%向上」 có thật trong corpus) đều neo theo dữ liệu hiện tại —
+# người vận hành thêm hồ sơ mới vào `proposals/` là số liệu đo trôi và test đỏ,
+# mà nguyên nhân thì rất khó truy.
+#
+# Khi bắt đầu thêm dữ liệu vận hành: chạy `python scripts/freeze_eval_corpus.py`
+# để đóng băng corpus hiện tại rồi trỏ hai hằng số này sang bản đóng băng. Chưa
+# chép sẵn vì nhân đôi 40 file khi chưa có nhu cầu là rác.
+EVAL_PROPOSAL_DIR = PROPOSAL_DIR
+EVAL_RFP_DIR = RFP_DIR
+
 # Retrieval defaults. Business logic is implemented in later build steps.
 RETRIEVAL_TOP_K = 20
 RERANK_TOP_K = 8

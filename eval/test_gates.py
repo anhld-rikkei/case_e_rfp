@@ -19,7 +19,10 @@ from rfp.generate.coverage import (  # noqa: E402
     matched_requirement_ids,
     validate_source_req_ids,
 )
-from config.settings import PROPOSAL_DIR, RFP_DIR  # noqa: E402
+from config.settings import (  # noqa: E402
+    EVAL_PROPOSAL_DIR as PROPOSAL_DIR,
+    EVAL_RFP_DIR as RFP_DIR,
+)
 from eval.golden.schema import Assertion, GoldenCase  # noqa: E402
 from eval.to_samples import (  # noqa: E402
     capability_sheet_text,

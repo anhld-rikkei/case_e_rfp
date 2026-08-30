@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 import re
 import sys
+import time
 from typing import Any
 
 import pandas as pd
@@ -77,8 +78,17 @@ from config.display_vi import (
     label,
     to_raw,
 )
+from rfp.freshness import (
+    current_diff,
+    load_manifest,
+    quarantine_report,
+    scan_sources,
+    state_is_stale,
+    write_manifest,
+)
 from rfp.graph import PIPELINE_STAGES, stream_graph
 from rfp.guard import GuardViolation
+from rfp.stores.sentence_index import SentenceIndex
 from rfp.llm import LLMUnavailable, MODEL as LLM_MODEL, generate
 
 
@@ -121,9 +131,113 @@ def _load_uploaded_rfp(uploaded) -> str | None:
         return None
 
 
+def _format_ingested_at(manifest: dict[str, Any] | None) -> str:
+    if not manifest or not manifest.get("ingested_at"):
+        return "chưa rõ"
+    return time.strftime("%H:%M %d/%m/%Y", time.localtime(manifest["ingested_at"]))
+
+
+def reload_knowledge_base() -> None:
+    """Nạp lại kho: chạy ĐÚNG pipeline ingest, không đường tắt.
+
+    `SentenceIndex.build()` là chính con đường mà pipeline thật dùng — quarantine
+    blocklist và lọc rò rỉ tên khách hàng chạy nguyên vẹn bên trong nó. Không có
+    phiên bản "nạp nhanh" bỏ qua hai lớp đó (BB-2).
+    """
+    index = SentenceIndex.build()
+    counts = index.assert_clean()
+    previous = load_manifest()
+    write_manifest(index, files=scan_sources())
+    st.session_state["reload_report"] = {
+        "counts": counts,
+        "previous": (previous or {}).get("counts"),
+        "quarantine": quarantine_report(index),
+    }
+    # Bản đang xem sinh từ dữ liệu trước đó -> lượt chat tiếp theo bị chặn
+    # (xem docstring freshness.py). Giữ nguyên bản, không xoá công sức người dùng.
+    st.session_state["kb_reloaded_at"] = time.time()
+
+
+def render_source_status() -> None:
+    diff, manifest = current_diff()
+    if not diff.has_manifest:
+        st.info(
+            "Chưa nạp kho tri thức lần nào trong phiên làm việc này. "
+            "Bấm **Nạp lại kho tri thức** để ghi mốc đối chiếu."
+        )
+    elif not diff.changed:
+        st.success(
+            f"Dữ liệu nguồn khớp lần nạp gần nhất ({_format_ingested_at(manifest)})"
+        )
+    else:
+        if diff.capability_changed:
+            st.error(
+                "🔴 **Bảng năng lực đã đổi.** Đây là trọng tài quyết định câu nào "
+                "được phép nói — nạp lại trước khi sinh hồ sơ."
+            )
+        st.warning(
+            f"⚠ Dữ liệu nguồn đã thay đổi so với lần nạp gần nhất "
+            f"({_format_ingested_at(manifest)}) — {diff.total} file."
+        )
+        with st.expander(f"Xem {diff.total} thay đổi", expanded=False):
+            for title, names in (
+                ("Thêm", diff.added),
+                ("Sửa", diff.modified),
+                ("Xoá", diff.removed),
+            ):
+                if names:
+                    st.markdown(f"**{title}** ({len(names)})")
+                    for name in names:
+                        st.markdown(f"- `{name}`")
+
+    if st.button("Nạp lại kho tri thức", width="stretch", key="reload_kb"):
+        with st.spinner("Đang nạp lại — parse, lọc rò rỉ, cách ly chuỗi cấm…"):
+            reload_knowledge_base()
+        st.rerun()
+
+    report = st.session_state.get("reload_report")
+    if report:
+        counts = report["counts"]
+        previous = report["previous"] or {}
+
+        def _delta(key: str, previous_key: str) -> str:
+            if previous_key not in previous:
+                return ""
+            change = counts[key] - previous[previous_key]
+            return f" ({change:+d})" if change else " (không đổi)"
+
+        st.success(
+            f"Đã nạp: **{counts['indexed']}** câu vào kho"
+            f"{_delta('indexed', 'indexed')} · "
+            f"**{counts['capability_quarantine']}** câu bị cách ly vì chuỗi cấm"
+            f"{_delta('capability_quarantine', 'quarantine')} · "
+            f"**{counts['leak_quarantine']}** câu bị bỏ vì lộ tên khách hàng"
+            f"{_delta('leak_quarantine', 'leak_dropped')}"
+        )
+        if report["quarantine"]:
+            with st.expander(
+                f"Vì sao {len(report['quarantine'])} câu bị loại", expanded=False
+            ):
+                st.dataframe(
+                    [
+                        {
+                            "Mã câu": row["sent_id"],
+                            "Loại": row["loai"],
+                            "Lý do": row["ly_do"],
+                            "Câu": row["text"],
+                        }
+                        for row in report["quarantine"]
+                    ],
+                    width="stretch",
+                    hide_index=True,
+                )
+
+
 def sidebar_controls() -> tuple[str, bool]:
     with st.sidebar:
         st.title("RFP đầu vào")
+        with st.expander("Dữ liệu nguồn", expanded=False):
+            render_source_status()
         uploaded = st.file_uploader(
             "Tải file RFP (.txt, UTF-8)",
             type=["txt"],
@@ -203,10 +317,18 @@ def render_draft_banner(state: dict[str, Any]) -> None:
         "Chưa có người thật rà soát. Không nộp và không gửi khách hàng khi "
         "checklist bên dưới chưa tick đủ."
     )
+    stale = state_is_stale(state)
+    if stale:
+        st.warning(
+            "⚠ **Hồ sơ này sinh từ dữ liệu nguồn đã cũ.** Dữ liệu nguồn đã thay "
+            "đổi sau khi hồ sơ được sinh — nạp lại kho tri thức và sinh lại "
+            "trước khi dùng. Cảnh báo này cũng nằm trong file tải về.",
+            icon="⚠️",
+        )
     with st.expander("Checklist bắt buộc trước khi nộp", expanded=False):
         st.markdown(REVIEWER_CHECKLIST)
     try:
-        markdown = to_markdown(state)
+        markdown = to_markdown(state, stale=stale)
     except GuardViolation as violation:
         # Không bao giờ mở đường tải cho bản chưa qua guard.
         st.error(f"Không xuất được: final guard chặn — {violation}")

@@ -183,14 +183,31 @@ def _review_markdown(state: dict[str, Any]) -> list[str]:
     return lines
 
 
-def to_markdown(state: dict[str, Any]) -> str:
-    """Dựng markdown hoàn chỉnh. Ném GuardViolation nếu phần sinh có chuỗi cấm."""
+STALE_DATA_BANNER = (
+    "> ## ⚠ Sinh từ dữ liệu nguồn đã cũ\n"
+    ">\n"
+    "> Hồ sơ này được sinh **trước khi** dữ liệu nguồn (hồ sơ quá khứ / RFP /\n"
+    "> bảng năng lực) thay đổi. Nội dung dưới đây có thể không còn khớp dữ liệu\n"
+    "> hiện tại. Nạp lại kho tri thức và sinh lại trước khi dùng.\n"
+)
+
+
+def to_markdown(state: dict[str, Any], *, stale: bool = False) -> str:
+    """Dựng markdown hoàn chỉnh. Ném GuardViolation nếu phần sinh có chuỗi cấm.
+
+    `stale=True` chèn thêm cảnh báo dữ liệu cũ ngay đầu file. Cùng lý do với
+    nhãn bản nháp: banner trên UI biến mất lúc người dùng bấm tải về, còn file
+    thì đi tiếp — nên cảnh báo phải nằm trong chính nội dung.
+    """
     final_guard(_proposal_body(state))
 
     rfp = state.get("rfp") or {}
     rfp_id = rfp.get("rfp_id", "") if isinstance(rfp, dict) else getattr(rfp, "rfp_id", "")
 
     lines: list[str] = [DRAFT_BANNER, ""]
+    if stale:
+        lines.append(STALE_DATA_BANNER)
+        lines.append("")
     lines.append(f"# Hồ sơ thầu (bản nháp){f' — {rfp_id}' if rfp_id else ''}")
     lines.append("")
     lines.append(REVIEWER_CHECKLIST)
