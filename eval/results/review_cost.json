@@ -2,14 +2,19 @@
   "method": "run_graph_eval tren 3 RFP goc, cache tat cung (duong eval), do bang rfp.usage.snapshot(). product = tong tokens_by_stage tru judge.",
   "note_stage_attribution": "usage.py gan stage theo LOAI lenh goi (generate/structured), khong theo node pipeline, nen khong tach rieng duoc token cua review; cot chenh lech duoi day la cach do dung.",
   "max_review_rounds": 3,
+  "personas": [
+    "coverage",
+    "quality"
+  ],
+  "note_personas": "Khong co persona Compliance: no se giam len BB-1/BB-2 deterministic. Ly do day du trong docstring src/rfp/review.py.",
   "runs": {
     "no_review": [
       {
         "rfp": "RFP-2025-001",
         "status": "completed",
-        "product_tokens": 5183,
+        "product_tokens": 5313,
         "calls": 20,
-        "seconds": 19.7,
+        "seconds": 16.2,
         "review_rounds": 0,
         "review_tokens": 0,
         "llm_calls_review": 0
@@ -17,9 +22,9 @@
       {
         "rfp": "RFP-2025-002",
         "status": "completed",
-        "product_tokens": 5173,
+        "product_tokens": 5090,
         "calls": 20,
-        "seconds": 18.4,
+        "seconds": 14.5,
         "review_rounds": 0,
         "review_tokens": 0,
         "llm_calls_review": 0
@@ -27,15 +32,15 @@
       {
         "rfp": "RFP-2025-003",
         "status": "completed",
-        "product_tokens": 4627,
+        "product_tokens": 4697,
         "calls": 18,
-        "seconds": 15.8,
+        "seconds": 14.2,
         "review_rounds": 0,
         "review_tokens": 0,
         "llm_calls_review": 0
       }
     ],
-    "with_review": [
+    "with_review_1_persona": [
       {
         "rfp": "RFP-2025-001",
         "status": "completed",
@@ -62,6 +67,38 @@
         "product_tokens": 7291,
         "calls": 23,
         "seconds": 24.3,
+        "review_rounds": 1,
+        "review_tokens": 0,
+        "llm_calls_review": 0
+      }
+    ],
+    "with_review": [
+      {
+        "rfp": "RFP-2025-001",
+        "status": "completed",
+        "product_tokens": 11090,
+        "calls": 30,
+        "seconds": 27.4,
+        "review_rounds": 1,
+        "review_tokens": 0,
+        "llm_calls_review": 0
+      },
+      {
+        "rfp": "RFP-2025-002",
+        "status": "completed",
+        "product_tokens": 11068,
+        "calls": 30,
+        "seconds": 29.6,
+        "review_rounds": 1,
+        "review_tokens": 0,
+        "llm_calls_review": 0
+      },
+      {
+        "rfp": "RFP-2025-003",
+        "status": "completed",
+        "product_tokens": 10355,
+        "calls": 28,
+        "seconds": 25.8,
         "review_rounds": 1,
         "review_tokens": 0,
         "llm_calls_review": 0

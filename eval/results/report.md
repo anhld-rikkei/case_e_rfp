@@ -71,19 +71,31 @@ Cấu hình đề xuất, mỗi RFP: sản phẩm ~4,723 token · judge ~299,072
 > bịa vào prompt chính là số câu được chọn, không phải thuật toán chọn) — nhưng ở cấu
 > hình hiện tại nó **không** phải thứ tạo ra chất lượng, và bảng này nói đúng như vậy.
 
-### Chi phí review loop (Bước 6)
+### Chi phí review loop (Bước 6 · multi-persona #10)
 
 | Cấu hình | token sản phẩm / hồ sơ | lệnh gọi LLM / hồ sơ | giây / hồ sơ |
 |---|---|---|---|
-| review tắt | 4,994 | 19 | 18.0 |
-| review bật | 7,635 | 24 | 24.9 |
-| **chênh lệch** | **+2,640 (+53%)** | **+5** | **+6.9** |
+| review tắt | 5,033 | 19 | 15.0 |
+| review 1 persona | 7,635 | 24 | 24.9 |
+| review 2 persona (coverage, quality) | 10,838 | 29 | 27.6 |
+| **chênh lệch (tắt → 2 persona)** | **+5,804 (+115%)** | **+10** | **+12.6** |
 
 > Đo trên 3 RFP gốc, cache tắt cứng (đường eval). `MAX_REVIEW_ROUNDS = 3` nhưng thực đo dừng ở **1 vòng**: reviewer không tìm thấy issue `critical` nào nên vòng lặp thoát ngay — đây là
 > hành vi adaptive đúng thiết kế, không phải trần vòng bị chạm. Phần tăng thêm là
-> chi phí **cố định** của một lượt soi 5 mục (+5 lệnh gọi), không phải chi phí sửa lỗi.
+> chi phí **cố định** của một lượt soi 5 mục (+10 lệnh gọi), không phải chi phí sửa lỗi.
 > Lưu ý đọc số: `usage.py` gắn stage theo LOẠI lệnh gọi (`generate`/`structured`), không theo node pipeline, nên không tách riêng được token của review — con số
 > đúng là phần chênh lệch giữa hai dòng trên.
+>
+> **Persona (coverage, quality) — và persona CỐ TÌNH không có.** Đề bài đề xuất ba persona
+> Compliance / Coverage / Quality. Hai persona sau an toàn; persona **Compliance thì không** —
+> nó phán về chứng chỉ giả và over-claim, tức giẫm lên BB-2 (blocklist regex) và BB-1
+> (capability sheet là trọng tài). Judge LLM sai 5–10%; ở đây sai một lần là hồ sơ tuyên bố
+> sai chứng chỉ. Một reviewer "hiền" báo sạch không làm hồ sơ sạch hơn, nhưng tạo cảm giác
+> đã có người canh — kiểu hỏng nguy hiểm nhất. Compliance ở lại tầng deterministic.
+>
+> Mỗi persona soi mọi mục, chạy song song, rồi dedupe theo `(section_key, issue_type)` giữ
+> bản **severity nặng nhất** — hạ severity vì thứ tự chạy sẽ biến một lỗi critical thành major
+> một cách ngẫu nhiên.
 
 ### Chất độc đi tới đâu (giải thích cột fabric./leak ở trên)
 

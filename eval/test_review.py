@@ -5,6 +5,7 @@ Trọng tâm là ba chốt cứng: reviewer không đụng compliance, guard v�
 review loop (BB-2), và chỉ mục có issue critical mới bị sửa.
 """
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -102,7 +103,7 @@ def test_review_drops_issue_for_other_section(
     monkeypatch.setattr(review_module, "structured", fake_structured)
     issues, calls = review_sections(sections)
     assert issues == []
-    assert calls == 1
+    assert calls == len(review_module.PERSONAS)  # mỗi persona soi 1 lần
 
 
 def test_empty_section_costs_no_llm_call(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -310,6 +311,169 @@ def test_assemble_still_blocks_forbidden_text_after_review() -> None:
     }
     with pytest.raises(GuardViolation, match="blocklist"):
         graph_module.assemble(state)
+
+
+# ── #10 multi-persona ─────────────────────────────────────────────────────
+
+def test_no_compliance_persona_exists() -> None:
+    """Chốt cứng: Compliance ở lại tầng deterministic, không lên tầng LLM."""
+    assert set(review_module.PERSONAS) == {"coverage", "quality"}
+    for system in review_module.PERSONAS.values():
+        assert "指摘しないでください" in system  # cấm phán về chứng chỉ/số liệu
+
+
+def test_every_persona_is_bound_to_closed_issue_vocabulary() -> None:
+    for system in review_module.PERSONAS.values():
+        for issue_type in ISSUE_TYPES:
+            assert issue_type in system
+
+
+def test_personas_run_for_every_section(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[str, str]] = []
+
+    def fake_structured(system, user, model_cls):
+        persona = next(
+            name for name, text in review_module.PERSONAS.items() if text == system
+        )
+        section_key = user.split("【section_key】")[1].split("\n")[0]
+        seen.append((persona, section_key))
+        return ReviewResult(issues=[])
+
+    monkeypatch.setattr(review_module, "structured", fake_structured)
+    sections = [
+        _section("technical", [_sentence("文A")]),
+        _section("security", [_sentence("文B")]),
+    ]
+    issues, calls = review_sections(sections)
+
+    assert calls == 4  # 2 mục × 2 persona
+    assert sorted(seen) == [
+        ("coverage", "security"),
+        ("coverage", "technical"),
+        ("quality", "security"),
+        ("quality", "technical"),
+    ]
+    assert issues == []
+
+
+def test_dedupe_merges_same_section_and_issue_type() -> None:
+    issues = [
+        {**_issue("technical", "major", "文A", issue_type="tone"), "persona": "quality"},
+        {
+            **_issue("technical", "critical", "文A", issue_type="tone"),
+            "persona": "coverage",
+        },
+        {
+            **_issue("technical", "minor", "文A", issue_type="format"),
+            "persona": "quality",
+        },
+    ]
+    merged = review_module.deduplicate_issues(issues)
+
+    assert len(merged) == 2  # (technical,tone) gộp 1, (technical,format) giữ
+    tone = next(i for i in merged if i["issue_type"] == "tone")
+    # Giữ bản NẶNG nhất, không phải bản gặp trước
+    assert tone["severity"] == "critical"
+
+
+def test_dedupe_keeps_issues_from_different_sections() -> None:
+    issues = [
+        {**_issue("technical", "major", "x", issue_type="tone"), "persona": "quality"},
+        {**_issue("security", "major", "y", issue_type="tone"), "persona": "quality"},
+    ]
+    assert len(review_module.deduplicate_issues(issues)) == 2
+
+
+def test_result_is_stable_regardless_of_completion_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ThreadPool trả theo thứ tự hoàn thành; kết quả phải không phụ thuộc nó."""
+
+    def make_fake(delay_first: bool):
+        def fake_structured(system, user, model_cls):
+            persona = next(
+                name for name, text in review_module.PERSONAS.items() if text == system
+            )
+            if (persona == "coverage") is delay_first:
+                time.sleep(0.02)
+            return ReviewResult(
+                issues=[
+                    ReviewIssue(
+                        section_key="technical",
+                        severity="major" if persona == "quality" else "critical",
+                        issue_type="tone",
+                        original_text="文A",
+                        suggested_fix=f"fix tu {persona}",
+                    )
+                ]
+            )
+
+        return fake_structured
+
+    sections = [_section("technical", [_sentence("文A")])]
+
+    monkeypatch.setattr(review_module, "structured", make_fake(True))
+    first = review_sections(sections)[0]
+    monkeypatch.setattr(review_module, "structured", make_fake(False))
+    second = review_sections(sections)[0]
+
+    assert first == second
+    assert first[0]["severity"] == "critical"
+
+
+def test_one_failing_persona_does_not_kill_the_round(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_structured(system, user, model_cls):
+        if system == review_module.PERSONAS["coverage"]:
+            raise RuntimeError("persona lỗi")
+        return ReviewResult(
+            issues=[
+                ReviewIssue(
+                    section_key="technical",
+                    severity="major",
+                    issue_type="tone",
+                    original_text="文A",
+                    suggested_fix="x",
+                )
+            ]
+        )
+
+    monkeypatch.setattr(review_module, "structured", fake_structured)
+    issues, calls = review_sections([_section("technical", [_sentence("文A")])])
+
+    assert calls == 2
+    assert [issue["persona"] for issue in issues] == ["quality"]
+
+
+def test_apply_fixes_still_only_touches_critical_after_dedupe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """BB-4 và ràng buộc 'chỉ critical' không đổi khi có nhiều persona."""
+    sections = [
+        _section("technical", [_sentence("技術の文です。")]),
+        _section("security", [_sentence("セキュリティの文です。")]),
+    ]
+    issues = review_module.deduplicate_issues(
+        [
+            {
+                **_issue("technical", "critical", "技術の文です。"),
+                "persona": "coverage",
+            },
+            {
+                **_issue("security", "major", "セキュリティの文です。"),
+                "persona": "quality",
+            },
+        ]
+    )
+    monkeypatch.setattr(review_module, "generate", lambda *a, **k: "整えた文です。")
+    updated, calls, applied = apply_fixes(sections, issues)
+
+    assert calls == 1
+    assert updated[1] == sections[1]
+    sentence = updated[0]["sentences"][0]
+    assert sentence["source_id"] == "PROP-001-S01"
+    assert sentence["req_ids"] == ["3.1"]
 
 
 def test_review_node_records_score_and_rounds_in_trace(

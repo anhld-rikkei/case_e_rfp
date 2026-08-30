@@ -69,6 +69,9 @@ CACHE_ENABLED = True
 # guard deterministic (BB-1/BB-2), xem docstring src/rfp/review.py.
 REVIEW_ENABLED = True
 MAX_REVIEW_ROUNDS = 3
+# Số lệnh gọi persona chạy song song. Chỉ có một model nên persona phân hoá
+# bằng prompt, không bằng model size.
+MAX_REVIEW_WORKERS = 4
 
 # Streamlit translation runs once after proposal assembly, outside the graph.
 TRANSLATION_EFFORT = "low"

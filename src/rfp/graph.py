@@ -943,6 +943,9 @@ def review(state: GraphState) -> GraphState:
             "score": review_score(issues),
             "critical_sections": critical_section_keys(issues),
             "fixes_applied": len(applied),
+            "personas": sorted(
+                {issue.get("persona", "") for issue in issues} - {""}
+            ),
         }
     )
     trace["llm_calls"] += review_calls + fix_calls
