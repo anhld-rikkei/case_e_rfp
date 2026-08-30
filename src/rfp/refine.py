@@ -85,13 +85,32 @@ REFINE_SYSTEM = (
     "指定schemaで返してください。"
 )
 
+CAPABILITY_HINT = (
+    "Nếu công ty thật sự có, hãy cập nhật `capability_sheet.json` rồi bấm "
+    "**Nạp lại kho tri thức** và sinh lại hồ sơ."
+)
+
 REASON_VI = {
-    "numbers": "bản viết lại làm đổi số liệu so với câu gốc",
-    "forbidden": "bản viết lại nhắc tới năng lực hoặc chứng chỉ công ty không có",
+    "numbers": (
+        "bản viết lại làm đổi số liệu so với câu gốc — số liệu chỉ được lấy "
+        "nguyên văn từ nguồn"
+    ),
+    "forbidden": (
+        "yêu cầu thêm năng lực hoặc chứng chỉ **không có trong bảng năng lực** "
+        f"— hệ thống không thêm nội dung không có căn cứ. {CAPABILITY_HINT}"
+    ),
     "decorated": "bản viết lại thêm ký tự trang trí không có trong câu gốc",
     "empty": "bản viết lại rỗng",
-    "added": "chat không được thêm câu mới — mọi câu phải có nguồn",
+    "added": (
+        "chat không thêm được câu mới — mọi câu trong hồ sơ phải truy được về "
+        f"một nguồn cụ thể. {CAPABILITY_HINT}"
+    ),
     "out_of_range": "chỉ mục câu không tồn tại trong mục này",
+    "instruction_forbidden": (
+        "chỉ thị yêu cầu thêm năng lực hoặc chứng chỉ **công ty không có** "
+        f"({{terms}}) — hệ thống không thêm nội dung không có căn cứ. "
+        f"{CAPABILITY_HINT}"
+    ),
 }
 
 
@@ -111,11 +130,30 @@ class RefineResult:
     rejected: list[dict[str, Any]] = field(default_factory=list)
     changed: int = 0
     dropped: int = 0
+    kept: int = 0
     llm_calls: int = 0
 
     @property
     def touched(self) -> bool:
         return bool(self.changed or self.dropped)
+
+    @property
+    def blocked(self) -> int:
+        return len(self.rejected)
+
+    @property
+    def outcome(self) -> str:
+        """Ba kết cục phải nói khác nhau trên UI.
+
+        Gộp `blocked` và `no_change` làm một là lỗi đã gặp thật: người dùng đòi
+        thêm một chứng chỉ công ty không có, hệ thống từ chối đúng, nhưng màn
+        hình chỉ ghi "không có thay đổi nào" — đọc ra thành tính năng hỏng.
+        """
+        if self.touched:
+            return "changed"
+        if self.rejected:
+            return "blocked"
+        return "no_change"
 
 
 _BLOCKLIST = CapabilityBlocklist()
@@ -164,10 +202,20 @@ def _validate_rewrite(original: str, rewritten: str | None) -> str | None:
     return None
 
 
+def instruction_conflicts(instruction: str) -> list[str]:
+    """Chỉ thị có đòi thẳng một chuỗi cấm không? Regex, 0 lệnh gọi LLM.
+
+    Bắt ở đây thì thông báo trỏ đúng vào *chỉ thị* thay vì vào câu bị từ chối,
+    và không tốn lệnh gọi nào. Đây là lớp thêm, KHÔNG thay các lớp kiểm trên
+    bản viết lại — chỉ thị vòng vo vẫn phải bị chặn ở đó.
+    """
+    return _BLOCKLIST.find(instruction)
+
+
 def _apply_plan(
     sentences: list[dict[str, Any]],
     plan: RefinePlan,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, int]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, int, int]:
     edits = {edit.index: edit for edit in plan.edits}
     rejected: list[dict[str, Any]] = []
 
@@ -177,11 +225,12 @@ def _apply_plan(
         rejected.append({"index": index, "reason": REASON_VI[key], "text": None})
 
     updated: list[dict[str, Any]] = []
-    changed = dropped = 0
+    changed = dropped = kept = 0
     for index, sentence in enumerate(sentences):
         edit = edits.get(index)
         if edit is None or edit.action == "keep":
             updated.append(sentence)
+            kept += 1
             continue
         if edit.action == "drop":
             dropped += 1
@@ -196,12 +245,13 @@ def _apply_plan(
                 }
             )
             updated.append(sentence)  # giữ nguyên bản gốc
+            kept += 1
             continue
         # Giữ nguyên origin/source_id/req_ids (BB-4); verdict đặt lại để
         # claim-check phán lại trên nội dung mới.
         updated.append({**sentence, "text": edit.text.strip(), "verdict": None})
         changed += 1
-    return updated, rejected, changed, dropped
+    return updated, rejected, changed, dropped, kept
 
 
 def refine_section(
@@ -216,6 +266,24 @@ def refine_section(
     if target is None or not target.get("sentences"):
         return RefineResult(state=state)
 
+    conflicts = instruction_conflicts(instruction)
+    if conflicts:
+        # Chặn trước khi gọi LLM: thông báo trỏ đúng vào chỉ thị, và không tốn
+        # một lệnh gọi nào cho một yêu cầu chắc chắn bị từ chối.
+        return RefineResult(
+            state=state,
+            rejected=[
+                {
+                    "index": None,
+                    "reason": REASON_VI["instruction_forbidden"].format(
+                        terms=", ".join(f"`{term}`" for term in conflicts)
+                    ),
+                    "text": None,
+                }
+            ],
+            kept=len(target["sentences"]),
+        )
+
     numbered = "\n".join(
         f"[{index}] {sentence['text']}"
         for index, sentence in enumerate(target["sentences"])
@@ -228,10 +296,10 @@ def refine_section(
     )
     llm_calls = 1
 
-    updated, rejected, changed, dropped = _apply_plan(target["sentences"], plan)
+    updated, rejected, changed, dropped, kept = _apply_plan(target["sentences"], plan)
     if not (changed or dropped):
         return RefineResult(
-            state=state, rejected=rejected, llm_calls=llm_calls
+            state=state, rejected=rejected, kept=kept, llm_calls=llm_calls
         )
 
     # Claim-check lại các câu đã sửa, đối chiếu ĐÚNG nguồn cũ của mục.
@@ -278,6 +346,7 @@ def refine_section(
         rejected=rejected,
         changed=changed,
         dropped=dropped,
+        kept=kept,
         llm_calls=llm_calls,
     )
 
@@ -299,20 +368,29 @@ def refine_all(
     """Cùng chỉ thị cho mọi mục; mỗi mục vẫn chỉ dùng nguồn của chính nó."""
     current = state
     rejected: list[dict[str, Any]] = []
-    changed = dropped = llm_calls = 0
+    changed = dropped = kept = llm_calls = 0
+    seen_reasons: set[str] = set()
     for section in list(state.get("sections", [])):
         result = refine_section(
             current, section_key=section["key"], instruction=instruction
         )
         current = result.state
-        rejected.extend(result.rejected)
+        for item in result.rejected:
+            # Chỉ thị đòi chuỗi cấm sẽ bị chặn ở MỌI mục với cùng một lý do —
+            # in 5 lần y hệt nhau chỉ làm người đọc bỏ qua cả 5.
+            if item.get("index") is None and item["reason"] in seen_reasons:
+                continue
+            seen_reasons.add(item["reason"])
+            rejected.append(item)
         changed += result.changed
         dropped += result.dropped
+        kept += result.kept
         llm_calls += result.llm_calls
     return RefineResult(
         state=current,
         rejected=rejected,
         changed=changed,
         dropped=dropped,
+        kept=kept,
         llm_calls=llm_calls,
     )

@@ -497,32 +497,84 @@ def render_chat_refine(state: dict[str, Any]) -> None:
                     f"(lỗi {error.kind}). Hồ sơ giữ nguyên."
                 )
                 return
-        if result.touched:
+        if result.outcome == "changed":
             push_version(
                 result.state,
                 label=f"v{len(_versions()) + 1}",
                 instruction=instruction,
                 target=picked,
                 rejected=result.rejected,
+                counts=refine_counts(result),
             )
             st.session_state["translation"] = ""
             st.rerun()
-        else:
-            st.info("Không có thay đổi nào được áp dụng.")
-        _render_rejections(result.rejected)
+        render_refine_outcome(result)
+
+
+def refine_counts(result: Any) -> dict[str, int]:
+    return {
+        "changed": result.changed,
+        "dropped": result.dropped,
+        "kept": result.kept,
+        "blocked": result.blocked,
+    }
+
+
+def _counts_line(counts: dict[str, int]) -> str:
+    return (
+        f"**{counts['changed']}** câu sửa · "
+        f"**{counts['dropped']}** câu bỏ · "
+        f"**{counts['kept']}** câu giữ nguyên · "
+        f"**{counts['blocked']}** thay đổi bị chặn"
+    )
 
 
 def _render_rejections(rejected: list[dict[str, Any]]) -> None:
     if not rejected:
         return
-    st.warning(
-        "**Yêu cầu này vượt quá năng lực thật của công ty hoặc vi phạm ràng "
-        "buộc nguồn** — các thay đổi sau đã bị từ chối, hồ sơ giữ nguyên phần đó:",
-        icon="🛑",
-    )
     for item in rejected:
-        text = f" — `{item['text'][:60]}…`" if item.get("text") else ""
+        text = f"  \n  Câu liên quan: `{item['text'][:70]}…`" if item.get("text") else ""
         st.markdown(f"- {item['reason']}{text}")
+
+
+def render_refine_outcome(result: Any) -> None:
+    """Ba kết cục, ba thông báo khác nhau.
+
+    Gộp "bị lưới an toàn chặn" và "model không đổi gì" làm một câu
+    "không có thay đổi nào" là lỗi đã gặp thật: người dùng đòi thêm một chứng
+    chỉ công ty không có, hệ thống từ chối đúng, nhưng màn hình đọc ra thành
+    tính năng hỏng.
+    """
+    counts = refine_counts(result)
+    if result.outcome == "changed":
+        st.success(f"Đã cập nhật: {_counts_line(counts)}")
+        if result.rejected:
+            st.warning(
+                "Một phần thay đổi bị lưới an toàn chặn, hồ sơ giữ nguyên "
+                "những chỗ đó:",
+                icon="🛑",
+            )
+            _render_rejections(result.rejected)
+        return
+
+    if result.outcome == "blocked":
+        st.warning(
+            f"**Không áp dụng thay đổi nào — lưới an toàn đã chặn.** "
+            f"{_counts_line(counts)}",
+            icon="🛑",
+        )
+        _render_rejections(result.rejected)
+        return
+
+    st.info(
+        "**Không có thay đổi nào** — mô hình không đề xuất sửa câu nào trong "
+        f"mục này. {_counts_line(counts)}  \n"
+        "Chat chỉ **viết lại, bỏ hoặc đổi thứ tự** câu đã có. Nó không thêm "
+        "được nội dung mới: mọi câu trong hồ sơ phải truy được về một nguồn cụ "
+        "thể. Nếu bạn cần thêm một năng lực hay chứng chỉ, hãy cập nhật "
+        "`capability_sheet.json` rồi bấm **Nạp lại kho tri thức** và sinh lại "
+        "hồ sơ."
+    )
 
 
 def render_version_history() -> None:
@@ -553,7 +605,11 @@ def render_version_history() -> None:
     chosen = versions[picked]
     if chosen.get("instruction"):
         st.caption(f"Chỉ thị: “{chosen['instruction']}”")
-    _render_rejections(chosen.get("rejected", []))
+    if chosen.get("counts"):
+        st.caption(_counts_line(chosen["counts"]))
+    if chosen.get("rejected"):
+        st.warning("Thay đổi bị lưới an toàn chặn ở bản này:", icon="🛑")
+        _render_rejections(chosen["rejected"])
     if picked > 0:
         with st.expander("Xem thay đổi so với bản trước", expanded=False):
             diff = version_diff(versions[picked - 1]["state"], chosen["state"])

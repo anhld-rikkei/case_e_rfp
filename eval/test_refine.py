@@ -149,16 +149,20 @@ def test_chat_cannot_inject_forbidden_certification(
             )
         ],
     )
+    # Chỉ thị VÔ HẠI để đi qua tiền kiểm — ca này kiểm nhánh model tự chèn
+    # chuỗi cấm vào bản viết lại (tiền kiểm chỉ thị có test riêng bên dưới).
     state = _state()
     result = refine_section(
-        state, section_key="technical", instruction="thêm chứng chỉ ISO 27017"
+        state, section_key="technical", instruction="viết trang trọng hơn"
     )
 
     assert result.changed == 0
     assert result.state["sections"][0]["sentences"][0]["text"] == (
         state["sections"][0]["sentences"][0]["text"]
     )
-    assert any("chứng chỉ công ty không có" in item["reason"] for item in result.rejected)
+    assert any(
+        "không có trong bảng năng lực" in item["reason"] for item in result.rejected
+    )
 
 
 def test_chat_cannot_inject_forbidden_variant(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -198,7 +202,7 @@ def test_chat_cannot_add_new_sentence(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert result.changed == 0
     assert len(result.state["sections"][0]["sentences"]) == 2
-    assert any("thêm câu mới" in item["reason"] for item in result.rejected)
+    assert any("không thêm được câu mới" in item["reason"] for item in result.rejected)
 
 
 @pytest.mark.parametrize("bad", ["", "   ", "【装飾】文です。"])
@@ -331,6 +335,111 @@ def test_refine_is_not_a_graph_node() -> None:
     from rfp.graph import PIPELINE_STAGES
 
     assert not any("refine" in stage for stage in PIPELINE_STAGES)
+
+
+# ── Ba kết cục phải phân biệt được ───────────────────────────────────────
+
+def test_outcome_changed(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_plan(monkeypatch, [SentenceEdit(index=0, action="rewrite", text="整えた文です。")])
+    result = refine_section(_state(), section_key="technical", instruction="x")
+    assert result.outcome == "changed"
+    assert (result.changed, result.kept, result.blocked) == (1, 1, 0)
+
+
+def test_outcome_no_change_when_model_keeps_everything(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ca (a): chỉ thị không khớp nội dung mục, model trả keep hết."""
+    _mock_plan(
+        monkeypatch,
+        [SentenceEdit(index=0, action="keep"), SentenceEdit(index=1, action="keep")],
+    )
+    result = refine_section(_state(), section_key="technical", instruction="x")
+    assert result.outcome == "no_change"
+    assert result.kept == 2 and result.blocked == 0
+
+
+def test_outcome_blocked_when_safety_net_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ca (b): có edit nhưng bị lưới an toàn chặn — KHÁC ca (a)."""
+    _mock_plan(
+        monkeypatch,
+        [SentenceEdit(index=0, action="rewrite", text="ISO 27017認証があります。")],
+    )
+    result = refine_section(_state(), section_key="technical", instruction="x")
+    assert result.outcome == "blocked"
+    assert result.blocked == 1 and result.changed == 0
+
+
+def test_counts_add_up_to_sentence_total(monkeypatch: pytest.MonkeyPatch) -> None:
+    _mock_plan(
+        monkeypatch,
+        [
+            SentenceEdit(index=0, action="rewrite", text="整えた文です。"),
+            SentenceEdit(index=1, action="drop"),
+        ],
+    )
+    result = refine_section(_state(), section_key="technical", instruction="x")
+    assert result.changed + result.dropped + result.kept == 2
+
+
+# ── Tiền kiểm chỉ thị: chặn trước khi tốn lệnh gọi LLM ───────────────────
+
+def test_instruction_asking_for_forbidden_cert_is_blocked_without_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def explode(*args, **kwargs):
+        raise AssertionError("chỉ thị đòi chuỗi cấm mà vẫn gọi LLM")
+
+    monkeypatch.setattr(refine_module, "structured", explode)
+    result = refine_section(
+        _state(), section_key="technical", instruction="thêm chứng chỉ ISO 27017 vào"
+    )
+
+    assert result.outcome == "blocked"
+    assert result.llm_calls == 0
+    assert "công ty không có" in result.rejected[0]["reason"]
+    assert "capability_sheet.json" in result.rejected[0]["reason"]
+
+
+def test_instruction_conflicts_detects_variants() -> None:
+    from rfp.refine import instruction_conflicts
+
+    assert instruction_conflicts("thêm ISO 27017")
+    assert instruction_conflicts("nói là có ISO27018 đi")
+    assert instruction_conflicts("") == []
+    assert instruction_conflicts("viết ngắn gọn hơn") == []
+
+
+def test_reason_text_tells_user_how_to_fix() -> None:
+    """Lý do phải nói được bước tiếp theo, không chỉ 'bị từ chối'."""
+    from rfp.refine import REASON_VI
+
+    for key in ("forbidden", "added", "instruction_forbidden"):
+        assert "capability_sheet.json" in REASON_VI[key]
+        assert "Nạp lại kho" in REASON_VI[key]
+
+
+def test_refine_all_does_not_repeat_the_same_instruction_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Chỉ thị đòi chuỗi cấm bị chặn ở mọi mục — chỉ báo một lần."""
+    state = _state()
+    state["sections"].append(
+        {
+            "key": "security",
+            "title_ja": "セキュリティ要件",
+            "title_vi": "Bảo mật",
+            "source_chapters": ["3"],
+            "status": "OK",
+            "note": "",
+            "sentences": [_sentence("セキュリティ体制を整備しています。")],
+        }
+    )
+    result = refine_all(state, instruction="thêm ISO 27017")
+    assert result.llm_calls == 0
+    assert len(result.rejected) == 1
 
 
 # ── refine_all: cùng chỉ thị cho mọi mục ─────────────────────────────────

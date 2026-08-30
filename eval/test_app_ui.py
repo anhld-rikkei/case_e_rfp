@@ -513,6 +513,77 @@ def test_legend_explains_skip_is_not_an_error() -> None:
     assert "⏭️" in captions
 
 
+# ── Chat-refine: ba kết cục phải đọc ra ba nghĩa khác nhau ───────────────
+
+def _outcome_text(kind: str) -> str:
+    def body(root, kind):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+        from rfp.refine import RefineResult
+
+        if kind == "changed":
+            result = RefineResult(state={}, changed=2, kept=3)
+        elif kind == "blocked":
+            result = RefineResult(
+                state={},
+                kept=4,
+                rejected=[
+                    {
+                        "index": None,
+                        "reason": (
+                            "chỉ thị yêu cầu thêm năng lực hoặc chứng chỉ "
+                            "**công ty không có** — hãy cập nhật "
+                            "`capability_sheet.json` rồi bấm **Nạp lại kho**"
+                        ),
+                        "text": None,
+                    }
+                ],
+            )
+        else:
+            result = RefineResult(state={}, kept=4)
+        app.render_refine_outcome(result)
+
+    at = _render(body, kind)
+    assert not at.exception
+    return " ".join(
+        item.value
+        for item in list(at.markdown)
+        + list(at.info)
+        + list(at.success)
+        + list(at.warning)
+    )
+
+
+def test_refine_outcome_changed_reports_counts() -> None:
+    text = _outcome_text("changed")
+    assert "Đã cập nhật" in text
+    assert "**2** câu sửa" in text and "**3** câu giữ nguyên" in text
+
+
+def test_refine_outcome_blocked_explains_why_and_how_to_fix() -> None:
+    """Lỗi đã gặp thật: bị chặn mà chỉ hiện 'không có thay đổi nào'."""
+    text = _outcome_text("blocked")
+    assert "lưới an toàn đã chặn" in text.lower()
+    assert "capability_sheet.json" in text
+    assert "Nạp lại kho" in text
+    # Không được đọc thành "model không đổi gì"
+    assert "mô hình không đề xuất" not in text
+
+
+def test_refine_outcome_no_change_is_distinct_from_blocked() -> None:
+    text = _outcome_text("no_change")
+    assert "mô hình không đề xuất" in text
+    assert "không thêm được nội dung mới" in text
+    assert "lưới an toàn đã chặn" not in text.lower()
+
+
+def test_all_three_outcomes_show_the_counts_line() -> None:
+    for kind in ("changed", "blocked", "no_change"):
+        assert "câu giữ nguyên" in _outcome_text(kind), kind
+
+
 # ── Tab Kết quả đánh giá ──────────────────────────────────────────────────
 
 def test_headline_numbers_read_from_results_not_hardcoded() -> None:
