@@ -8,7 +8,7 @@ nguyên văn câu nguồn; LLM không được tự sinh.
 
 ## Trạng thái
 
-**v1.3.0** · **107 test pass** (`pytest eval/`) · nhánh phát hành: `main`
+**v1.4.0** · **159 test pass** (`pytest eval/`) · nhánh phát hành: `main`
 
 | Tag | Nội dung chính | Test |
 |---|---|---|
@@ -16,6 +16,7 @@ nguyên văn câu nguồn; LLM không được tự sinh.
 | [v1.1.0](../../releases/tag/v1.1.0) | Guard bắt **biến thể** chứng chỉ cấm · bảng ablation có cặp k=5 chứng minh guard · thang retrieval V0/V1/V4 có số thật · retry backoff + checkpoint resume | 34 |
 | [v1.2.0](../../releases/tag/v1.2.0) | Cache mức node với vân tay corpus + capability, tắt cứng ở eval · review loop chỉ soi chất lượng văn bản | 83 |
 | [v1.3.0](../../releases/tag/v1.3.0) | Upload RFP · export markdown 5 mục với nhãn nháp **nằm trong file** · review 2 persona song song | 107 |
+| [v1.4.0](../../releases/tag/v1.4.0) | Giao diện tiếng Việt qua một bộ mapping dùng chung · luồng chạy 8 bước cập nhật live · tách hẳn "bị chặn xuất bản" khỏi lỗi kỹ thuật · tab đánh giá có khối 3 con số chính | 159 |
 
 Hoãn có chủ đích: chat-refine từng mục, section lock, version history — chúng chạm chuỗi phụ thuộc
 `used_fact_keys` trong `generate_per_section`, phải là release riêng có eval riêng (lý do đầy đủ ở
@@ -25,7 +26,7 @@ docstring `src/rfp/cache.py`).
 
 ```powershell
 streamlit run app.py                                  # chạy app (http://localhost:8642)
-.venv\Scripts\python.exe -m pytest eval/ -q           # full test suite — 107 passed
+.venv\Scripts\python.exe -m pytest eval/ -q           # full test suite — 159 passed
 .venv\Scripts\python.exe -m eval.generate_report      # sinh lại eval/results/report.md
 ```
 
@@ -77,9 +78,10 @@ có lệnh gọi:
 Không key: `1 failed, 23 passed` — ca fail duy nhất là `test_redteam_27017` vì nó sinh hồ sơ thật.
 Có key: `24 passed`.
 
-Toàn bộ `eval/` là **107 test**: `test_gates` 24 · `test_cache` 29 · `test_review` 28 ·
-`test_export` 16 · `test_resilience` 9 · `test_deepeval` 1. Trừ `test_redteam_27017` và
-`test_deepeval`, tất cả đều cách ly — không mạng, không dựng FAISS.
+Toàn bộ `eval/` là **159 test**: `test_gates` 24 · `test_cache` 29 · `test_review` 28 ·
+`test_display_vi` 26 · `test_app_ui` 26 · `test_export` 16 · `test_resilience` 9 ·
+`test_deepeval` 1. Trừ `test_redteam_27017` và `test_deepeval`, tất cả đều cách ly —
+không mạng, không dựng FAISS.
 
 > ⚠️ **Sinh hồ sơ và chạy eval thì bắt buộc có key.** Thiếu key, lỗi nổ đúng lúc gọi LLM với
 > thông báo rõ ràng (`Missing credentials`), không phải một traceback lúc khởi động.
