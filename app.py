@@ -4,6 +4,7 @@ from collections import defaultdict
 from dataclasses import replace
 import hashlib
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -50,8 +51,11 @@ from rfp.export import (
     to_markdown,
 )
 from config.display_vi import (
+    ATTRIBUTE_COVERED_REASON,
     NO_EVIDENCE_REASON,
     ORIGIN_HINT,
+    SKIP_LEGEND,
+    SKIP_REASON_VI,
     ORIGIN_VI,
     RUN_LABEL_VI,
     SECTION_NOTE_VI,
@@ -482,6 +486,78 @@ def translated_content(state: dict[str, Any]) -> tuple[str, str]:
     return content_hash, content
 
 
+TRANSLATION_BLOCK_TITLE = {
+    "RFP": "RFP (bản dịch)",
+    "PROPOSAL": "Hồ sơ thầu (bản dịch)",
+}
+
+# Dòng tiêu đề: "Chương 3 Yêu cầu kỹ thuật" (RFP) hoặc "3. Thực tế triển khai"
+# (mục hồ sơ). Dòng con "3.1 …" KHÔNG phải tiêu đề — nó là một yêu cầu.
+_HEADING_RE = re.compile(r"^(?:Chương\s+\d+\b|\d+\.\s)")
+
+
+def split_translation(text: str) -> list[dict[str, Any]]:
+    """Tách bản dịch thành khối [RFP] / [PROPOSAL], mỗi khối giữ từng dòng.
+
+    Bản dịch từ LLM **đã giữ đúng xuống dòng của bản gốc** (đo được: vào 48
+    dấu, ra 48 dấu). Chữ dính liền một khối là do `st.markdown` gộp `\\n` đơn
+    theo đúng ngữ nghĩa Markdown — nên đây là việc của tầng hiển thị, không
+    phải sửa prompt dịch.
+
+    Văn bản không có nhãn nào thì trả về một khối duy nhất `label=None`, để
+    bản dịch lạ vẫn hiện ra được thay vì mất trắng.
+    """
+    if not text or not text.strip():
+        return []
+    blocks: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        marker = line.strip()
+        if marker in ("[RFP]", "[PROPOSAL]"):
+            current = {"label": marker.strip("[]"), "lines": []}
+            blocks.append(current)
+            continue
+        if current is None:
+            current = {"label": None, "lines": []}
+            blocks.append(current)
+        current["lines"].append(line)
+    for block in blocks:
+        # Bỏ dòng trống ở hai đầu, giữ dòng trống giữa các đoạn.
+        lines = block["lines"]
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop()
+    return [block for block in blocks if block["lines"]]
+
+
+def is_translation_heading(line: str) -> bool:
+    return bool(_HEADING_RE.match(line.strip()))
+
+
+def render_translation(text: str) -> None:
+    blocks = split_translation(text)
+    if not blocks:
+        st.info("Chưa có bản dịch.")
+        return
+    for index, block in enumerate(blocks):
+        if index:
+            st.divider()
+        title = TRANSLATION_BLOCK_TITLE.get(block["label"])
+        if title:
+            st.subheader(title)
+        for line in block["lines"]:
+            if not line.strip():
+                continue
+            if is_translation_heading(line):
+                st.markdown(f"**{line}**")
+            else:
+                # Mỗi dòng một lần gọi: st.markdown gộp \n đơn thành dấu cách,
+                # nên nối cả khối rồi in một lần là ra đúng cục chữ dính liền.
+                st.markdown(line)
+
+
 def _status_state(status: str) -> str:
     if status == "running":
         return "running"
@@ -490,9 +566,23 @@ def _status_state(status: str) -> str:
     return "complete"
 
 
-def _status_label(name: str, status: str) -> str:
+def _status_label(name: str, status: str, *, reason: str | None = None) -> str:
     suffix = label(STAGE_STATUS_VI, status)
+    if reason:
+        suffix = f"{suffix} ({reason})"
     return f"{STAGE_STATUS_ICON.get(status, '⚪')} {name} — {suffix}"
+
+
+def skip_reason(state: dict[str, Any], stage_name: str) -> str | None:
+    """Lý do một bước bị bỏ qua — ưu tiên suy từ state, thiếu thì tra bảng.
+
+    `ask_user` bị bỏ qua khi `check_complete` không tìm thấy thiếu sót nào, và
+    điều đó đọc thẳng được từ state. Các bước còn lại chỉ bị bỏ khi ngược lại —
+    thiếu đầu vào — nên tra bảng theo loại node là đủ.
+    """
+    if stage_name == "ask_user" and not state.get("missing"):
+        return SKIP_REASON_VI["ask_user"]
+    return SKIP_REASON_VI.get(stage_name)
 
 
 def _stage_statuses(
@@ -597,6 +687,11 @@ def render_flow_legend() -> None:
             for key in ("pending", "running", "completed", "skipped", "blocked", "failed")
         )
     )
+    st.caption(
+        f"{STAGE_STATUS_ICON['skipped']} {SKIP_LEGEND}.  ·  "
+        f"{STAGE_STATUS_ICON['blocked']} guard chặn xuất bản là hành vi đúng: "
+        "thà không nộp còn hơn nộp hồ sơ sai."
+    )
 
 
 def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
@@ -616,7 +711,15 @@ def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
                     "generate_per_section",
                 }
                 with st.status(
-                    _status_label(STAGE_VI[stage_name], status),
+                    _status_label(
+                        STAGE_VI[stage_name],
+                        status,
+                        reason=(
+                            skip_reason(state, stage_name)
+                            if status == "skipped"
+                            else None
+                        ),
+                    ),
                     state=_status_state(status),
                     expanded=expanded,
                 ):
@@ -629,6 +732,11 @@ def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
                                 _status_label(
                                     f"Chương {chapter['id']} · {chapter['title']}",
                                     chapter_status,
+                                    reason=(
+                                        ATTRIBUTE_COVERED_REASON
+                                        if precedent_skipped
+                                        else None
+                                    ),
                                 ),
                                 state="complete",
                                 expanded=False,
@@ -641,6 +749,11 @@ def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
                                         _status_label(
                                             label(RETRIEVAL_STAGE_VI, retrieval_name),
                                             item_status,
+                                            reason=(
+                                                ATTRIBUTE_COVERED_REASON
+                                                if item_status == "skipped"
+                                                else None
+                                            ),
                                         )
                                     )
                     if stage_name == "generate_per_section":
@@ -1427,8 +1540,11 @@ def main() -> None:
             with sources_tab:
                 render_sources(latest)
             with translation_tab:
-                st.subheader("Bản dịch tiếng Việt của RFP và proposal")
-                st.markdown(st.session_state.get("translation", ""))
+                st.caption(
+                    "Bản dịch tiếng Việt để đối chiếu. Bản nộp cho khách vẫn là "
+                    "bản tiếng Nhật ở tab Tổng quan."
+                )
+                render_translation(st.session_state.get("translation", ""))
             with trace_tab:
                 render_trace_details(latest)
 
