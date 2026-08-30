@@ -53,8 +53,11 @@ from rfp.export import (
 )
 from config.display_vi import (
     ATTRIBUTE_COVERED_REASON,
+    EDITED_LABEL,
+    MARK_LEGEND,
     NO_EVIDENCE_REASON,
     ORIGIN_HINT,
+    USER_BLOCK_LABEL,
     SKIP_LEGEND,
     SKIP_REASON_VI,
     ORIGIN_VI,
@@ -283,6 +286,8 @@ def source_label(sentence: dict[str, Any]) -> str:
         return f"bảng năng lực · {sentence['source_id']}"
     if sentence["origin"] == "precedent":
         return str(sentence["source_id"])
+    if sentence["origin"] == "user":
+        return "✎ người dùng bổ sung (chưa kiểm chứng)"
     return "câu nối"
 
 
@@ -616,6 +621,59 @@ def render_version_history() -> None:
             st.code(diff or "(không có khác biệt trong phần văn bản)", language="diff")
 
 
+def sentence_mark(sentence: dict[str, Any]) -> str:
+    """Mức đánh dấu của một câu: user / edited / plain.
+
+    Hai mức đánh dấu thay vì ba: câu máy sinh nguyên bản không đánh dấu gì, nên
+    chỉ cần phân biệt "người dùng đưa vào" (nền vàng) với "chat chỉnh cách viết
+    nhưng giữ nguyên nguồn và số liệu" (viền trái). Ba mức màu trên cùng một
+    trang văn bản tiếng Nhật đọc rất rối, mà mức thứ ba không mang thêm quyết
+    định nào cho người rà soát.
+    """
+    if sentence.get("origin") == "user":
+        return "user"
+    if sentence.get("edited_by_chat"):
+        return "edited"
+    return "plain"
+
+
+def group_by_mark(
+    sentences: list[dict[str, Any]],
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Gộp các câu liền nhau cùng mức — nhiều câu user liền nhau thành MỘT vùng."""
+    groups: list[tuple[str, list[dict[str, Any]]]] = []
+    for sentence in sentences:
+        mark = sentence_mark(sentence)
+        if groups and groups[-1][0] == mark:
+            groups[-1][1].append(sentence)
+        else:
+            groups.append((mark, [sentence]))
+    return groups
+
+
+def render_marked_sentences(sentences: list[dict[str, Any]]) -> None:
+    for mark, group in group_by_mark(sentences):
+        body = "  \n".join(item.get("text", "") for item in group)
+        if mark == "user":
+            # icon phải là emoji thật — Streamlit từ chối "✎" (ký tự dingbat).
+            # Giữ ✎ trong nhãn chữ để khớp ký hiệu dùng ở file export.
+            st.warning(f"{body}\n\n**{USER_BLOCK_LABEL}**", icon="✏️")
+        elif mark == "edited":
+            st.markdown(
+                f"> {body}\n>\n> *{EDITED_LABEL}*"
+            )
+        else:
+            for item in group:
+                st.write(item.get("text", ""))
+
+
+def render_mark_legend(sentences: list[dict[str, Any]]) -> None:
+    marks = {sentence_mark(item) for item in sentences}
+    if marks <= {"plain"}:
+        return
+    st.caption(MARK_LEGEND)
+
+
 def render_proposal(state: dict[str, Any]) -> None:
     trace = state["trace"]
     grounding = trace.get("grounding", {"grounded": 0, "total": 0})
@@ -629,6 +687,13 @@ def render_proposal(state: dict[str, Any]) -> None:
         "Nội dung hồ sơ giữ nguyên tiếng Nhật — đó là sản phẩm giao cho khách. "
         "Chỉ nhãn giao diện được dịch."
     )
+    render_mark_legend(
+        [
+            sentence
+            for section in state.get("sections", [])
+            for sentence in section["sentences"]
+        ]
+    )
     for index, section in enumerate(state.get("sections", []), start=1):
         status = section.get("status")
         st.markdown(f"### {index}. {section['title_ja']}")
@@ -637,8 +702,7 @@ def render_proposal(state: dict[str, Any]) -> None:
             f"{label(SECTION_STATUS_VI, status)}"
         )
         render_section_note(state, section)
-        for sentence in section["sentences"]:
-            st.write(sentence["text"])
+        render_marked_sentences(section["sentences"])
     st.divider()
     render_chat_refine(state)
     render_version_history()
@@ -652,7 +716,10 @@ def requirement_coverage(
     sources_by_req: dict[str, list[str]] = defaultdict(list)
     for section in state.get("sections", []):
         for sentence in section["sentences"]:
-            if sentence.get("source_id") is None:
+            # Câu người dùng bổ sung không có source_id nhưng VẪN phải hiện
+            # trong bảng đối chiếu — nếu không, một yêu cầu được đáp ứng bằng
+            # nội dung người dùng tự viết sẽ trông như chưa ai đụng tới.
+            if sentence.get("source_id") is None and sentence.get("origin") != "user":
                 continue
             label = source_label(sentence)
             for req_id in sentence.get("req_ids", []):

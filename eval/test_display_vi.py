@@ -29,15 +29,34 @@ def _literal_values(annotation) -> set[str]:
 # ── Không sót enum: mọi giá trị canonical đều có nhãn ─────────────────────
 
 def test_origin_mapping_covers_all_valid_origins() -> None:
-    assert set(display_vi.ORIGIN_VI) == VALID_ORIGINS
-    assert set(display_vi.ORIGIN_HINT) == VALID_ORIGINS
+    """Phủ đủ enum canonical, cộng nhãn chỉ-UI của chat-refine (v1.7).
+
+    `user` không nằm trong `check.py:VALID_ORIGINS` vì pipeline không bao giờ
+    sinh ra nó — nó là nhãn hậu-pipeline. Nhưng UI vẫn phải dịch được.
+    """
+    expected = VALID_ORIGINS | display_vi.UI_ONLY_ORIGINS
+    assert set(display_vi.ORIGIN_VI) == expected
+    assert set(display_vi.ORIGIN_HINT) == expected
+
+
+def test_ui_only_origins_are_not_pipeline_origins() -> None:
+    """Nhãn chỉ-UI không được lẫn vào enum mà contract checker chấp nhận."""
+    assert display_vi.UI_ONLY_ORIGINS & VALID_ORIGINS == set()
 
 
 def test_verdict_mapping_covers_all_claim_verdicts() -> None:
     verdicts = _literal_values(ClaimVerdict.model_fields["verdict"].annotation)
-    assert set(display_vi.VERDICT_VI) == verdicts
-    assert set(display_vi.VERDICT_ICON) == verdicts
-    assert set(display_vi.VERDICT_HINT) == verdicts
+    expected = verdicts | display_vi.UI_ONLY_VERDICTS
+    assert set(display_vi.VERDICT_VI) == expected
+    assert set(display_vi.VERDICT_ICON) == expected
+    assert set(display_vi.VERDICT_HINT) == expected
+
+
+def test_user_provided_verdict_says_it_is_unverified() -> None:
+    """Nhãn phải nói thẳng là chưa kiểm chứng, không được nghe như đã duyệt."""
+    text = display_vi.VERDICT_VI["USER_PROVIDED"]
+    assert "chưa kiểm chứng" in text
+    assert "không kiểm chứng" in display_vi.VERDICT_HINT["USER_PROVIDED"]
 
 
 def test_section_status_mapping_covers_all_statuses() -> None:

@@ -584,6 +584,158 @@ def test_all_three_outcomes_show_the_counts_line() -> None:
         assert "câu giữ nguyên" in _outcome_text(kind), kind
 
 
+# ── Bôi màu theo nguồn gốc (v1.7) ────────────────────────────────────────
+
+def _user_sentence(text: str) -> dict[str, Any]:
+    return {
+        "text": text,
+        "origin": "user",
+        "source_id": None,
+        "req_ids": [],
+        "verdict": "USER_PROVIDED",
+    }
+
+
+def test_sentence_mark_three_way_classification() -> None:
+    import app
+
+    machine = {"text": "a", "origin": "precedent", "source_id": "S1"}
+    edited = {**machine, "edited_by_chat": True}
+    assert app.sentence_mark(machine) == "plain"
+    assert app.sentence_mark(edited) == "edited"
+    assert app.sentence_mark(_user_sentence("b")) == "user"
+
+
+def test_adjacent_user_sentences_group_into_one_block() -> None:
+    """Nhiều câu user liền nhau gộp thành MỘT vùng vàng."""
+    import app
+
+    sentences = [
+        {"text": "m1", "origin": "precedent", "source_id": "S1"},
+        _user_sentence("u1"),
+        _user_sentence("u2"),
+        {"text": "m2", "origin": "capability", "source_id": "c"},
+    ]
+    groups = app.group_by_mark(sentences)
+    assert [mark for mark, _ in groups] == ["plain", "user", "plain"]
+    assert len(groups[1][1]) == 2
+
+
+def test_user_block_renders_with_warning_and_label() -> None:
+    from config.display_vi import USER_BLOCK_LABEL
+
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_marked_sentences(
+            [
+                {"text": "máy sinh", "origin": "precedent", "source_id": "S1"},
+                {
+                    "text": "người dùng thêm",
+                    "origin": "user",
+                    "source_id": None,
+                    "verdict": "USER_PROVIDED",
+                },
+            ]
+        )
+
+    at = _render(body)
+    assert not at.exception
+    warnings = " ".join(item.value for item in at.warning)
+    assert "người dùng thêm" in warnings
+    assert USER_BLOCK_LABEL in warnings
+    # Câu máy sinh KHÔNG nằm trong vùng vàng
+    assert "máy sinh" not in warnings
+
+
+def test_edited_sentence_marked_more_lightly_than_user() -> None:
+    from config.display_vi import EDITED_LABEL
+
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_marked_sentences(
+            [
+                {
+                    "text": "đã chỉnh",
+                    "origin": "precedent",
+                    "source_id": "S1",
+                    "edited_by_chat": True,
+                }
+            ]
+        )
+
+    at = _render(body)
+    text = " ".join(item.value for item in at.markdown)
+    assert "đã chỉnh" in text and EDITED_LABEL in text
+    assert not at.warning  # không dùng vùng vàng cho mức nhẹ
+
+
+def test_legend_hidden_when_nothing_is_marked() -> None:
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_mark_legend(
+            [{"text": "a", "origin": "precedent", "source_id": "S1"}]
+        )
+
+    at = _render(body)
+    assert not at.caption
+
+
+def test_legend_shown_when_user_content_exists() -> None:
+    from config.display_vi import MARK_LEGEND
+
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_mark_legend(
+            [
+                {
+                    "text": "a",
+                    "origin": "user",
+                    "source_id": None,
+                    "verdict": "USER_PROVIDED",
+                }
+            ]
+        )
+
+    at = _render(body)
+    assert MARK_LEGEND in " ".join(item.value for item in at.caption)
+
+
+def test_user_sentence_appears_in_requirement_coverage() -> None:
+    """Yêu cầu được đáp ứng bằng nội dung người dùng vẫn phải hiện ra."""
+    import app
+
+    state = _state()
+    state["sections"][0]["sentences"].append(
+        {
+            "text": "người dùng bổ sung cho 3.2",
+            "origin": "user",
+            "source_id": None,
+            "req_ids": ["3.2"],
+            "verdict": "USER_PROVIDED",
+        }
+    )
+    rows, missing = app.requirement_coverage(state)
+    row = next(item for item in rows if item["Mã yêu cầu"] == "3.2")
+    assert "người dùng bổ sung" in row["Căn cứ đáp ứng"]
+    assert [item["req_id"] for item in missing] == []
+
+
 # ── Tab Kết quả đánh giá ──────────────────────────────────────────────────
 
 def test_headline_numbers_read_from_results_not_hardcoded() -> None:

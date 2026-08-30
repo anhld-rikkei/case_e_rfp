@@ -25,37 +25,66 @@ UNKNOWN = "—"
 
 
 # ── Nguồn của câu (origin) — canonical: rfp.check.VALID_ORIGINS ────────────
+# `user` KHÔNG nằm trong `check.py:VALID_ORIGINS` — nó là nhãn hậu-pipeline do
+# chat-refine gắn (v1.7), chỉ sống trong session app và file xuất. Pipeline
+# không bao giờ sinh ra nó, và contract checker vẫn fail loud nếu gặp.
+UI_ONLY_ORIGINS = {"user"}
+
 ORIGIN_VI = {
     "capability": "Năng lực công ty",
     "precedent": "Hồ sơ quá khứ",
     "bridge": "Câu nối",
+    "user": "Người dùng bổ sung",
 }
 
 ORIGIN_HINT = {
     "capability": "Lấy từ bảng năng lực đã khai báo của công ty",
     "precedent": "Viết lại từ một câu trong hồ sơ thầu cũ, có mã nguồn",
     "bridge": "Câu chuyển ý, không mang thông tin sự thật nên không có nguồn",
+    "user": (
+        "Người dùng yêu cầu thêm hoặc sửa qua chat — hệ thống chưa kiểm chứng "
+        "được, người nộp hồ sơ chịu trách nhiệm nội dung này"
+    ),
 }
 
 
 # ── Kết luận kiểm chứng (verdict) — canonical: ClaimVerdict ────────────────
+UI_ONLY_VERDICTS = {"USER_PROVIDED"}
+
 VERDICT_VI = {
     "VERIFIED": "Có nguồn xác thực",
     "UNVERIFIABLE": "Không kiểm chứng được",
     "CONTRADICTED": "Mâu thuẫn với năng lực",
+    "USER_PROVIDED": "Người dùng bổ sung — chưa kiểm chứng",
 }
 
 VERDICT_ICON = {
     "VERIFIED": "🟢",
     "UNVERIFIABLE": "🟡",
     "CONTRADICTED": "🔴",
+    "USER_PROVIDED": "✎",
 }
 
 VERDICT_HINT = {
     "VERIFIED": "Đối chiếu được với bằng chứng gốc",
     "UNVERIFIABLE": "Không có bằng chứng để đối chiếu — câu nối luôn thuộc nhóm này",
     "CONTRADICTED": "Trái với bảng năng lực; câu loại này đã bị gỡ khỏi hồ sơ",
+    "USER_PROVIDED": (
+        "Do người dùng yêu cầu qua chat, hệ thống không kiểm chứng — phải rà "
+        "bằng tay trước khi nộp"
+    ),
 }
+
+# Đánh dấu hiển thị theo mức độ can thiệp (v1.7). Hai mức thay vì ba: câu máy
+# sinh nguyên bản không đánh dấu gì cả, nên chỉ cần phân biệt "người dùng đưa
+# vào" với "chat sửa cách viết nhưng giữ nguồn và số liệu".
+USER_BLOCK_LABEL = "✎ Người dùng bổ sung — chưa kiểm chứng"
+EDITED_LABEL = "✎ đã chỉnh cách viết"
+MARK_LEGEND = (
+    "Nền vàng = người dùng bổ sung qua chat, hệ thống chưa kiểm chứng · "
+    "viền trái = chat chỉnh cách viết nhưng giữ nguyên nguồn và số liệu · "
+    "không đánh dấu = máy sinh từ căn cứ"
+)
 
 
 # ── Trạng thái mục — canonical: coverage.SectionStatus ─────────────────────

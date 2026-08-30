@@ -1,8 +1,12 @@
-"""Test chat-refine (v1.6).
+"""Test chat-refine (v1.6 · triết lý v1.7).
 
-Cách ly: mock `structured`, không mạng, không dựng index. Trọng tâm là các chốt
-cứng — lưới an toàn không có ngoại lệ cho chat, chat không thêm được câu, không
-đụng cache, và eval không có đường đi qua chat.
+Cách ly: mock `structured`, không mạng, không dựng index.
+
+Từ v1.7 chat **làm theo ý người dùng rồi dán nhãn** thay vì chặn: thêm câu, đổi
+số liệu, viết lại tự do đều được thực hiện, và câu nào không còn trung thành với
+nguồn thì mang `origin="user"` / `verdict="USER_PROVIDED"`. Lằn ranh duy nhất
+không nhân nhượng là blocklist chứng chỉ/năng lực cấm — các test red-team ở đây
+giữ nguyên. Ngoài ra: không đụng cache, và eval không có đường đi qua chat.
 """
 import sys
 from pathlib import Path
@@ -72,9 +76,16 @@ def _state(sentences: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     }
 
 
-def _mock_plan(monkeypatch: pytest.MonkeyPatch, edits: list[SentenceEdit]) -> None:
+def _mock_plan(
+    monkeypatch: pytest.MonkeyPatch,
+    edits: list[SentenceEdit],
+    *,
+    added: list[str] | None = None,
+) -> None:
     monkeypatch.setattr(
-        refine_module, "structured", lambda *a, **k: RefinePlan(edits=edits)
+        refine_module,
+        "structured",
+        lambda *a, **k: RefinePlan(edits=edits, added=list(added or [])),
     )
     # Claim-check giữ nguyên mọi câu, để test tách bạch phần chat.
     monkeypatch.setattr(
@@ -175,7 +186,12 @@ def test_chat_cannot_inject_forbidden_variant(monkeypatch: pytest.MonkeyPatch) -
     assert result.changed == 0 and result.rejected
 
 
-def test_chat_cannot_change_numbers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_number_change_is_applied_then_labeled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v1.7: đổi số theo chỉ thị được LÀM THẬT, nhưng câu mang nhãn user.
+
+    Câu đã đổi số không còn là thứ nguồn nói, nên nó không được đội lốt câu có
+    căn cứ — nhưng cũng không bị chặn, vì người dùng chịu trách nhiệm.
+    """
     _mock_plan(
         monkeypatch,
         [
@@ -188,30 +204,58 @@ def test_chat_cannot_change_numbers(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     result = refine_section(_state(), section_key="technical", instruction="nói mạnh hơn")
 
-    assert result.changed == 0
-    assert "số liệu" in " ".join(item["reason"] for item in result.rejected)
+    assert result.changed == 1
+    edited = result.state["sections"][0]["sentences"][1]
+    assert edited["text"] == "在庫精度を55%向上した実績があります。"
+    assert edited["origin"] == "user"
+    assert edited["verdict"] == "USER_PROVIDED"
+    assert edited["source_id"] is None
 
 
-def test_chat_cannot_add_new_sentence(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Câu mới cần source_id mà không ai cấp được -> từ chối (BB-4)."""
+def test_added_sentence_is_applied_and_labeled(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v1.7: chat THÊM được câu, câu đó mang nhãn user."""
+    _mock_plan(monkeypatch, [], added=["全く新しい主張です。"])
+    result = refine_section(_state(), section_key="technical", instruction="thêm câu")
+
+    assert result.added == 1
+    sentences = result.state["sections"][0]["sentences"]
+    assert len(sentences) == 3
+    new = sentences[-1]
+    assert new["text"] == "全く新しい主張です。"
+    assert new["origin"] == "user" and new["verdict"] == "USER_PROVIDED"
+
+
+def test_out_of_range_index_becomes_an_added_sentence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Model dùng chỉ mục ngoài dải để thêm câu — gom vào cùng đường `added`."""
     _mock_plan(
         monkeypatch,
-        [SentenceEdit(index=99, action="rewrite", text="全く新しい主張です。")],
+        [SentenceEdit(index=99, action="rewrite", text="追加の主張です。")],
     )
     result = refine_section(_state(), section_key="technical", instruction="thêm câu")
 
-    assert result.changed == 0
-    assert len(result.state["sections"][0]["sentences"]) == 2
-    assert any("không thêm được câu mới" in item["reason"] for item in result.rejected)
+    assert result.added == 1
+    assert result.state["sections"][0]["sentences"][-1]["origin"] == "user"
 
 
-@pytest.mark.parametrize("bad", ["", "   ", "【装飾】文です。"])
-def test_empty_or_decorated_rewrite_is_rejected(
-    bad: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.mark.parametrize("bad", ["", "   "])
+def test_empty_rewrite_is_skipped(bad: str, monkeypatch: pytest.MonkeyPatch) -> None:
     _mock_plan(monkeypatch, [SentenceEdit(index=0, action="rewrite", text=bad)])
     result = refine_section(_state(), section_key="technical", instruction="x")
     assert result.changed == 0 and result.rejected
+
+
+def test_decoration_is_stripped_not_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ký tự trang trí là lỗi định dạng của model, không phải ý người dùng."""
+    _mock_plan(
+        monkeypatch, [SentenceEdit(index=0, action="rewrite", text="【装飾】文です。")]
+    )
+    result = refine_section(_state(), section_key="technical", instruction="x")
+    assert result.changed == 1
+    assert "【" not in result.state["sections"][0]["sentences"][0]["text"]
 
 
 # ── BB-4: sửa câu chữ không được làm mất dấu vết nguồn ───────────────────
@@ -250,9 +294,10 @@ def test_rewritten_sentence_goes_back_through_claim_check(
     assert result.state["sections"][0]["sentences"][0]["verdict"] == "VERIFIED"
 
 
-def test_contradicted_sentence_is_removed_after_refine(
+def test_contradicted_sentence_is_labeled_not_removed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """v1.7: claim-check CONTRADICTED chuyển câu sang nhãn user, không gỡ."""
     monkeypatch.setattr(
         refine_module,
         "structured",
@@ -267,9 +312,9 @@ def test_contradicted_sentence_is_removed_after_refine(
     )
     result = refine_section(_state(), section_key="technical", instruction="x")
 
-    texts = [s["text"] for s in result.state["sections"][0]["sentences"]]
-    assert "怪しい文です。" not in texts
-    assert any("mâu thuẫn" in item["reason"] for item in result.rejected)
+    sentences = result.state["sections"][0]["sentences"]
+    kept = next(s for s in sentences if s["text"] == "怪しい文です。")
+    assert kept["origin"] == "user" and kept["verdict"] == "USER_PROVIDED"
 
 
 # ── Kho nguồn: đúng những gì đã truy xuất, không thêm ────────────────────
@@ -416,7 +461,7 @@ def test_reason_text_tells_user_how_to_fix() -> None:
     """Lý do phải nói được bước tiếp theo, không chỉ 'bị từ chối'."""
     from rfp.refine import REASON_VI
 
-    for key in ("forbidden", "added", "instruction_forbidden"):
+    for key in ("forbidden", "instruction_forbidden"):
         assert "capability_sheet.json" in REASON_VI[key]
         assert "Nạp lại kho" in REASON_VI[key]
 
