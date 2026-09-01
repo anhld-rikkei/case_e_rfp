@@ -1442,6 +1442,201 @@ def test_ops_metrics_warns_about_failed_runs() -> None:
     assert "KHÔNG được tính là tự trả lời" in warnings
 
 
+# ── Tab Truy vết: hành trình từng yêu cầu (v1.8) ─────────────────────────
+
+def _journey_state() -> dict[str, Any]:
+    """RFP 3 yêu cầu -> đủ ba nhánh: đáp ứng tốt / cảnh báo / chưa có căn cứ."""
+    from rfp.confidence import annotate
+
+    state = {
+        "chapters": [
+            {
+                "id": "3",
+                "title": "技術要件",
+                "requirements": [
+                    {"req_id": "3.1", "text": "yc một"},
+                    {"req_id": "3.2", "text": "yc hai"},
+                ],
+                "retrieval": {
+                    "source_strategy": "hybrid-bm25+dense",
+                    "selected": [
+                        {"sent_id": "S1", "text": "x", "scores": {"rerank": 0.9}}
+                    ],
+                    "candidates": [
+                        {"sent_id": "C9", "text": "gần đúng", "scores": {"rerank": 0.5}}
+                    ],
+                },
+            },
+            {
+                "id": "4",
+                "title": "セキュリティ要件",
+                "requirements": [{"req_id": "4.1", "text": "yc ba"}],
+                "retrieval": {
+                    "source_strategy": "capability-only",
+                    "selected": [],
+                    "candidates": [],
+                },
+            },
+        ],
+        "sections": [
+            {
+                "key": "technical",
+                "title_ja": "技術要件",
+                "source_chapters": ["3"],
+                "status": "OK",
+                "sentences": [
+                    {
+                        "text": "a",
+                        "origin": "precedent",
+                        "source_id": "S1",
+                        "req_ids": ["3.1"],
+                        "verdict": "VERIFIED",
+                    }
+                ],
+            },
+            {
+                "key": "security",
+                "title_ja": "セキュリティ",
+                "source_chapters": ["4"],
+                "status": "ATTRIBUTE_ONLY",
+                "sentences": [
+                    {
+                        "text": "b",
+                        "origin": "capability",
+                        "source_id": "capabilities:x",
+                        "req_ids": ["4.1"],
+                        "verdict": "VERIFIED",
+                    }
+                ],
+            },
+        ],
+        "trace": {"llm_calls": 7, "hybrid_blocked": [], "conflicts": [], "path": []},
+    }
+    return annotate(state)
+
+
+def test_journey_has_one_row_per_requirement() -> None:
+    import app
+
+    rows = app.requirement_journey(_journey_state())
+    assert len(rows) == 3
+    assert {row["req_id"] for row in rows} == {"3.1", "3.2", "4.1"}
+
+
+def test_journey_covers_all_three_branches() -> None:
+    import app
+
+    rows = app.requirement_journey(_journey_state())
+    by_id = {row["req_id"]: row for row in rows}
+    assert by_id["3.1"]["branch"] == "auto"    # có precedent, mục T1
+    assert by_id["4.1"]["branch"] == "warn"    # chỉ bảng năng lực, mục T2
+    assert by_id["3.2"]["branch"] == "human"   # chưa có câu nào dẫn
+
+
+def test_journey_sorts_red_first_then_yellow_then_green() -> None:
+    """Người đọc phải thấy ngay chỗ cần đến mình."""
+    import app
+
+    branches = [row["branch"] for row in app.requirement_journey(_journey_state())]
+    assert branches == ["human", "warn", "auto"]
+
+
+def test_uncovered_requirement_lists_related_sources_as_not_an_answer() -> None:
+    import app
+
+    rows = app.requirement_journey(_journey_state())
+    row = next(item for item in rows if item["req_id"] == "3.2")
+    assert "C9" in row["sources"]
+    assert "không phải câu trả lời" in row["sources"]
+
+
+def test_covered_requirement_shows_its_source_id() -> None:
+    import app
+
+    rows = app.requirement_journey(_journey_state())
+    row = next(item for item in rows if item["req_id"] == "3.1")
+    assert row["sources"] == "S1"
+    assert row["score"] > 0
+
+
+def test_journey_table_renders_with_legend_and_three_colours() -> None:
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_requirement_journey(state)
+
+    at = _render(body, _journey_state())
+    assert not at.exception
+    columns = [list(frame.value.columns) for frame in at.dataframe]
+    assert [
+        "Yêu cầu",
+        "Tầng trả lời",
+        "Độ tin cậy",
+        "Nhánh",
+        "Nguồn dẫn",
+    ] in columns
+    captions = " ".join(item.value for item in at.caption)
+    assert "🟢" in captions and "🟡" in captions and "🔴" in captions
+    # Dải tóm tắt có đủ ba nhánh
+    labels = {item.label for item in at.metric}
+    assert "🟢 Tự trả lời" in labels and "🔴 Chuyển người" in labels
+
+
+def test_journey_summary_percentages_match_row_counts() -> None:
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_requirement_journey(state)
+
+    at = _render(body, _journey_state())
+    values = {item.label: item.value for item in at.metric}
+    assert values["🟢 Tự trả lời"] == "1"
+    assert values["🟡 Cảnh báo"] == "1"
+    assert values["🔴 Chuyển người"] == "1"
+
+
+def test_trace_details_are_collapsed_expanders() -> None:
+    """Khối kỹ thuật không bỏ, chỉ gấp lại phía dưới."""
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_trace_details(state)
+
+    at = _render(body, _journey_state())
+    assert not at.exception
+    labels = [str(item.label) for item in at.expander]
+    for name in (
+        "Chi tiết kỹ thuật theo node",
+        "Số lệnh gọi theo khâu",
+        "Vòng review",
+        "Nguồn đã truy xuất",
+    ):
+        assert any(name in text for text in labels), name
+
+
+def test_zero_call_stage_note_says_guards_are_free() -> None:
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_trace_details(state)
+
+    at = _render(body, _journey_state())
+    captions = " ".join(item.value for item in at.caption)
+    assert "không tốn tiền LLM" in captions
+
+
 # ── Tab Kết quả đánh giá ──────────────────────────────────────────────────
 
 def test_headline_numbers_read_from_results_not_hardcoded() -> None:

@@ -56,6 +56,9 @@ from rfp.export import (
 from config.display_vi import (
     ATTRIBUTE_COVERED_REASON,
     BRANCH_VI,
+    JOURNEY_LEGEND,
+    REQ_BRANCH_VI,
+    STRATEGY_TIER_VI,
     SOURCE_STRATEGY_VI,
     TIER_HINT,
     TIER_ICON,
@@ -1598,8 +1601,12 @@ def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
                 ):
                     if stage_name == "retrieve_per_chapter":
                         for chapter in state.get("chapters", []):
-                            retrieval_stages = chapter["retrieval"]["stages"]
-                            precedent_skipped = retrieval_stages["query_embed"]["skipped"]
+                            retrieval_stages = chapter.get("retrieval", {}).get(
+                                "stages", {}
+                            )
+                            precedent_skipped = retrieval_stages.get(
+                                "query_embed", {}
+                            ).get("skipped", False)
                             chapter_status = "skipped" if precedent_skipped else "completed"
                             with st.status(
                                 _status_label(
@@ -1646,24 +1653,6 @@ def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
                                 )
 
 
-def render_trace_metrics(state: dict[str, Any], target: Any) -> None:
-    target.empty()
-    trace = state.get("trace", {})
-    with target.container():
-        left, middle, right = st.columns(3)
-        left.metric("Tổng lệnh gọi LLM", trace.get("llm_calls", 0))
-        middle.metric(
-            "Câu bị chặn vì số liệu lạ",
-            len(trace.get("hybrid_blocked", [])),
-            help="Câu có chỉ số định lượng không khớp nguyên văn nguồn nào — bị gỡ.",
-        )
-        right.metric(
-            "Nguồn bị loại vì mâu thuẫn",
-            len(trace.get("conflicts", [])),
-            help="Hai câu nguồn nói khác nhau về cùng một chỉ số; giữ nguồn ưu tiên hơn.",
-        )
-
-
 def render_retrieval(state: dict[str, Any]) -> None:
     reference = state.get("reference_rfp", {})
     score = reference.get("score")
@@ -1675,7 +1664,9 @@ def render_retrieval(state: dict[str, Any]) -> None:
     )
     rows = []
     for chapter in state.get("chapters", []):
-        attribute = chapter["retrieval"]["stages"]["attribute"]
+        attribute = (
+            chapter.get("retrieval", {}).get("stages", {}).get("attribute", {})
+        )
         for item in chapter["retrieval"]["selected"]:
             scores = item["scores"]
             rows.append(
@@ -1683,9 +1674,15 @@ def render_retrieval(state: dict[str, Any]) -> None:
                     "Chương": chapter["id"],
                     "Mã câu nguồn": item["sent_id"],
                     "Câu nguồn (tiếng Nhật)": item["text"],
-                    "Điểm tìm kiếm": round(scores["hybrid"], 4),
-                    "Điểm sau chấm lại": round(scores["rerank"], 4),
-                    "Đáp ứng yêu cầu": ", ".join(attribute["covered_req_ids"]) or "—",
+                    "Điểm tìm kiếm (từ khoá + ngữ nghĩa)": round(
+                        scores.get("hybrid", 0.0), 4
+                    ),
+                    "Điểm sau ưu tiên ngành/mục": round(
+                        scores.get("rerank", 0.0), 4
+                    ),
+                    "Đáp ứng yêu cầu": ", ".join(
+                        attribute.get("covered_req_ids", [])
+                    ) or "—",
                 }
             )
     if rows:
@@ -1747,41 +1744,202 @@ def render_review_rounds(state: dict[str, Any]) -> None:
     )
 
 
-def render_trace_details(state: dict[str, Any]) -> None:
-    trace = state["trace"]
-    st.subheader("Số lệnh gọi LLM theo khâu")
+BRANCH_ORDER = {"human": 0, "warn": 1, "auto": 2}
+
+
+def requirement_journey(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Hành trình của TỪNG yêu cầu RFP — kể chuyện theo yêu cầu, không theo node.
+
+    Mọi thứ ở đây suy từ state đã có: `source_strategy` của chương, điểm tin cậy
+    của câu dẫn, và danh sách nguồn bị loại. Không đo thêm, không gọi thêm.
+
+    Nhánh của một yêu cầu:
+      chưa có câu nào dẫn nó          -> 🔴 chuyển người
+      có câu dẫn, mục đạt tầng T1     -> 🟢 tự trả lời
+      có câu dẫn, mục ở T2/T3         -> 🟡 cảnh báo
+    """
+    from rfp.confidence import rerank_scores, sentence_confidence
+
+    scores = rerank_scores(state)
+    chapters = {chapter["id"]: chapter for chapter in state.get("chapters", [])}
+    section_by_chapter: dict[str, dict[str, Any]] = {}
+    for section in state.get("sections", []):
+        for chapter_id in section.get("source_chapters", []):
+            section_by_chapter[chapter_id] = section
+
+    rows: list[dict[str, Any]] = []
+    for chapter in state.get("chapters", []):
+        retrieval = chapter.get("retrieval", {})
+        strategy = retrieval.get("source_strategy")
+        section = section_by_chapter.get(chapter["id"], {})
+        tier = (section.get("confidence") or {}).get("tier")
+        for requirement in chapter.get("requirements", []):
+            req_id = requirement["req_id"]
+            supporting = [
+                sentence
+                for sentence in section.get("sentences", [])
+                if req_id in sentence.get("req_ids", [])
+                and sentence.get("origin") in ("capability", "precedent")
+            ]
+            if not supporting:
+                branch = "human"
+                score = 0.0
+                sources = [
+                    item.get("sent_id", "")
+                    for item in related_sources(retrieval)
+                ]
+                source_text = (
+                    f"🔎 {' · '.join(sources)} (không phải câu trả lời)"
+                    if sources
+                    else "— chưa có nguồn nào"
+                )
+            else:
+                # Nhánh theo bằng chứng của CHÍNH yêu cầu này, không theo tầng
+                # của mục: một yêu cầu đã có precedent chống lưng không nên bị
+                # tô vàng chỉ vì yêu cầu anh em trong cùng mục còn thiếu.
+                branch = (
+                    "auto"
+                    if any(item.get("origin") == "precedent" for item in supporting)
+                    else "warn"
+                )
+                score = max(
+                    sentence_confidence(item, rerank_by_source=scores) or 0.0
+                    for item in supporting
+                )
+                source_text = " · ".join(
+                    dict.fromkeys(
+                        str(item.get("source_id")) for item in supporting
+                    )
+                )
+            rows.append(
+                {
+                    "req_id": req_id,
+                    "text": requirement["text"],
+                    "strategy": strategy,
+                    "score": round(score, 2),
+                    "branch": branch,
+                    "sources": source_text,
+                }
+            )
+    # Đỏ trước, vàng giữa, xanh cuối: người đọc thấy ngay chỗ cần đến mình.
+    rows.sort(key=lambda row: (BRANCH_ORDER[row["branch"]], row["req_id"]))
+    return rows
+
+
+def render_journey_summary(state: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    trace = state.get("trace", {})
+    counts = {name: 0 for name in ("auto", "warn", "human")}
+    for row in rows:
+        counts[row["branch"]] += 1
+    total = len(rows) or 1
+
+    columns = st.columns(6)
+    for column, key in zip(columns[:3], ("auto", "warn", "human")):
+        column.metric(
+            label(REQ_BRANCH_VI, key),
+            f"{counts[key]}",
+            f"{counts[key] / total:.0%}",
+            delta_color="off",
+        )
+    columns[3].metric("Lệnh gọi LLM", trace.get("llm_calls", 0))
+    usage = trace.get("usage") or {}
+    columns[4].metric(
+        "Câu bị chặn vì số liệu lạ",
+        len(trace.get("hybrid_blocked", [])),
+        help="Câu có chỉ số định lượng không khớp nguyên văn nguồn nào — bị gỡ.",
+    )
+    columns[5].metric(
+        "Nguồn bị loại vì mâu thuẫn",
+        len(trace.get("conflicts", [])),
+        help="Hai câu nguồn nói khác nhau về cùng một chỉ số; giữ nguồn ưu tiên hơn.",
+    )
+    seconds = usage.get("seconds")
+    tokens = usage.get("tokens_product")
+    if seconds is not None or tokens is not None:
+        st.caption(
+            f"Lượt chạy này: {seconds:.1f}s · {tokens:,} token sản phẩm"
+            if seconds is not None and tokens is not None
+            else "Lượt chạy này: chưa đo được thời gian/token"
+        )
+
+
+def render_requirement_journey(state: dict[str, Any]) -> None:
+    rows = requirement_journey(state)
+    if not rows:
+        st.info("Chưa có yêu cầu nào để hiển thị.")
+        return
+    render_journey_summary(state, rows)
+    st.subheader("Hành trình từng yêu cầu RFP")
     st.dataframe(
         [
-            {"Khâu": label(LLM_STAGE_VI, name), "Số lệnh gọi": count}
-            for name, count in trace.get("llm_calls_by_stage", {}).items()
+            {
+                "Yêu cầu": f"{row['req_id']} · {row['text']}",
+                "Tầng trả lời": label(STRATEGY_TIER_VI, row["strategy"]),
+                "Độ tin cậy": f"{row['score']:.2f}",
+                "Nhánh": label(REQ_BRANCH_VI, row["branch"]),
+                "Nguồn dẫn": row["sources"],
+            }
+            for row in rows
         ],
         width="stretch",
         hide_index=True,
     )
-    st.caption(
-        "Đường đi: "
-        + " → ".join(label(STAGE_VI, name) for name in trace.get("path", []))
-    )
-    st.subheader("Vòng review")
-    render_review_rounds(state)
-    st.subheader("Nguồn đã truy xuất")
-    render_retrieval(state)
-    conflicts = trace.get("conflicts", [])
-    hybrids = trace.get("hybrid_blocked", [])
-    if conflicts:
-        st.warning(
-            f"Đã loại {len(conflicts)} câu nguồn mâu thuẫn nhau về cùng một chỉ số."
+    st.caption(JOURNEY_LEGEND)
+
+
+def render_trace_details(state: dict[str, Any]) -> None:
+    """Khối chi tiết kỹ thuật — gấp sẵn, dưới bảng hành trình.
+
+    Thứ tự có chủ đích: hành trình từng yêu cầu trả lời câu hỏi *"tôi phải làm
+    gì tiếp"*, còn các khối dưới đây trả lời *"hệ thống đã chạy thế nào"*. Người
+    mở tab cần cái trước, người gỡ lỗi cần cái sau.
+    """
+    trace = state["trace"]
+
+    with st.expander("Chi tiết kỹ thuật theo node", expanded=False):
+        st.caption(
+            "Đường đi: "
+            + " → ".join(label(STAGE_VI, name) for name in trace.get("path", []))
         )
-        st.dataframe(conflicts, width="stretch", hide_index=True)
-    else:
-        st.info("Không có câu nguồn nào mâu thuẫn nhau.")
-    if hybrids:
-        st.warning(
-            f"Đã chặn {len(hybrids)} câu có số liệu không khớp nguyên văn nguồn nào."
+        holder = st.empty()
+        render_pipeline_status(state, holder)
+
+    with st.expander("Số lệnh gọi theo khâu", expanded=False):
+        st.dataframe(
+            [
+                {"Khâu": label(LLM_STAGE_VI, name), "Số lệnh gọi": count}
+                for name, count in trace.get("llm_calls_by_stage", {}).items()
+            ],
+            width="stretch",
+            hide_index=True,
         )
-        st.dataframe(hybrids, width="stretch", hide_index=True)
-    else:
-        st.info("Không có câu nào bị chặn vì số liệu lạ.")
+        st.caption(
+            "Khâu ghi **0 lệnh gọi** là khâu chạy thuần code/regex — lưới an "
+            "toàn (blocklist, lọc rò rỉ, kiểm số liệu) **không tốn tiền LLM**, "
+            "nên bật chúng không có lý do gì để tiếc."
+        )
+
+    with st.expander("Vòng review", expanded=False):
+        render_review_rounds(state)
+
+    with st.expander("Nguồn đã truy xuất", expanded=False):
+        render_retrieval(state)
+        conflicts = trace.get("conflicts", [])
+        hybrids = trace.get("hybrid_blocked", [])
+        if conflicts:
+            st.warning(
+                f"Đã loại {len(conflicts)} câu nguồn mâu thuẫn nhau về cùng một chỉ số."
+            )
+            st.dataframe(conflicts, width="stretch", hide_index=True)
+        else:
+            st.info("Không có câu nguồn nào mâu thuẫn nhau.")
+        if hybrids:
+            st.warning(
+                f"Đã chặn {len(hybrids)} câu có số liệu không khớp nguyên văn nguồn nào."
+            )
+            st.dataframe(hybrids, width="stretch", hide_index=True)
+        else:
+            st.info("Không có câu nào bị chặn vì số liệu lạ.")
 
 
 def _sync_golden_editor() -> None:
@@ -2389,10 +2547,6 @@ def main() -> None:
     )
     proposal_tab, coverage_tab, sources_tab, trace_tab, golden_tab, eval_tab = tabs
 
-    with trace_tab:
-        trace_metrics = st.empty()
-        trace_status = st.empty()
-
     with proposal_tab:
         flow_area = st.empty()
         result_area = st.container()
@@ -2408,8 +2562,6 @@ def main() -> None:
         try:
             for latest in stream_graph(text):
                 render_flow(latest, flow_area)
-                render_trace_metrics(latest, trace_metrics)
-                render_pipeline_status(latest, trace_status)
         except GuardViolation as violation:
             # Bị chặn là hành vi ĐÚNG, không phải sự cố: thà không xuất hồ sơ
             # còn hơn xuất một hồ sơ tuyên bố sai chứng chỉ.
@@ -2452,8 +2604,6 @@ def main() -> None:
         render_empty_tabs(tabs)
     else:
         render_flow(latest, flow_area, failure=failure)
-        render_trace_metrics(latest, trace_metrics)
-        render_pipeline_status(latest, trace_status)
         with proposal_tab:
             render_flow_legend()
         if failure is not None:
@@ -2487,7 +2637,9 @@ def main() -> None:
             with sources_tab:
                 render_sources(shown)
             with trace_tab:
-                render_trace_details(latest)
+                render_requirement_journey(shown)
+                st.divider()
+                render_trace_details(shown)
 
     with golden_tab:
         render_golden()

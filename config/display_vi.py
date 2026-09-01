@@ -222,6 +222,33 @@ SOURCE_STRATEGY_VI = {
     "fallback-listing": "Không chọn được nguồn nào",
 }
 
+# Tầng trả lời theo cách lấy nguồn — từ vựng của slide kiến trúc. KHÁC với
+# TIER_VI (tầng tin cậy T1/T2/T3): cái này nói *lấy nguồn bằng cách nào*, cái
+# kia nói *kết quả đáng tin tới đâu*. Hai thứ trùng tên nhưng không cùng nghĩa,
+# nên để hai bảng riêng thay vì dùng chung một map.
+STRATEGY_TIER_VI = {
+    "capability-only": "Khớp bảng năng lực",
+    "dense-only": "T1 ngữ nghĩa",
+    "hybrid-bm25+dense": "T2 +từ khoá",
+    "fallback-listing": "T3 chỉ liệt kê nguồn",
+}
+
+# Nhánh xử lý của MỘT yêu cầu, màu theo slide.
+REQ_BRANCH_VI = {
+    "auto": "🟢 Tự trả lời",
+    "warn": "🟡 Cảnh báo",
+    "human": "🔴 Chuyển người",
+}
+
+JOURNEY_LEGEND = (
+    "🟢 tự trả lời — yêu cầu có căn cứ và hồ sơ quá khứ chống lưng · "
+    "🟡 cảnh báo — có căn cứ nhưng chỉ từ bảng năng lực, nên đọc lại · "
+    "🔴 chuyển người — chưa có căn cứ nào, người phụ trách phải bổ sung.  "
+    "Tầng trả lời: **Khớp bảng năng lực** (không cần tìm) · **T1** ngữ nghĩa · "
+    "**T2** thêm từ khoá · **T3** không chọn được nguồn, chỉ liệt kê để tra."
+)
+
+
 # canonical: rfp.metrics.BRANCH_*
 BRANCH_VI = {
     "auto": "Tự trả lời",
