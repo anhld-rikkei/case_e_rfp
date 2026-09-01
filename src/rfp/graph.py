@@ -2,6 +2,7 @@ import argparse
 import copy
 import json
 import sqlite3
+import time
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import asdict, is_dataclass
@@ -26,7 +27,10 @@ from config.settings import (
     RERANK_TOP_K,
     REVIEW_ENABLED,
     RETRIEVAL_TOP_K,
+    RETRIEVAL_USE_BM25,
     RETRIEVAL_USE_MMR,
+    RELATED_SOURCES_TOP_N,
+    RESPONSE_TIMEOUT_SECONDS,
     ROUTE_EMBEDDING_THRESHOLD,
 )
 from langgraph.graph import END, START, StateGraph
@@ -51,8 +55,10 @@ from .cache import (
     corpus_fingerprint,
     make_key,
 )
+from .confidence import annotate as annotate_confidence
 from .guard import final_guard
 from .llm import LLMUnavailable
+from .metrics import log_run
 from .review import (
     apply_fixes,
     critical_section_keys,
@@ -134,6 +140,40 @@ class GraphState(TypedDict, total=False):
     fingerprints: dict[str, str]
     force_regen: bool
     review_rounds: int
+    confidence: dict[str, Any]
+
+
+class ResponseTimeout(LLMUnavailable):
+    """Node chạy quá `RESPONSE_TIMEOUT_SECONDS`.
+
+    Kế thừa `LLMUnavailable` để đi chung đúng đường xử lý đã có: mọi chỗ đang
+    bắt provider sập sẽ tự động huỷ êm về `partial`, không phải thêm nhánh mới.
+    """
+
+    def __init__(self, node: str, seconds: float) -> None:
+        super().__init__("timeout", 1, TimeoutError(f"{node} quá {seconds:g}s"))
+        self.node = node
+
+
+def with_timeout(node_name: str, func, state: GraphState) -> GraphState:
+    """Bọc một node bằng hạn giờ.
+
+    Dùng luồng phụ thay vì signal: `signal.alarm` chỉ chạy trên main thread của
+    Unix, mà Streamlit gọi graph từ thread khác và đây là Windows. Đổi lại,
+    không giết được thread đang chạy — nên đây là **huỷ êm** đúng nghĩa: kết quả
+    quá giờ bị bỏ, luồng nền tự kết thúc, người dùng nhận `partial` thay vì
+    ngồi chờ vô hạn.
+    """
+    if not RESPONSE_TIMEOUT_SECONDS:
+        return func(state)
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(func, state)
+        try:
+            return future.result(timeout=RESPONSE_TIMEOUT_SECONDS)
+        except FutureTimeout:
+            raise ResponseTimeout(node_name, RESPONSE_TIMEOUT_SECONDS) from None
 
 
 def _empty_trace() -> dict[str, Any]:
@@ -508,6 +548,9 @@ def retrieve_per_chapter(state: GraphState) -> GraphState:
                     "candidates": candidates,
                     "selected": selected,
                     "dedup": dedup,
+                    "source_strategy": source_strategy(
+                        {"stages": stages, "selected": selected}
+                    ),
                 },
             }
         )
@@ -524,6 +567,46 @@ def retrieve_per_chapter(state: GraphState) -> GraphState:
     if cache_key is not None:
         cache.put(cache_key, result)
     return {**result, "fingerprints": fingerprints}
+
+
+def source_strategy(chapter_retrieval: dict[str, Any]) -> str:
+    """Chương này lấy nguồn bằng cách nào — ghi vào trace để đọc lại được.
+
+    Suy từ các cờ `skipped` mà khâu truy xuất đã ghi sẵn, không đo thêm gì:
+
+      capability-only  · mọi yêu cầu khớp bảng năng lực, bỏ hẳn tìm kiếm
+      hybrid-bm25+dense· đường đầy đủ: từ khoá + ngữ nghĩa, rerank, MMR
+      dense-only       · cờ ablation tắt BM25
+      fallback-listing · có tìm nhưng không chọn được câu nào (tầng T3)
+    """
+    stages = chapter_retrieval.get("stages", {})
+    if stages.get("query_embed", {}).get("skipped"):
+        return "capability-only"
+    if not chapter_retrieval.get("selected"):
+        return "fallback-listing"
+    return "hybrid-bm25+dense" if RETRIEVAL_USE_BM25 else "dense-only"
+
+
+def related_sources(
+    chapter_retrieval: dict[str, Any], *, limit: int | None = None
+) -> list[dict[str, Any]]:
+    """Nguồn điểm cao nhất KHÔNG được chọn — gợi ý cho mục thiếu căn cứ.
+
+    Đây **không phải câu trả lời**: chúng trượt vì không đủ liên quan hoặc bị
+    cắt ở bước chọn. Hiện ra để người bổ sung có chỗ bắt đầu, và nhãn trên UI
+    phải nói rõ điều đó.
+    """
+    limit = RELATED_SOURCES_TOP_N if limit is None else limit
+    chosen = {item["sent_id"] for item in chapter_retrieval.get("selected", [])}
+    candidates = [
+        item
+        for item in chapter_retrieval.get("candidates", [])
+        if item.get("sent_id") not in chosen
+    ]
+    candidates.sort(
+        key=lambda item: -float((item.get("scores") or {}).get("rerank", 0.0))
+    )
+    return candidates[:limit]
 
 
 def _attribute_stage(coverage: AttributeCoverage) -> dict[str, Any]:
@@ -990,23 +1073,40 @@ def assemble(state: GraphState) -> GraphState:
         for index, section in enumerate(state.get("sections", []), start=1)
     )
     final_guard(proposal)
+    # Điểm tin cậy quy từ bằng chứng đã có — không thêm lệnh gọi LLM nào.
+    scored = annotate_confidence(state)
     return {
         "proposal": proposal,
         "status": "completed",
+        "sections": scored["sections"],
+        "confidence": scored["confidence"],
         "trace": _with_trace(state, "assemble"),
     }
 
 
 def build_graph(checkpointer=None):
     builder = StateGraph(GraphState)
-    builder.add_node("parse_input", parse_input)
+    # Node nào có thể gọi LLM thì bọc hạn giờ; node thuần tất định thì không —
+    # bọc chúng chỉ thêm một luồng phụ mà không bảo vệ được gì.
+    builder.add_node(
+        "parse_input", lambda s: with_timeout("parse_input", parse_input, s)
+    )
     builder.add_node("check_complete", check_complete)
     builder.add_node("ask_user", ask_user)
-    builder.add_node("route_reference_rfp", route_reference_rfp)
+    builder.add_node(
+        "route_reference_rfp",
+        lambda s: with_timeout("route_reference_rfp", route_reference_rfp, s),
+    )
     builder.add_node("plan_sections", plan_sections)
-    builder.add_node("retrieve_per_chapter", retrieve_per_chapter)
-    builder.add_node("generate_per_section", generate_per_section)
-    builder.add_node("review", review)
+    builder.add_node(
+        "retrieve_per_chapter",
+        lambda s: with_timeout("retrieve_per_chapter", retrieve_per_chapter, s),
+    )
+    builder.add_node(
+        "generate_per_section",
+        lambda s: with_timeout("generate_per_section", generate_per_section, s),
+    )
+    builder.add_node("review", lambda s: with_timeout("review", review, s))
     builder.add_node("assemble", assemble)
 
     builder.add_edge(START, "parse_input")
@@ -1045,6 +1145,15 @@ DEFAULT_CHECKPOINT_DB = (
 )
 
 
+def _record_run(state: GraphState | None, *, seconds: float) -> None:
+    """Ghi một dòng nhật ký cho lượt chạy. Không bao giờ làm hỏng lượt chạy."""
+    if not state:
+        return
+    from .usage import snapshot
+
+    log_run(state, usage=snapshot(), seconds=seconds)
+
+
 def _partial_state(
     last_state: GraphState | None,
     error: LLMUnavailable,
@@ -1071,15 +1180,17 @@ def run_graph(
         # Không checkpoint, nhưng vẫn gom state theo từng node: LLM sập giữa
         # chừng thì trả phần đã xong với status=partial thay vì mất trắng.
         last_state: GraphState | None = None
+        started = time.perf_counter()
         try:
             for snapshot in GRAPH.stream(
                 _initial_state(text, force_regen=force_regen),
                 stream_mode="values",
             ):
                 last_state = snapshot
-            return last_state
         except LLMUnavailable as error:
-            return _partial_state(last_state, error)
+            last_state = _partial_state(last_state, error)
+        _record_run(last_state, seconds=time.perf_counter() - started)
+        return last_state
 
     # Import tại chỗ: package tuỳ chọn, thiếu nó thì đường không checkpoint
     # vẫn phải chạy được (app.py, eval không dùng job_id).

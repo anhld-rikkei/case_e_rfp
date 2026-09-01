@@ -70,6 +70,39 @@ EVAL_JUDGE_EFFORT = "low"
 COST_PER_1M_INPUT = None
 COST_PER_1M_OUTPUT = None
 
+# ── Tin cậy & fallback (v1.8) ──────────────────────────────────────────────
+# Điểm tin cậy quy từ bằng chứng ĐÃ CÓ (verdict + điểm rerank + coverage), không
+# thêm lệnh gọi LLM nào. Xem docstring src/rfp/confidence.py.
+#
+# HAI BẤT ĐẲNG THỨC PHẢI GIỮ khi chỉnh ngưỡng — có test khẳng định:
+#     INCOMPLETE_COVERAGE_FACTOR < CONFIDENCE_T_LOW    (thiếu requirement -> T3)
+#     NO_PRECEDENT_FACTOR        < CONFIDENCE_T_HIGH   (không precedent   -> T2)
+# Phá một trong hai là mục thiếu căn cứ có thể rơi vào tầng "tự trả lời".
+CONFIDENCE_T_HIGH = 0.75   # >= : T1, tự trả lời
+CONFIDENCE_T_LOW = 0.45    # >= : T2, người xem lại; dưới nữa: T3, chuyển người
+
+CONFIDENCE_CAPABILITY_BASE = 1.00   # câu từ capability sheet, đã VERIFIED
+CONFIDENCE_PRECEDENT_BASE = 0.70    # câu từ hồ sơ cũ, đã VERIFIED
+CONFIDENCE_PRECEDENT_SPAN = 0.30    # cộng thêm theo điểm rerank của nguồn
+CONFIDENCE_UNVERIFIABLE = 0.30      # có nguồn nhưng claim-check không xác nhận
+
+INCOMPLETE_COVERAGE_FACTOR = 0.40   # mục còn requirement chưa có câu dẫn
+NO_PRECEDENT_FACTOR = 0.70          # phủ đủ nhưng chỉ bằng bảng năng lực
+
+# Tầng T3: gợi ý nguồn "có thể liên quan" cho mục thiếu căn cứ.
+RELATED_SOURCES_TOP_N = 3
+
+# Mỗi node gọi LLM bị bọc timeout; quá giờ thì huỷ êm về `partial` như đường
+# provider sập sẵn có, không treo giao diện vô hạn.
+RESPONSE_TIMEOUT_SECONDS = 120
+
+# Nhật ký đo lường: mỗi lượt chạy một dòng JSON.
+METRICS_LOG_PATH = ROOT_DIR / "cache" / "metrics.jsonl"
+METRICS_ENABLED = True
+
+# Số RFP mẫu hiện trên sidebar (trước đây hardcode `[:3]` trong app.py).
+SAMPLE_RFP_LIMIT = 3
+
 # Cache (Bước 5). PROMPT_VERSION/TEMPLATE_VERSION bump TAY mỗi khi sửa prompt
 # hoặc template sinh câu: cache key gồm chúng, nên quên bump là dùng lại kết quả
 # của prompt cũ mà không ai biết.
