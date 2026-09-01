@@ -1827,29 +1827,30 @@ def requirement_journey(state: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
-# Bảng màu theo sơ đồ kiến trúc: nền kem, hộp trắng viền mảnh, nhánh tô nền
-# nhạt. Một "thẻ sơ đồ" sáng đặt trên trang tối — cố ý, để chiếu lên slide là
-# dùng được luôn, không phải dịch màu qua lại.
-_FLOW_BG = "#F7F7F2"
-_FLOW_CARD = "#FFFFFF"
-_FLOW_LINE = "#2E3338"
-_FLOW_TEXT = "#1F2429"
-_FLOW_SUB = "#6B6F9B"
+# Bảng màu lấy thẳng từ dark theme của app (.streamlit/config.toml) — sơ đồ
+# nằm trong trang tối nên phải cùng nền, một thẻ trắng giữa trang tối đọc như
+# ảnh dán vào chứ không như một phần của app.
+_FLOW_BG = "#12161C"
+_FLOW_CARD = "#1B2129"
+_FLOW_LINE = "#3A4552"
+_FLOW_TEXT = "#E6EAF0"
+_FLOW_SUB = "#8B97A6"
 
 # Ba kết quả cuối, gọi bằng đúng việc người dùng phải làm với nó.
+# (viền, nền, tiêu đề, mô tả)
 _BRANCH_STYLE = {
     "auto": (
-        "#0F6B4F", "#E8F3ED",
+        "#3FB950", "#16281F",
         "Dùng được ngay",
         "có nguồn dẫn · vẫn nên liếc lại nguồn",
     ),
     "warn": (
-        "#8A6100", "#FBF2DC",
+        "#D29922", "#2A2416",
         "Dùng được, phải kiểm lại",
         "chỉ dựa vào bảng năng lực công ty",
     ),
     "human": (
-        "#A33A32", "#FBECEA",
+        "#F85149", "#2A1A19",
         "Người phải bổ sung",
         "chưa tìm được căn cứ nào cho yêu cầu này",
     ),
@@ -1888,6 +1889,28 @@ _TIER_CHAIN = (
 )
 
 
+_MARKER_IDS = {
+    _FLOW_LINE: "ar-line",
+    "#3FB950": "ar-auto",
+    "#D29922": "ar-warn",
+    "#F85149": "ar-human",
+}
+
+
+def _markers() -> str:
+    """Một marker cho mỗi màu cạnh.
+
+    Dùng chung một marker đen cho mọi cạnh thì đầu mũi tên trên cạnh dày trông
+    như vệt mực đè lên hộp — lỗi nhìn thấy ngay khi cạnh sankey dày lên.
+    """
+    return "<defs>" + "".join(
+        f'<marker id="{name}" viewBox="0 0 10 10" refX="8" refY="5" '
+        f'markerWidth="4.5" markerHeight="4.5" orient="auto-start-reverse">'
+        f'<path d="M0,0 L10,5 L0,10 z" fill="{color}"/></marker>'
+        for color, name in _MARKER_IDS.items()
+    ) + "</defs>"
+
+
 def _esc(text):
     return html.escape(str(text))
 
@@ -1902,7 +1925,9 @@ def _svg_text(x, y, text, *, size=12, color=None, weight="400", anchor="middle")
 
 def _card(x, y, w, h, title, sub, *, fill=None, stroke=None, active=True,
           title_color=None):
-    opacity = 1.0 if active else 0.3
+    # Hộp không dùng tới lượt này vẫn phải đọc được. Trên nền tối, mờ tới 0.3
+    # là chữ biến mất hẳn chứ không còn là "mờ đi".
+    opacity = 1.0 if active else 0.42
     parts = [
         f'<g opacity="{opacity:.2f}">',
         f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="10" '
@@ -1931,7 +1956,8 @@ def _arrow(x1, y1, x2, y2, *, width=1.6, color=None, active=True, key="",
     return (
         f'<path d="{path}" fill="none" stroke="{color}" '
         f'stroke-width="{width:.1f}" opacity="{opacity:.2f}" '
-        f'marker-end="url(#arrow)" data-edge="{key}"/>'
+        f'marker-end="url(#{_MARKER_IDS.get(color, "ar-line")})" '
+        f'data-edge="{key}"/>'
     )
 
 
@@ -1957,9 +1983,7 @@ def flow_svg(rows, *, blocked, highlight=None, checked=0, reviewed=0):
     out = [
         f'<svg viewBox="0 0 1480 400" width="100%" '
         f'style="background:{_FLOW_BG};border-radius:12px">',
-        '<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" '
-        'markerWidth="6" markerHeight="6" orient="auto-start-reverse">'
-        f'<path d="M0,0 L10,5 L0,10 z" fill="{_FLOW_LINE}"/></marker></defs>',
+        _markers(),
     ]
 
     # 1. Đầu vào
@@ -2025,10 +2049,17 @@ def flow_svg(rows, *, blocked, highlight=None, checked=0, reviewed=0):
             _arrow(962, 199, 1024, y + 31, width=thick(count), color=stroke,
                    active=active, key=f"branch:{name}")
         )
+        # Nhãn đặt ngay sau điểm xuất phát của cạnh, lệch lên trên đường
+        # cong. Đặt ở giữa cạnh thì đường cong dày sẽ cắt ngang chữ.
         out.append(
-            _svg_text(993, y + 31 + (-10 if name == "auto" else 16
-                                    if name == "human" else -6),
-                      _EDGE_LABEL[name], size=10, color=stroke)
+            _svg_text(
+                970,
+                199 + (y + 31 - 199) * 0.32 - 8,
+                _EDGE_LABEL[name],
+                size=10,
+                color=stroke,
+                anchor="start",
+            )
         )
         out.append(
             _card(1024, y, 268, 62, f"{title} · {count} ({count / total:.0%})",
