@@ -1065,6 +1065,24 @@ def sentence_breakdown(state: dict[str, Any]) -> str:
     )
 
 
+def requirement_cell(info: dict[str, Any]) -> str:
+    """Ô "Đáp ứng yêu cầu RFP" cho ba ca khác nhau.
+
+    `0/0` đọc thành "đáp ứng kém" trong khi thật ra mục đó **không được giao**
+    yêu cầu nào (会社概要 là mục cố định) — nên ca đó phải nói bằng chữ, không
+    bằng phân số.
+    """
+    total = info.get("total_requirements", 0)
+    covered = info.get("covered_requirements", 0)
+    if total == 0:
+        return "— không có yêu cầu"
+    missing = info.get("missing_requirements") or []
+    text = f"Đáp ứng {covered}/{total}"
+    if missing:
+        return f"{text} — thiếu: {' · '.join(missing)}"
+    return text
+
+
 def render_confidence(state: dict[str, Any]) -> None:
     """Điểm tin cậy + tầng của cả hồ sơ và từng mục.
 
@@ -1080,7 +1098,7 @@ def render_confidence(state: dict[str, Any]) -> None:
         f"**{overall.get('score', 0):.2f}** — {label(TIER_HINT, tier)}"
     )
     st.caption(
-        "Điểm quy từ căn cứ sẵn có (kết quả kiểm chứng · điểm truy hồi · độ phủ "
+        "Điểm quy từ căn cứ sẵn có (kết quả kiểm chứng · điểm truy hồi · mức đáp ứng "
         "yêu cầu). Hồ sơ lấy điểm của **mục yếu nhất** — một mục hỏng thì cả hồ "
         "sơ chưa nộp được."
     )
@@ -1092,16 +1110,16 @@ def render_confidence(state: dict[str, Any]) -> None:
                 f"{label(TIER_VI, section['confidence']['tier'])}"
             ),
             "Độ tin cậy": f"{section['confidence']['score']:.2f}",
-            "Yêu cầu đã phủ": (
-                f"{section['confidence']['covered_requirements']}"
-                f"/{section['confidence']['total_requirements']}"
-            ),
+            "Đáp ứng yêu cầu RFP": requirement_cell(section["confidence"]),
         }
         for section in state.get("sections", [])
         if section.get("confidence")
     ]
     if rows:
         st.dataframe(rows, width="stretch", hide_index=True)
+        st.caption(
+            "x/y = trong y yêu cầu RFP giao cho mục này, x đã có căn cứ thật."
+        )
 
 
 def render_related_sources(state: dict[str, Any], section: dict[str, Any]) -> None:

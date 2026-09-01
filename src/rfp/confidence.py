@@ -112,7 +112,7 @@ def section_confidence(
     ]
     base = sum(values) / len(values) if values else 0.0
 
-    covered, total = _coverage(state, section)
+    covered, total, missing = _coverage(state, section)
     # total == 0 là mục cố định không neo vào chương nào (会社概要): không có
     # yêu cầu nào thì không thiếu yêu cầu nào. Coi nó là "chưa phủ đủ" sẽ đẩy
     # một mục `OK` xuống tầng chuyển người — đúng lỗi đã bắt được khi chạy thật.
@@ -136,11 +136,14 @@ def section_confidence(
         "user_sentences": sum(1 for s in sentences if s.get("origin") == "user"),
         "covered_requirements": covered,
         "total_requirements": total,
+        "missing_requirements": missing,
         "has_precedent": has_precedent,
     }
 
 
-def _coverage(state: dict[str, Any], section: dict[str, Any]) -> tuple[int, int]:
+def _coverage(
+    state: dict[str, Any], section: dict[str, Any]
+) -> tuple[int, int, list[str]]:
     covered = {
         req_id
         for sentence in section.get("sentences", [])
@@ -155,10 +158,11 @@ def _coverage(state: dict[str, Any], section: dict[str, Any]) -> tuple[int, int]
         for requirement in chapters[chapter_id].get("requirements", [])
     ]
     if not required:
-        # Mục cố định (会社概要) không neo vào chương nào — coi như phủ đủ, đúng
-        # cách `assess_coverage` đang xử lý.
-        return 0, 0
-    return sum(1 for req_id in required if req_id in covered), len(required)
+        # Mục cố định (会社概要) không neo vào chương nào — coi như đáp ứng đủ,
+        # đúng cách `assess_coverage` đang xử lý.
+        return 0, 0, []
+    missing = [req_id for req_id in required if req_id not in covered]
+    return len(required) - len(missing), len(required), missing
 
 
 def tier_of(score: float) -> str:

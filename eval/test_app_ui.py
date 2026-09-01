@@ -1249,6 +1249,63 @@ def _scored_state() -> dict[str, Any]:
     return annotate(state)
 
 
+def test_requirement_cell_no_requirements_says_so_in_words() -> None:
+    """0/0 đọc thành 'đáp ứng kém' — nhưng mục đó KHÔNG được giao yêu cầu nào."""
+    import app
+
+    cell = app.requirement_cell(
+        {"total_requirements": 0, "covered_requirements": 0, "missing_requirements": []}
+    )
+    assert cell == "— không có yêu cầu"
+    assert "0/0" not in cell
+
+
+def test_requirement_cell_lists_missing_ids() -> None:
+    import app
+
+    cell = app.requirement_cell(
+        {
+            "total_requirements": 4,
+            "covered_requirements": 1,
+            "missing_requirements": ["2.1", "2.2", "3.2"],
+        }
+    )
+    assert cell == "Đáp ứng 1/4 — thiếu: 2.1 · 2.2 · 3.2"
+
+
+def test_requirement_cell_when_fully_met() -> None:
+    import app
+
+    cell = app.requirement_cell(
+        {"total_requirements": 3, "covered_requirements": 3, "missing_requirements": []}
+    )
+    assert cell == "Đáp ứng 3/3"
+    assert "thiếu" not in cell
+
+
+def test_confidence_table_uses_coverage_vocabulary_of_the_other_tab() -> None:
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_confidence(state)
+
+    at = _render(body, _scored_state())
+    columns = [list(frame.value.columns) for frame in at.dataframe]
+    assert ["Mục", "Tầng", "Độ tin cậy", "Đáp ứng yêu cầu RFP"] in columns
+    captions = " ".join(item.value for item in at.caption)
+    assert "trong y yêu cầu RFP giao cho mục này, x đã có căn cứ thật" in captions
+
+
+def test_no_user_facing_coverage_jargon_left() -> None:
+    """Thuật ngữ 'phủ/coverage' giữ trong eval kỹ thuật, không lên giao diện."""
+    source = (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")
+    for marker in ('"Yêu cầu đã phủ"', "đã phủ", "chưa phủ", "độ phủ"):
+        assert marker not in source, marker
+
+
 def test_confidence_block_shows_tier_and_score() -> None:
     def body(root, state):
         import sys as _s
@@ -1263,7 +1320,8 @@ def test_confidence_block_shows_tier_and_score() -> None:
     text = " ".join(item.value for item in at.markdown)
     assert "độ tin cậy" in text
     assert any(
-        list(frame.value.columns) == ["Mục", "Tầng", "Độ tin cậy", "Yêu cầu đã phủ"]
+        list(frame.value.columns)
+        == ["Mục", "Tầng", "Độ tin cậy", "Đáp ứng yêu cầu RFP"]
         for frame in at.dataframe
     )
 
