@@ -227,25 +227,26 @@ SOURCE_STRATEGY_VI = {
 # kia nói *kết quả đáng tin tới đâu*. Hai thứ trùng tên nhưng không cùng nghĩa,
 # nên để hai bảng riêng thay vì dùng chung một map.
 STRATEGY_TIER_VI = {
-    "capability-only": "Khớp bảng năng lực",
-    "dense-only": "T1 ngữ nghĩa",
-    "hybrid-bm25+dense": "T2 +từ khoá",
-    "fallback-listing": "T3 chỉ liệt kê nguồn",
+    "capability-only": "Đối chiếu bảng năng lực",
+    "dense-only": "Tìm theo ngữ nghĩa",
+    "hybrid-bm25+dense": "Tìm trong hồ sơ cũ",
+    "fallback-listing": "Chỉ liệt kê nguồn gần đúng",
 }
 
 # Nhánh xử lý của MỘT yêu cầu, màu theo slide.
 REQ_BRANCH_VI = {
-    "auto": "🟢 Tự trả lời",
-    "warn": "🟡 Cảnh báo",
-    "human": "🔴 Chuyển người",
+    "auto": "🟢 Dùng được ngay",
+    "warn": "🟡 Phải kiểm lại",
+    "human": "🔴 Người phải bổ sung",
 }
 
 JOURNEY_LEGEND = (
-    "🟢 tự trả lời — yêu cầu có căn cứ và hồ sơ quá khứ chống lưng · "
-    "🟡 cảnh báo — có căn cứ nhưng chỉ từ bảng năng lực, nên đọc lại · "
-    "🔴 chuyển người — chưa có căn cứ nào, người phụ trách phải bổ sung.  "
-    "Tầng trả lời: **Khớp bảng năng lực** (không cần tìm) · **T1** ngữ nghĩa · "
-    "**T2** thêm từ khoá · **T3** không chọn được nguồn, chỉ liệt kê để tra."
+    "🟢 **Dùng được ngay** — yêu cầu đã có câu dẫn từ hồ sơ thầu cũ, kèm mã "
+    "nguồn cụ thể · "
+    "🟡 **Dùng được, phải kiểm lại** — chỉ dựa vào bảng năng lực công ty, chưa "
+    "có hồ sơ cũ nào chống lưng · "
+    "🔴 **Người phải bổ sung** — chưa tìm được căn cứ nào cho yêu cầu này.  "
+    "Mọi câu không đạt điểm cao đều kèm ghi chú phải đối chiếu tài liệu gốc."
 )
 
 

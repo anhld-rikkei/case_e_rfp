@@ -1521,19 +1521,61 @@ def test_flow_svg_shows_all_three_branches_with_counts() -> None:
     rows = app.requirement_journey(_journey_state())
     svg = app.flow_svg(rows, blocked=0)
     assert svg.startswith("<svg") and svg.endswith("</svg>")
-    for name in ("🟢 Tự trả lời", "🟡 Cảnh báo", "🔴 Chuyển người"):
+    for name in ("Dùng được ngay", "Dùng được, phải kiểm lại",
+                 "Người phải bổ sung"):
         assert name in svg
     # Mỗi nhánh 1/3 yêu cầu
-    assert svg.count("1 · 33%") == 3
+    assert svg.count("1 (33%)") == 3
 
 
-def test_flow_svg_shows_all_four_retrieval_tiers() -> None:
+def test_flow_svg_describes_how_the_system_really_finds_evidence() -> None:
+    """Vẽ đúng cách code chạy: từ khoá và ngữ nghĩa chạy CÙNG LÚC.
+
+    Vẽ thành chuỗi "thử T1 rồi mới thử T2" là mô tả sai hệ thống — code chạy
+    hybrid một lượt rồi chấm điểm lại, không có bước lùi nào.
+    """
     import app
 
     svg = app.flow_svg(app.requirement_journey(_journey_state()), blocked=0)
-    for name in ("Khớp bảng năng lực", "T1 ngữ nghĩa", "T2 +từ khoá",
-                 "T3 chỉ liệt kê nguồn"):
+    for name in (
+        "Đối chiếu bảng năng lực công ty",
+        "Tìm trong hồ sơ thầu cũ",
+        "Không tìm được — chỉ liệt kê nguồn gần đúng",
+    ):
         assert name in svg
+    assert "cùng lúc" in svg
+
+
+def test_flow_svg_shows_the_processing_steps_in_order() -> None:
+    import app
+
+    svg = app.flow_svg(
+        app.requirement_journey(_journey_state()), blocked=0, checked=9, reviewed=1
+    )
+    for step in (
+        "① Tìm căn cứ cho từng yêu cầu",
+        "② Viết câu, gắn nguồn",
+        "③ Kiểm lại từng câu",
+        "④ Soi lại văn bản",
+        "⑤ Chấm độ tin cậy",
+    ):
+        assert step in svg
+    assert "9 câu" in svg and "1 vòng" in svg
+
+
+def test_flow_svg_uses_plain_words_not_jargon() -> None:
+    """Người đọc là người làm hồ sơ thầu, không phải kỹ sư retrieval."""
+    import app
+
+    import re
+
+    svg = app.flow_svg(app.requirement_journey(_journey_state()), blocked=0)
+    # Chỉ soi CHỮ NGƯỜI ĐỌC THẤY. Khoá máy đọc trong data-edge vẫn giữ tên gốc
+    # (`hybrid-bm25+dense`) để test và log truy được về source_strategy.
+    visible = " ".join(re.findall(r"<text[^>]*>([^<]*)</text>", svg))
+    for jargon in ("BM25", "embedding", "semantic", "sankey", "source_strategy",
+                   "hybrid", "MMR", "rerank"):
+        assert jargon.lower() not in visible.lower(), jargon
 
 
 def test_flow_svg_dims_edges_with_no_requirements() -> None:
@@ -1544,9 +1586,7 @@ def test_flow_svg_dims_edges_with_no_requirements() -> None:
     rows = app.requirement_journey(_journey_state())
     svg = app.flow_svg(rows, blocked=0)
     # dense-only không có yêu cầu nào trong fixture -> cạnh của nó phải mờ
-    dim = re.findall(r'opacity="0\.18"[^>]*data-edge="in:dense-only"', svg)
-    dim += re.findall(r'data-edge="in:dense-only"[^>]*', svg)
-    assert any("0.18" in item for item in dim)
+    assert re.findall(r'opacity="0\.15"[^>]*data-edge="out:dense-only"', svg)
 
 
 def test_flow_edge_width_grows_with_traffic() -> None:
@@ -1569,10 +1609,9 @@ def test_flow_edge_width_grows_with_traffic() -> None:
 def test_flow_svg_reports_guard_even_when_zero() -> None:
     import app
 
-    svg = app.flow_svg(app.requirement_journey(_journey_state()), blocked=0)
-    assert "0 chặn" in svg
-    svg2 = app.flow_svg(app.requirement_journey(_journey_state()), blocked=3)
-    assert "3 chặn" in svg2
+    rows = app.requirement_journey(_journey_state())
+    assert "0 câu" in app.flow_svg(rows, blocked=0)
+    assert "3 câu" in app.flow_svg(rows, blocked=3)
 
 
 def test_flow_highlight_marks_only_the_selected_path() -> None:
@@ -1585,10 +1624,10 @@ def test_flow_highlight_marks_only_the_selected_path() -> None:
 
     assert plain != lit
     # 4.1 đi qua "capability-only" và nhánh warn -> cạnh đó sáng
-    active = re.findall(r'opacity="0\.90"[^>]*data-edge="in:capability-only"', lit)
+    active = re.findall(r'opacity="0\.95"[^>]*data-edge="out:capability-only"', lit)
     assert active
     # Cạnh của nhánh không được chọn bị mờ đi
-    assert re.findall(r'opacity="0\.18"[^>]*data-edge="branch:auto"', lit)
+    assert re.findall(r'opacity="0\.15"[^>]*data-edge="branch:auto"', lit)
     # Điểm tin cậy của chính yêu cầu đó hiện trên hình
     assert f"{rows[0]['score']:.2f}" in lit or "1.00" in lit
 
@@ -1696,7 +1735,7 @@ def test_journey_table_renders_with_legend_and_three_colours() -> None:
     assert "🟢" in captions and "🟡" in captions and "🔴" in captions
     # Dải tóm tắt có đủ ba nhánh
     labels = {item.label for item in at.metric}
-    assert "🟢 Tự trả lời" in labels and "🔴 Chuyển người" in labels
+    assert "🟢 Dùng được ngay" in labels and "🔴 Người phải bổ sung" in labels
 
 
 def test_journey_summary_percentages_match_row_counts() -> None:
@@ -1710,9 +1749,9 @@ def test_journey_summary_percentages_match_row_counts() -> None:
 
     at = _render(body, _journey_state())
     values = {item.label: item.value for item in at.metric}
-    assert values["🟢 Tự trả lời"] == "1"
-    assert values["🟡 Cảnh báo"] == "1"
-    assert values["🔴 Chuyển người"] == "1"
+    assert values["🟢 Dùng được ngay"] == "1"
+    assert values["🟡 Phải kiểm lại"] == "1"
+    assert values["🔴 Người phải bổ sung"] == "1"
 
 
 def test_trace_details_are_collapsed_expanders() -> None:
