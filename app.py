@@ -1942,22 +1942,43 @@ def _card(x, y, w, h, title, sub, *, fill=None, stroke=None, active=True,
     return "".join(parts)
 
 
-def _arrow(x1, y1, x2, y2, *, width=1.6, color=None, active=True, key="",
-           curve=True):
-    """Cạnh có mũi tên. Cạnh không ai đi qua vẽ MỜ chứ không bỏ — người xem cần
-    thấy nhánh đó tồn tại mà lượt này không dùng tới."""
+# Nét nối: MỘT độ dày cho mọi cạnh. Bản trước vẽ dày theo lưu lượng (sankey);
+# nhìn ra chỉ thấy nét to nét nhỏ so le chứ không đọc được thành thông tin, mà
+# số yêu cầu thì đã in sẵn trên từng hộp. Chỉ đường đang được tô sáng mới dày
+# hơn — đó là khác biệt CÓ nghĩa với người xem.
+_W_EDGE = 1.7
+_W_LIT = 2.8
+
+
+def _edge(d, *, color=None, active=True, key="", lit=False, head=True):
+    """Một nét nối. `d` dựng sẵn để điểm chạm rơi đúng giữa mép hộp."""
     color = color or _FLOW_LINE
-    opacity = 0.95 if active else 0.15
-    if curve and abs(y2 - y1) > 4:
-        mid = (x1 + x2) / 2
-        path = f"M{x1},{y1} C{mid},{y1} {mid},{y2} {x2},{y2}"
-    else:
-        path = f"M{x1},{y1} L{x2},{y2}"
+    marker = (
+        f' marker-end="url(#{_MARKER_IDS.get(color, "ar-line")})"' if head else ""
+    )
     return (
-        f'<path d="{path}" fill="none" stroke="{color}" '
-        f'stroke-width="{width:.1f}" opacity="{opacity:.2f}" '
-        f'marker-end="url(#{_MARKER_IDS.get(color, "ar-line")})" '
+        f'<path d="{d}" fill="none" stroke="{color}" '
+        f'stroke-width="{_W_LIT if lit else _W_EDGE:.1f}" '
+        f'opacity="{0.95 if active else 0.15:.2f}" '
+        f'stroke-linecap="round" stroke-linejoin="round"{marker} '
         f'data-edge="{key}"/>'
+    )
+
+
+def _elbow(x1, y1, corner_x, y2, x2, radius=10):
+    """Gấp khúc ngang → dọc → ngang, bo góc.
+
+    Dùng gấp khúc chứ không dùng đường cong tự do: đường cong nối hai hộp lệch
+    hàng nhau thì đầu mút đâm xiên vào mép, nhìn như trượt ra ngoài hộp. Gấp
+    khúc thì luôn chạm vuông góc vào giữa mép.
+    """
+    if abs(y2 - y1) < 1:
+        return f"M{x1},{y1} H{x2}"
+    step = radius if y2 > y1 else -radius
+    return (
+        f"M{x1},{y1} H{corner_x - radius} "
+        f"Q{corner_x},{y1} {corner_x},{y1 + step} "
+        f"V{y2 - step} Q{corner_x},{y2} {corner_x + radius},{y2} H{x2}"
     )
 
 
@@ -1966,8 +1987,13 @@ def flow_svg(rows, *, blocked, highlight=None, checked=0, reviewed=0):
 
     Vẽ theo thứ tự việc mà code thật sự làm: tìm căn cứ -> viết câu gắn nguồn ->
     kiểm lại từng câu -> soi văn bản -> chấm độ tin cậy -> ba kết quả -> chặn
-    an toàn -> hồ sơ. Độ dày cạnh tỉ lệ số yêu cầu đi qua.
+    an toàn -> hồ sơ.
+
+    Bố cục neo vào ba hàng cố định để mọi điểm chạm thẳng hàng nhau. Chỗ nhiều
+    nhánh chụm về một đích thì gom qua một trục dọc rồi mới đi tiếp — bốn mũi
+    tên cùng đâm vào một điểm là chỗ trông rối nhất của bản trước.
     """
+    row_top, row_mid, row_low = 89, 199, 309
     total = len(rows) or 1
     by_tier = {key: 0 for key, _, _ in _TIER_CHAIN}
     for row in rows:
@@ -1977,9 +2003,6 @@ def flow_svg(rows, *, blocked, highlight=None, checked=0, reviewed=0):
         by_branch[row["branch"]] += 1
     picked = next((row for row in rows if row["req_id"] == highlight), None)
 
-    def thick(count):
-        return 1.4 + 8.0 * (count / total)
-
     out = [
         f'<svg viewBox="0 0 1480 400" width="100%" '
         f'style="background:{_FLOW_BG};border-radius:12px">',
@@ -1987,91 +2010,93 @@ def flow_svg(rows, *, blocked, highlight=None, checked=0, reviewed=0):
     ]
 
     # 1. Đầu vào
-    out.append(_card(24, 168, 118, 62, f"{len(rows)} yêu cầu", "tách từ RFP"))
-    out.append(_arrow(142, 199, 178, 199, key="in", curve=False))
+    out.append(_card(20, 168, 110, 62, f"{len(rows)} yêu cầu", "tách từ RFP"))
+    out.append(_edge(f"M130,{row_mid} H176", key="in"))
 
-    # 2. Tìm căn cứ
+    # 2. Tìm căn cứ — bốn cách, gom vào một trục rồi mới sang bước sau
     out.append(
-        f'<rect x="182" y="40" width="330" height="300" rx="12" fill="none" '
-        f'stroke="{_FLOW_LINE}" stroke-width="1.6"/>'
+        # Khối canh giữa đúng hàng giữa (199) để mũi tên từ đầu vào chạm vào
+        # giữa mép trái chứ không lệch xuống vài pixel.
+        f'<rect x="176" y="40" width="330" height="318" rx="12" fill="none" '
+        f'stroke="{_FLOW_LINE}" stroke-width="1.4"/>'
     )
-    out.append(_svg_text(347, 64, "① Tìm căn cứ cho từng yêu cầu", size=12.5,
+    out.append(_svg_text(341, 64, "① Tìm căn cứ cho từng yêu cầu", size=12.5,
                          weight="600"))
-    tier_y = [78, 148, 218, 274]
+    tier_y = (80, 148, 216, 284)
     for index, (key, title, sub) in enumerate(_TIER_CHAIN):
         count = by_tier.get(key, 0)
         on_path = bool(picked and picked["strategy"] == key)
         out.append(
-            _card(202, tier_y[index], 290, 56 if sub else 40,
-                  f"{title} · {count}", sub,
+            _card(194, tier_y[index], 294, 54, f"{title} · {count}", sub,
                   stroke=_BRANCH_STYLE["auto"][0] if on_path else None,
                   active=count > 0)
         )
         out.append(
-            _arrow(512, tier_y[index] + 28, 556, 199, width=thick(count),
-                   color=_BRANCH_STYLE["auto"][0] if on_path else None,
-                   active=count > 0 and (picked is None or on_path),
-                   key=f"out:{key}")
+            _edge(f"M488,{tier_y[index] + 27} H524",
+                  color=_BRANCH_STYLE["auto"][0] if on_path else None,
+                  active=count > 0 and (picked is None or on_path),
+                  lit=on_path, head=False, key=f"out:{key}")
         )
     out.append(
-        _svg_text(182, 358,
+        _edge(f"M524,{tier_y[3] + 27} V99 Q524,{row_top} 534,{row_top} H566",
+              key="to-generate")
+    )
+    out.append(
+        _svg_text(176, 376,
                   "hồ sơ ghi lại mục nào tìm bằng cách nào — xem cột "
                   "\u201cCách lấy nguồn\u201d",
                   size=10, color=_FLOW_SUB, anchor="start")
     )
 
-    # 3. Viết câu -> kiểm lại -> soi văn bản
-    out.append(_card(556, 60, 210, 56, "② Viết câu, gắn nguồn",
+    # 3. Viết câu -> kiểm lại -> soi văn bản: một cột dọc, chạm giữa mép
+    out.append(_card(566, 62, 210, 54, "② Viết câu, gắn nguồn",
                      "mỗi câu một mã nguồn cụ thể"))
-    out.append(_arrow(661, 116, 661, 148, key="gen", curve=False))
-    out.append(_card(556, 148, 210, 56, "③ Kiểm lại từng câu",
+    out.append(_edge("M671,116 V152", key="gen"))
+    out.append(_card(566, 152, 210, 54, "③ Kiểm lại từng câu",
                      f"{checked} câu · đối chiếu bằng chứng"))
-    out.append(_arrow(661, 204, 661, 236, key="check", curve=False))
-    out.append(_card(556, 236, 210, 56, "④ Soi lại văn bản",
+    out.append(_edge("M671,206 V242", key="check"))
+    out.append(_card(566, 242, 210, 54, "④ Soi lại văn bản",
                      f"{reviewed} vòng · bố cục và văn phong"))
-    out.append(_arrow(766, 264, 812, 199, key="review"))
+    out.append(_edge(_elbow(776, 269, 806, row_mid, 816), key="review"))
 
     # 4. Chấm điểm
     out.append(
-        _card(812, 168, 150, 62, "⑤ Chấm độ tin cậy",
+        _card(816, 168, 154, 62, "⑤ Chấm độ tin cậy",
               f"{picked['score']:.2f} · {picked['req_id']}" if picked
               else "0–1 · ghi log mọi lượt")
     )
 
-    # 5. Ba kết quả
+    # 5. Ba kết quả — toả ra từ một trục, rồi gom lại vào chốt chặn
+    out.append(_edge(f"M970,{row_mid} H990", key="to-branch", head=False))
+    out.append(_edge(f"M990,{row_top} V{row_low}", key="branch-bus", head=False))
     branch_y = {"auto": 58, "warn": 168, "human": 278}
     for name, y in branch_y.items():
+        centre = y + 31
         count = by_branch[name]
         stroke, fill, title, sub = _BRANCH_STYLE[name]
         on_path = bool(picked and picked["branch"] == name)
         active = count > 0 and (picked is None or on_path)
         out.append(
-            _arrow(962, 199, 1024, y + 31, width=thick(count), color=stroke,
-                   active=active, key=f"branch:{name}")
+            _edge(f"M990,{centre} H1060", color=stroke, active=active,
+                  lit=on_path, key=f"branch:{name}")
         )
-        # Nhãn đặt ngay sau điểm xuất phát của cạnh, lệch lên trên đường
-        # cong. Đặt ở giữa cạnh thì đường cong dày sẽ cắt ngang chữ.
+        # Nhãn nằm gọn trong đoạn thẳng trục -> hộp, phía trên nét nối.
         out.append(
-            _svg_text(
-                970,
-                199 + (y + 31 - 199) * 0.32 - 8,
-                _EDGE_LABEL[name],
-                size=10,
-                color=stroke,
-                anchor="start",
-            )
+            _svg_text(1025, centre - 8, _EDGE_LABEL[name], size=9.5, color=stroke)
         )
         out.append(
-            _card(1024, y, 268, 62, f"{title} · {count} ({count / total:.0%})",
+            _card(1060, y, 246, 62, f"{title} · {count} ({count / total:.0%})",
                   sub, fill=fill, stroke=stroke, active=count > 0,
                   title_color=stroke)
         )
         out.append(
-            _arrow(1292, y + 31, 1336, 199, width=thick(count), color=stroke,
-                   active=active, key=f"guard:{name}")
+            _edge(f"M1306,{centre} H1326", color=stroke, active=active,
+                  lit=on_path, head=False, key=f"guard:{name}")
         )
+    out.append(_edge(f"M1326,{row_top} V{row_low}", key="guard-bus", head=False))
+    out.append(_edge(f"M1326,{row_mid} H1344", key="to-guard"))
     out.append(
-        _svg_text(1024, 372,
+        _svg_text(1060, 376,
                   "câu không đạt điểm cao đều kèm ghi chú phải đối chiếu tài "
                   "liệu gốc",
                   size=10, color=_FLOW_SUB, anchor="start")
@@ -2079,13 +2104,13 @@ def flow_svg(rows, *, blocked, highlight=None, checked=0, reviewed=0):
 
     # 6. Chặn an toàn + hồ sơ
     out.append(
-        f'<circle cx="1358" cy="199" r="28" fill="{_FLOW_CARD}" '
+        f'<circle cx="1372" cy="{row_mid}" r="28" fill="{_FLOW_CARD}" '
         f'stroke="{_FLOW_LINE}" stroke-width="1.4"/>'
     )
-    out.append(_svg_text(1358, 194, "⑥ Chặn", size=10.5, weight="600"))
-    out.append(_svg_text(1358, 208, f"{blocked} câu", size=9.5, color=_FLOW_SUB))
-    out.append(_arrow(1386, 199, 1410, 199, key="publish", curve=False))
-    out.append(_card(1410, 158, 62, 82, "Hồ sơ", "nháp"))
+    out.append(_svg_text(1372, 195, "⑥ Chặn", size=10.5, weight="600"))
+    out.append(_svg_text(1372, 209, f"{blocked} câu", size=9.5, color=_FLOW_SUB))
+    out.append(_edge(f"M1400,{row_mid} H1416", key="publish"))
+    out.append(_card(1416, 168, 58, 62, "Hồ sơ", "nháp"))
     out.append("</svg>")
     return "".join(out)
 

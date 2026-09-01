@@ -1589,21 +1589,84 @@ def test_flow_svg_dims_edges_with_no_requirements() -> None:
     assert re.findall(r'opacity="0\.15"[^>]*data-edge="out:dense-only"', svg)
 
 
-def test_flow_edge_width_grows_with_traffic() -> None:
-    """Sankey đơn giản: cạnh nhiều yêu cầu phải dày hơn cạnh ít."""
+def _svg_endpoint(path: str) -> tuple[float, float]:
+    """Điểm cuối của một path chỉ gồm M/H/V/Q."""
+    x = y = 0.0
+    tokens = path.split()
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token.startswith("M"):
+            x, y = (float(value) for value in token[1:].split(","))
+        elif token.startswith("H"):
+            x = float(token[1:])
+        elif token.startswith("V"):
+            y = float(token[1:])
+        elif token.startswith("Q"):
+            index += 1
+            x, y = (float(value) for value in tokens[index].split(","))
+        index += 1
+    return x, y
+
+
+def test_flow_edges_all_have_the_same_width() -> None:
+    """Mọi nét nối dày như nhau.
+
+    Bản cũ vẽ dày theo lưu lượng: nhìn ra chỉ thấy nét to nét nhỏ so le, mà số
+    yêu cầu thì đã in trên từng hộp rồi. Độ dày giờ chỉ còn mang MỘT nghĩa —
+    đường đang được tô sáng.
+    """
     import app
     import re
 
     rows = app.requirement_journey(_journey_state())
-    rows = rows + [dict(rows[0])] * 5  # dồn thêm vào nhánh human
+    rows = rows + [dict(rows[0])] * 5  # dồn thêm vào một nhánh
     svg = app.flow_svg(rows, blocked=0)
-    widths = {
-        key: float(width)
-        for width, key in re.findall(
-            r'stroke-width="([\d.]+)"[^>]*data-edge="(branch:[a-z]+)"', svg
-        )
-    }
-    assert widths["branch:human"] > widths["branch:auto"]
+    widths = {float(width) for width in re.findall(r'stroke-width="([\d.]+)" o', svg)}
+    assert widths == {app._W_EDGE}
+
+
+def test_flow_highlighted_path_is_the_only_thicker_edge() -> None:
+    import app
+    import re
+
+    rows = app.requirement_journey(_journey_state())
+    svg = app.flow_svg(rows, blocked=0, highlight="4.1")
+    thick = re.findall(
+        rf'stroke-width="{app._W_LIT:.1f}"[^>]*data-edge="([^"]+)"', svg
+    )
+    assert set(thick) == {"out:capability-only", "branch:warn", "guard:warn"}
+
+
+def test_flow_arrows_land_on_the_middle_of_a_box_edge() -> None:
+    """Điểm chạm phải rơi đúng giữa mép hộp, không trượt ra ngoài.
+
+    Lỗi thật đã gặp: cạnh gom từ khối "tìm căn cứ" đâm vào sườn hộp ③ thay vì
+    vào hộp ② — vừa lệch chỗ chạm vừa vẽ sai luồng (viết câu xong mới kiểm).
+    """
+    import app
+    import re
+
+    svg = app.flow_svg(app.requirement_journey(_journey_state()), blocked=0)
+    anchors = set()
+    for match in re.findall(
+        r'<rect x="([\d.]+)" y="([\d.]+)" width="([\d.]+)" height="([\d.]+)"', svg
+    ):
+        x, y, w, h = (float(value) for value in match)
+        anchors |= {
+            (x, y + h / 2),
+            (x + w, y + h / 2),
+            (x + w / 2, y),
+            (x + w / 2, y + h),
+        }
+    for match in re.findall(r'<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"', svg):
+        cx, cy, r = (float(value) for value in match)
+        anchors |= {(cx - r, cy), (cx + r, cy)}
+
+    heads = re.findall(r'<path d="([^"]+)"[^>]*marker-end', svg)
+    assert len(heads) >= 8
+    for path in heads:
+        assert _svg_endpoint(path) in anchors, path
 
 
 def test_flow_svg_reports_guard_even_when_zero() -> None:
