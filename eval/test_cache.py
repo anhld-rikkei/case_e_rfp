@@ -81,7 +81,11 @@ def test_key_changes_when_prompt_version_bumped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     before = _key()
-    monkeypatch.setattr(cache_module, "PROMPT_VERSION", "2")
+    # Bump TƯƠNG ĐỐI, không hardcode: giá trị thật đổi theo thời gian và một
+    # test patch trúng đúng giá trị hiện tại sẽ thành no-op mà vẫn xanh.
+    monkeypatch.setattr(
+        cache_module, "PROMPT_VERSION", cache_module.PROMPT_VERSION + "-bumped"
+    )
     assert _key() != before
 
 
@@ -89,7 +93,9 @@ def test_key_changes_when_template_version_bumped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     before = _key()
-    monkeypatch.setattr(cache_module, "TEMPLATE_VERSION", "2")
+    monkeypatch.setattr(
+        cache_module, "TEMPLATE_VERSION", cache_module.TEMPLATE_VERSION + "-bumped"
+    )
     assert _key() != before
 
 

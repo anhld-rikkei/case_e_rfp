@@ -20,6 +20,8 @@ if str(SRC_DIR) not in sys.path:
 
 from config.settings import (
     PROMPT_VERSION,
+    RELATED_SOURCES_TOP_N,
+    SAMPLE_RFP_LIMIT,
     RFP_DIR,
     TRANSLATION_EFFORT,
     TRANSLATION_SYSTEM_PROMPT,
@@ -53,6 +55,11 @@ from rfp.export import (
 )
 from config.display_vi import (
     ATTRIBUTE_COVERED_REASON,
+    BRANCH_VI,
+    SOURCE_STRATEGY_VI,
+    TIER_HINT,
+    TIER_ICON,
+    TIER_VI,
     EDITED_LABEL,
     MARK_LEGEND,
     NO_EVIDENCE_REASON,
@@ -89,7 +96,8 @@ from rfp.freshness import (
     state_is_stale,
     write_manifest,
 )
-from rfp.graph import PIPELINE_STAGES, stream_graph
+from rfp.graph import PIPELINE_STAGES, related_sources, stream_graph
+from rfp.metrics import read_records, summarize
 from rfp.guard import GuardViolation
 from rfp.stores.sentence_index import SentenceIndex
 from rfp.llm import LLMUnavailable, MODEL as LLM_MODEL, generate
@@ -300,7 +308,7 @@ def sidebar_controls() -> tuple[str, bool]:
             with st.expander("Bản dịch RFP (tiếng Việt)", expanded=False):
                 render_rfp_translation(text)
         st.markdown("#### RFP mẫu")
-        for path in sorted(Path(RFP_DIR).glob("*.txt"))[:3]:
+        for path in sorted(Path(RFP_DIR).glob("*.txt"))[:SAMPLE_RFP_LIMIT]:
             sample_text = path.read_text(encoding="utf-8")
             st.button(
                 f"Chọn {path.stem}",
@@ -450,6 +458,7 @@ def render_section_note(state: dict[str, Any], section: dict[str, Any]) -> None:
         lines.append("")
         lines.append(f"Lý do: {NO_EVIDENCE_REASON}.")
         st.warning("\n".join(lines))
+        render_related_sources(state, section)
         return
     st.warning(label(SECTION_NOTE_VI, note))
 
@@ -983,6 +992,7 @@ def render_proposal(state: dict[str, Any]) -> None:
     # mục nào đủ căn cứ, mục nào cần người bổ sung — rồi mới đọc văn bản.
     st.subheader("Kết quả")
     st.markdown(f"**{section_summary(state)}**")
+    render_confidence(state)
     render_mapping(state)
     st.divider()
 
@@ -1053,6 +1063,89 @@ def sentence_breakdown(state: dict[str, Any]) -> str:
         ],
         unit="câu",
     )
+
+
+def render_confidence(state: dict[str, Any]) -> None:
+    """Điểm tin cậy + tầng của cả hồ sơ và từng mục.
+
+    Điểm quy từ bằng chứng đã có, không có lệnh gọi LLM nào để chấm điểm — nên
+    con số này tất định, chạy lại cùng state ra cùng kết quả.
+    """
+    overall = state.get("confidence")
+    if not overall:
+        return
+    tier = overall.get("tier", "T3")
+    st.markdown(
+        f"{TIER_ICON.get(tier, '')} **{label(TIER_VI, tier)}** · độ tin cậy "
+        f"**{overall.get('score', 0):.2f}** — {label(TIER_HINT, tier)}"
+    )
+    st.caption(
+        "Điểm quy từ căn cứ sẵn có (kết quả kiểm chứng · điểm truy hồi · độ phủ "
+        "yêu cầu). Hồ sơ lấy điểm của **mục yếu nhất** — một mục hỏng thì cả hồ "
+        "sơ chưa nộp được."
+    )
+    rows = [
+        {
+            "Mục": section["title_ja"],
+            "Tầng": (
+                f"{TIER_ICON.get(section['confidence']['tier'], '')} "
+                f"{label(TIER_VI, section['confidence']['tier'])}"
+            ),
+            "Độ tin cậy": f"{section['confidence']['score']:.2f}",
+            "Yêu cầu đã phủ": (
+                f"{section['confidence']['covered_requirements']}"
+                f"/{section['confidence']['total_requirements']}"
+            ),
+        }
+        for section in state.get("sections", [])
+        if section.get("confidence")
+    ]
+    if rows:
+        st.dataframe(rows, width="stretch", hide_index=True)
+
+
+def render_related_sources(state: dict[str, Any], section: dict[str, Any]) -> None:
+    """Tầng T3: nguồn 'có thể liên quan' cho mục thiếu căn cứ.
+
+    Đây KHÔNG phải câu trả lời — chúng trượt vì không đủ liên quan hoặc bị cắt
+    ở bước chọn. Hiện ra để người bổ sung có chỗ bắt đầu, và nhãn phải nói
+    thẳng điều đó chứ không để người đọc tưởng hệ thống đã trả lời.
+    """
+    chapters = {chapter["id"]: chapter for chapter in state.get("chapters", [])}
+    items: list[dict[str, Any]] = []
+    for chapter_id in section.get("source_chapters", []):
+        chapter = chapters.get(chapter_id)
+        if not chapter:
+            continue
+        for item in related_sources(chapter.get("retrieval", {})):
+            items.append({**item, "_chapter": chapter_id})
+    if not items:
+        return
+    items = items[:RELATED_SOURCES_TOP_N]
+    with st.expander(
+        f"🔎 {len(items)} nguồn có thể liên quan — **không phải câu trả lời**",
+        expanded=False,
+    ):
+        st.caption(
+            "Những câu này đã bị loại ở bước chọn nguồn vì không đủ liên quan. "
+            "Hệ thống **không** dùng chúng để viết hồ sơ; liệt kê ở đây chỉ để "
+            "người bổ sung có chỗ bắt đầu tra."
+        )
+        st.dataframe(
+            [
+                {
+                    "Chương": item["_chapter"],
+                    "Mã câu": item.get("sent_id"),
+                    "Câu (tiếng Nhật)": item.get("text"),
+                    "Điểm": round(
+                        float((item.get("scores") or {}).get("rerank", 0.0)), 4
+                    ),
+                }
+                for item in items
+            ],
+            width="stretch",
+            hide_index=True,
+        )
 
 
 def section_summary(state: dict[str, Any]) -> str:
@@ -1158,11 +1251,35 @@ def render_coverage(state: dict[str, Any]) -> None:
         )
 
 
+def _strategy_by_section(state: dict[str, Any]) -> dict[str, str]:
+    """Mỗi mục lấy nguồn bằng cách nào — suy từ các chương nguồn của nó."""
+    by_chapter = {
+        chapter["id"]: chapter.get("retrieval", {}).get("source_strategy")
+        for chapter in state.get("chapters", [])
+    }
+    out: dict[str, str] = {}
+    for section in state.get("sections", []):
+        names = [
+            by_chapter[chapter_id]
+            for chapter_id in section.get("source_chapters", [])
+            if by_chapter.get(chapter_id)
+        ]
+        out[section["key"]] = " · ".join(
+            dict.fromkeys(label(SOURCE_STRATEGY_VI, name) for name in names)
+        ) or UNKNOWN_DASH
+    return out
+
+
+UNKNOWN_DASH = "—"
+
+
 def sentence_rows(state: dict[str, Any]) -> list[dict[str, str]]:
     """Giữ nguyên giá trị gốc ở `_origin`/`_verdict` để bộ lọc so sánh đúng."""
+    strategies = _strategy_by_section(state)
     return [
         {
             "Mục": section["title_ja"],
+            "Cách lấy nguồn": strategies.get(section["key"], UNKNOWN_DASH),
             "Câu (tiếng Nhật)": sentence["text"],
             "Nguồn": label(ORIGIN_VI, sentence["origin"]),
             "Mã nguồn": sentence["source_id"] or "—",
@@ -2019,7 +2136,74 @@ def render_headline_numbers(runs: dict[str, Any]) -> None:
         st.caption(card["detail"])
 
 
+def render_ops_metrics() -> None:
+    """Thống kê vận hành từ nhật ký mỗi lượt chạy (v1.8).
+
+    Đọc `cache/metrics.jsonl` — không đo lại gì, không gọi gì.
+    """
+    st.subheader("Thống kê vận hành")
+    records = read_records()
+    summary = summarize(records)
+    if not summary.get("runs"):
+        st.info(
+            "Chưa có lượt chạy nào được ghi nhật ký. Sinh một hồ sơ rồi quay "
+            "lại đây, hoặc xem `cache/metrics.jsonl`."
+        )
+        return
+
+    st.caption(f"Dựa trên **{summary['runs']}** lượt chạy đã ghi nhận.")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric(
+        "Tự trả lời",
+        f"{summary['auto_rate']:.0%}",
+        help="Tỉ lệ lượt chạy đạt tầng T1 — đủ căn cứ và có hồ sơ quá khứ chống lưng.",
+    )
+    col2.metric(
+        "Chuyển người",
+        f"{summary['handover_rate']:.0%}",
+        help="Gồm cả 'cần người xem lại' (T2) và 'chuyển người xử lý' (T3).",
+    )
+    col3.metric(
+        "p50 / p95 thời gian",
+        f"{summary['p50_seconds']:.0f}s / {summary['p95_seconds']:.0f}s",
+    )
+    col4.metric("Token sản phẩm / lượt", f"{summary['tokens_product_avg']:,.0f}")
+
+    if summary["failed_rate"]:
+        st.warning(
+            f"{summary['failed_rate']:.0%} lượt chạy **không ra được hồ sơ** "
+            "(guard chặn xuất bản hoặc nhà cung cấp LLM không phản hồi). "
+            "Những lượt này KHÔNG được tính là tự trả lời."
+        )
+
+    st.dataframe(
+        [
+            {"Nhánh": label(BRANCH_VI, name), "Số lượt": count}
+            for name, count in summary["by_branch"].items()
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    with st.expander("20 lượt gần nhất", expanded=False):
+        st.dataframe(
+            [
+                {
+                    "RFP": item.get("rfp_id") or "—",
+                    "Nhánh": label(BRANCH_VI, item.get("branch")),
+                    "Độ tin cậy": item.get("score"),
+                    "Giây": item.get("seconds"),
+                    "Token sản phẩm": item.get("tokens_product"),
+                }
+                for item in records[-20:][::-1]
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+
+
 def render_eval() -> None:
+    render_ops_metrics()
+    st.divider()
     st.header("Kết quả đánh giá (RAGAS)")
     
     results_dir = ROOT_DIR / "eval" / "results"

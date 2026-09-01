@@ -168,7 +168,14 @@ def test_result_tables_use_vietnamese_headers() -> None:
     assert not at.exception
     columns = _columns_of(at)
     assert ["Mã yêu cầu", "Nội dung yêu cầu", "Tình trạng", "Căn cứ đáp ứng"] in columns
-    assert ["Mục", "Câu (tiếng Nhật)", "Nguồn", "Mã nguồn", "Kiểm chứng"] in columns
+    assert [
+        "Mục",
+        "Cách lấy nguồn",
+        "Câu (tiếng Nhật)",
+        "Nguồn",
+        "Mã nguồn",
+        "Kiểm chứng",
+    ] in columns
     # Không cột nào còn tên enum thô
     flat = {name for group in columns for name in group}
     assert not {"origin", "verdict", "source_id", "req_id"} & flat
@@ -1226,6 +1233,155 @@ def test_bilingual_failure_does_not_hide_japanese() -> None:
     assert not at.exception
     assert any("Chưa dịch được" in w.value for w in at.warning)
     assert "技術要件への対応" in " ".join(item.value for item in at.markdown)
+
+
+# ── Tin cậy, source_strategy, tầng T3 (v1.8) ─────────────────────────────
+
+def _scored_state() -> dict[str, Any]:
+    from rfp.confidence import annotate
+
+    state = _state()
+    state["chapters"][0]["retrieval"]["source_strategy"] = "hybrid-bm25+dense"
+    state["chapters"][0]["retrieval"]["candidates"] = [
+        {"sent_id": "C1", "text": "gần đúng 1", "scores": {"rerank": 0.6}},
+        {"sent_id": "C2", "text": "gần đúng 2", "scores": {"rerank": 0.4}},
+    ]
+    return annotate(state)
+
+
+def test_confidence_block_shows_tier_and_score() -> None:
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_confidence(state)
+
+    at = _render(body, _scored_state())
+    assert not at.exception
+    text = " ".join(item.value for item in at.markdown)
+    assert "độ tin cậy" in text
+    assert any(
+        list(frame.value.columns) == ["Mục", "Tầng", "Độ tin cậy", "Yêu cầu đã phủ"]
+        for frame in at.dataframe
+    )
+
+
+def test_confidence_block_hidden_when_not_scored() -> None:
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_confidence(state)
+
+    at = _render(body, _state())
+    assert not at.markdown and not at.dataframe
+
+
+def test_sources_table_shows_how_each_section_got_its_evidence() -> None:
+    import app
+
+    rows = app.sentence_rows(_scored_state())
+    assert rows[0]["Cách lấy nguồn"] == "Từ khoá + ngữ nghĩa"
+
+
+def test_related_sources_block_says_it_is_not_an_answer() -> None:
+    """Nhãn phải nói thẳng, không để người đọc tưởng hệ thống đã trả lời."""
+    state = _scored_state()
+    section = state["sections"][0]
+
+    def body(root, state, section):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_related_sources(state, section)
+
+    at = _render(body, state, section)
+    assert not at.exception
+    captions = " ".join(item.value for item in at.caption)
+    assert "không đủ liên quan" in captions
+    assert "**không** dùng chúng" in captions
+    assert any(list(f.value.columns) == ["Chương", "Mã câu", "Câu (tiếng Nhật)", "Điểm"]
+               for f in at.dataframe)
+
+
+def test_related_sources_silent_when_nothing_left() -> None:
+    state = _scored_state()
+    state["chapters"][0]["retrieval"]["candidates"] = []
+
+    def body(root, state, section):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_related_sources(state, section)
+
+    at = _render(body, state, state["sections"][0])
+    assert not at.dataframe and not at.caption
+
+
+def test_ops_metrics_reports_nothing_without_runs(tmp_path: Path) -> None:
+    """Không có dữ liệu thì nói 'chưa có', không bịa 0%."""
+
+    def body(root, path):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.read_records = lambda *a, **k: []
+        app.render_ops_metrics()
+
+    at = _render(body, str(tmp_path))
+    assert any("Chưa có lượt chạy nào" in item.value for item in at.info)
+
+
+def test_ops_metrics_shows_auto_and_handover_rates() -> None:
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.read_records = lambda *a, **k: [
+            {"branch": "auto", "seconds": 10, "tokens_product": 100, "rfp_id": "R1"},
+            {"branch": "human_takeover", "seconds": 30, "tokens_product": 300,
+             "rfp_id": "R2"},
+        ]
+        app.render_ops_metrics()
+
+    at = _render(body)
+    assert not at.exception
+    labels = {item.label: item.value for item in at.metric}
+    assert labels["Tự trả lời"] == "50%"
+    assert labels["Chuyển người"] == "50%"
+
+
+def test_ops_metrics_warns_about_failed_runs() -> None:
+    """Guard chặn / provider sập không được lẫn vào 'tự trả lời'."""
+
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.read_records = lambda *a, **k: [
+            {"branch": "auto", "seconds": 1, "tokens_product": 1},
+            {"branch": "failed", "seconds": 1, "tokens_product": 1},
+        ]
+        app.render_ops_metrics()
+
+    at = _render(body)
+    warnings = " ".join(item.value for item in at.warning)
+    assert "không ra được hồ sơ" in warnings
+    assert "KHÔNG được tính là tự trả lời" in warnings
 
 
 # ── Tab Kết quả đánh giá ──────────────────────────────────────────────────

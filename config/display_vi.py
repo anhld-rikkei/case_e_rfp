@@ -199,6 +199,38 @@ ATTRIBUTE_COVERED_REASON = (
 SKIP_LEGEND = "bỏ qua có chủ đích để tiết kiệm — không phải lỗi"
 
 
+# ── Tin cậy & fallback (v1.8) — canonical: rfp.confidence.TIERS ───────────
+TIER_VI = {
+    "T1": "Tự trả lời được",
+    "T2": "Cần người xem lại",
+    "T3": "Chuyển người xử lý",
+}
+
+TIER_ICON = {"T1": "🟢", "T2": "🟡", "T3": "🟠"}
+
+TIER_HINT = {
+    "T1": "Mọi yêu cầu đã có căn cứ, và có hồ sơ quá khứ chống lưng",
+    "T2": "Đủ căn cứ nhưng chỉ dựa vào bảng năng lực — nên có người đọc lại",
+    "T3": "Còn yêu cầu chưa có căn cứ — người phụ trách phải bổ sung",
+}
+
+# canonical: rfp.graph.source_strategy
+SOURCE_STRATEGY_VI = {
+    "capability-only": "Chỉ bảng năng lực (bỏ qua tìm kiếm)",
+    "hybrid-bm25+dense": "Từ khoá + ngữ nghĩa",
+    "dense-only": "Chỉ ngữ nghĩa",
+    "fallback-listing": "Không chọn được nguồn nào",
+}
+
+# canonical: rfp.metrics.BRANCH_*
+BRANCH_VI = {
+    "auto": "Tự trả lời",
+    "human_review": "Người xem lại",
+    "human_takeover": "Chuyển người xử lý",
+    "failed": "Không ra được hồ sơ",
+}
+
+
 # ── Bước con của khâu truy xuất ────────────────────────────────────────────
 RETRIEVAL_STAGE_VI = {
     "attribute": "Đối chiếu bảng năng lực",

@@ -107,7 +107,7 @@ SAMPLE_RFP_LIMIT = 3
 # hoặc template sinh câu: cache key gồm chúng, nên quên bump là dùng lại kết quả
 # của prompt cũ mà không ai biết.
 PROMPT_VERSION = "1"
-TEMPLATE_VERSION = "1"
+TEMPLATE_VERSION = "2"  # v1.8: node retrieval thêm khoá source_strategy
 CACHE_DIR = ROOT_DIR / "cache"
 CACHE_TTL_SECONDS = 7 * 24 * 3600
 CACHE_ENABLED = True
