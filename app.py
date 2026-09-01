@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import replace
 import hashlib
+import html
 from pathlib import Path
 import re
 import sys
@@ -1826,6 +1827,195 @@ def requirement_journey(state: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+# Bảng màu theo dark theme của app (.streamlit/config.toml).
+_FLOW_BG = "#12161C"
+_FLOW_BOX = "#1B2129"
+_FLOW_EDGE = "#3A4552"
+_FLOW_TEXT = "#E6EAF0"
+_FLOW_MUTED = "#8B97A6"
+_BRANCH_COLOR = {"auto": "#3FB950", "warn": "#D29922", "human": "#F85149"}
+_STRATEGY_ORDER = (
+    "capability-only",
+    "dense-only",
+    "hybrid-bm25+dense",
+    "fallback-listing",
+)
+
+
+def _edge(x1, y1, x2, y2, *, width, color, active, key="") -> str:
+    """Một cạnh sankey. Cạnh 0 yêu cầu vẽ mờ chứ không bỏ — người xem cần thấy
+    nhánh đó tồn tại mà không có ai đi qua."""
+    opacity = 0.9 if active else 0.18
+    mid = (x1 + x2) / 2
+    return (
+        f'<path d="M{x1},{y1} C{mid},{y1} {mid},{y2} {x2},{y2}" fill="none" '
+        f'stroke="{color}" stroke-width="{width:.1f}" opacity="{opacity:.2f}" '
+        f'data-edge="{key}"/>'
+    )
+
+
+def _box(x, y, w, h, title, sub, *, color=None, active=True) -> str:
+    stroke = color or _FLOW_EDGE
+    opacity = 1.0 if active else 0.3
+    sub_line = (
+        f'<text x="{x + w / 2}" y="{y + h - 10}" fill="{_FLOW_MUTED}" '
+        f'font-size="11" text-anchor="middle">{html.escape(sub)}</text>'
+        if sub
+        else ""
+    )
+    return (
+        f'<g opacity="{opacity:.2f}">'
+        f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="8" '
+        f'fill="{_FLOW_BOX}" stroke="{stroke}" stroke-width="1.5"/>'
+        f'<text x="{x + w / 2}" y="{y + 22}" fill="{_FLOW_TEXT}" font-size="12.5" '
+        f'font-weight="600" text-anchor="middle">{html.escape(title)}</text>'
+        f"{sub_line}</g>"
+    )
+
+
+def flow_svg(rows: list[dict[str, Any]], *, blocked: int, highlight: str | None = None) -> str:
+    """Sơ đồ luồng của LƯỢT CHẠY NÀY, số thật trên từng hộp và từng cạnh.
+
+    Độ dày cạnh tỉ lệ số yêu cầu đi qua (sankey đơn giản) nên nhìn phát biết
+    dòng chảy dồn về đâu. Không đo thêm gì — mọi con số lấy từ chính bảng hành
+    trình đã dựng từ trace.
+    """
+    total = len(rows) or 1
+    by_strategy = {name: 0 for name in _STRATEGY_ORDER}
+    for row in rows:
+        by_strategy[row["strategy"]] = by_strategy.get(row["strategy"], 0) + 1
+    by_branch = {name: 0 for name in ("auto", "warn", "human")}
+    for row in rows:
+        by_branch[row["branch"]] += 1
+
+    picked = next((row for row in rows if row["req_id"] == highlight), None)
+
+    def thick(count: int) -> float:
+        return 1.2 + 9.0 * (count / total)
+
+    parts = [
+        f'<svg viewBox="0 0 1000 340" width="100%" height="340" '
+        f'style="background:{_FLOW_BG};border-radius:10px">'
+    ]
+
+    # Cột 1: đầu vào
+    parts.append(_box(12, 130, 120, 56, f"{len(rows)} yêu cầu", "từ RFP"))
+
+    # Cột 2: bốn tầng truy hồi
+    tier_y = [24, 96, 168, 240]
+    for index, name in enumerate(_STRATEGY_ORDER):
+        count = by_strategy.get(name, 0)
+        active = count > 0
+        on_path = bool(picked and picked["strategy"] == name)
+        parts.append(
+            _edge(
+                132, 158, 210, tier_y[index] + 28,
+                width=thick(count),
+                color=_BRANCH_COLOR["auto"] if on_path else _FLOW_EDGE,
+                active=active and (picked is None or on_path),
+                key=f"in:{name}",
+            )
+        )
+        parts.append(
+            _box(
+                210, tier_y[index], 210, 56,
+                label(STRATEGY_TIER_VI, name),
+                f"{count} yêu cầu",
+                color=_BRANCH_COLOR["auto"] if on_path else None,
+                active=active,
+            )
+        )
+        parts.append(
+            _edge(
+                420, tier_y[index] + 28, 500, 158,
+                width=thick(count),
+                color=_BRANCH_COLOR["auto"] if on_path else _FLOW_EDGE,
+                active=active and (picked is None or on_path),
+                key=f"out:{name}",
+            )
+        )
+
+    # Cột 3: điểm tin cậy
+    parts.append(
+        _box(
+            500, 130, 130, 56, "Điểm tin cậy",
+            f"{picked['score']:.2f}" if picked else "ngưỡng T1/T2",
+        )
+    )
+
+    # Cột 4: ba nhánh
+    branch_y = {"auto": 44, "warn": 130, "human": 216}
+    for name, y in branch_y.items():
+        count = by_branch[name]
+        active = count > 0
+        on_path = bool(picked and picked["branch"] == name)
+        color = _BRANCH_COLOR[name]
+        parts.append(
+            _edge(
+                630, 158, 700, y + 28,
+                width=thick(count),
+                color=color,
+                active=active and (picked is None or on_path),
+                key=f"branch:{name}",
+            )
+        )
+        parts.append(
+            _box(
+                700, y, 160, 56,
+                label(REQ_BRANCH_VI, name),
+                f"{count} · {count / total:.0%}",
+                color=color if (on_path or picked is None) else None,
+                active=active,
+            )
+        )
+        parts.append(
+            _edge(
+                860, y + 28, 900, 158,
+                width=thick(count),
+                color=color,
+                active=active and (picked is None or on_path),
+                key=f"guard:{name}",
+            )
+        )
+
+    # Cột 5: guard + hồ sơ
+    parts.append(
+        _box(900, 96, 90, 56, "⑥ Guard", f"{blocked} chặn")
+    )
+    parts.append(_box(900, 186, 90, 56, "Hồ sơ", "bản nháp"))
+    parts.append(
+        _edge(945, 152, 945, 186, width=3, color=_FLOW_EDGE, active=True, key="publish")
+    )
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def render_journey_flow(state: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """Sơ đồ + chọn một yêu cầu để tô sáng đường đi của đúng nó."""
+    ids = [row["req_id"] for row in rows]
+    picked = st.selectbox(
+        "Tô sáng đường đi của một yêu cầu",
+        ["(toàn bộ)"] + ids,
+        key="journey_highlight",
+    )
+    highlight = None if picked == "(toàn bộ)" else picked
+    blocked = len(state.get("trace", {}).get("hybrid_blocked", []))
+    st.markdown(
+        flow_svg(rows, blocked=blocked, highlight=highlight),
+        unsafe_allow_html=True,
+    )
+    if highlight:
+        row = next(row for row in rows if row["req_id"] == highlight)
+        st.markdown(
+            f"**{row['req_id']}** · {row['text']}\n\n"
+            f"Tầng trả lời: **{label(STRATEGY_TIER_VI, row['strategy'])}** · "
+            f"độ tin cậy **{row['score']:.2f}** · "
+            f"{label(REQ_BRANCH_VI, row['branch'])} · "
+            f"nguồn dẫn: {row['sources']}"
+        )
+    st.caption(JOURNEY_LEGEND)
+
+
 def render_journey_summary(state: dict[str, Any], rows: list[dict[str, Any]]) -> None:
     trace = state.get("trace", {})
     counts = {name: 0 for name in ("auto", "warn", "human")}
@@ -1869,6 +2059,8 @@ def render_requirement_journey(state: dict[str, Any]) -> None:
         st.info("Chưa có yêu cầu nào để hiển thị.")
         return
     render_journey_summary(state, rows)
+    st.subheader("Luồng xử lý lượt chạy này")
+    render_journey_flow(state, rows)
     st.subheader("Hành trình từng yêu cầu RFP")
     st.dataframe(
         [
@@ -1884,7 +2076,6 @@ def render_requirement_journey(state: dict[str, Any]) -> None:
         width="stretch",
         hide_index=True,
     )
-    st.caption(JOURNEY_LEGEND)
 
 
 def render_trace_details(state: dict[str, Any]) -> None:

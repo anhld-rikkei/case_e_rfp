@@ -1515,6 +1515,120 @@ def _journey_state() -> dict[str, Any]:
     return annotate(state)
 
 
+def test_flow_svg_shows_all_three_branches_with_counts() -> None:
+    import app
+
+    rows = app.requirement_journey(_journey_state())
+    svg = app.flow_svg(rows, blocked=0)
+    assert svg.startswith("<svg") and svg.endswith("</svg>")
+    for name in ("🟢 Tự trả lời", "🟡 Cảnh báo", "🔴 Chuyển người"):
+        assert name in svg
+    # Mỗi nhánh 1/3 yêu cầu
+    assert svg.count("1 · 33%") == 3
+
+
+def test_flow_svg_shows_all_four_retrieval_tiers() -> None:
+    import app
+
+    svg = app.flow_svg(app.requirement_journey(_journey_state()), blocked=0)
+    for name in ("Khớp bảng năng lực", "T1 ngữ nghĩa", "T2 +từ khoá",
+                 "T3 chỉ liệt kê nguồn"):
+        assert name in svg
+
+
+def test_flow_svg_dims_edges_with_no_requirements() -> None:
+    """Cạnh 0 yêu cầu vẫn vẽ nhưng mờ — người xem cần thấy nhánh đó tồn tại."""
+    import app
+    import re
+
+    rows = app.requirement_journey(_journey_state())
+    svg = app.flow_svg(rows, blocked=0)
+    # dense-only không có yêu cầu nào trong fixture -> cạnh của nó phải mờ
+    dim = re.findall(r'opacity="0\.18"[^>]*data-edge="in:dense-only"', svg)
+    dim += re.findall(r'data-edge="in:dense-only"[^>]*', svg)
+    assert any("0.18" in item for item in dim)
+
+
+def test_flow_edge_width_grows_with_traffic() -> None:
+    """Sankey đơn giản: cạnh nhiều yêu cầu phải dày hơn cạnh ít."""
+    import app
+    import re
+
+    rows = app.requirement_journey(_journey_state())
+    rows = rows + [dict(rows[0])] * 5  # dồn thêm vào nhánh human
+    svg = app.flow_svg(rows, blocked=0)
+    widths = {
+        key: float(width)
+        for width, key in re.findall(
+            r'stroke-width="([\d.]+)"[^>]*data-edge="(branch:[a-z]+)"', svg
+        )
+    }
+    assert widths["branch:human"] > widths["branch:auto"]
+
+
+def test_flow_svg_reports_guard_even_when_zero() -> None:
+    import app
+
+    svg = app.flow_svg(app.requirement_journey(_journey_state()), blocked=0)
+    assert "0 chặn" in svg
+    svg2 = app.flow_svg(app.requirement_journey(_journey_state()), blocked=3)
+    assert "3 chặn" in svg2
+
+
+def test_flow_highlight_marks_only_the_selected_path() -> None:
+    import app
+    import re
+
+    rows = app.requirement_journey(_journey_state())
+    plain = app.flow_svg(rows, blocked=0)
+    lit = app.flow_svg(rows, blocked=0, highlight="4.1")
+
+    assert plain != lit
+    # 4.1 đi qua "capability-only" và nhánh warn -> cạnh đó sáng
+    active = re.findall(r'opacity="0\.90"[^>]*data-edge="in:capability-only"', lit)
+    assert active
+    # Cạnh của nhánh không được chọn bị mờ đi
+    assert re.findall(r'opacity="0\.18"[^>]*data-edge="branch:auto"', lit)
+    # Điểm tin cậy của chính yêu cầu đó hiện trên hình
+    assert f"{rows[0]['score']:.2f}" in lit or "1.00" in lit
+
+
+def test_flow_renders_and_shows_one_line_for_selected_requirement() -> None:
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+        import streamlit as st
+
+        st.session_state["journey_highlight"] = "4.1"
+        rows = app.requirement_journey(state)
+        app.render_journey_flow(state, rows)
+
+    at = _render(body, _journey_state())
+    assert not at.exception
+    text = " ".join(item.value for item in at.markdown)
+    assert "<svg" in text
+    assert "Tầng trả lời:" in text and "độ tin cậy" in text
+
+
+def test_legend_appears_once_under_the_diagram() -> None:
+    """Gộp về một chỗ, không lặp hai nơi."""
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_requirement_journey(state)
+
+    at = _render(body, _journey_state())
+    from config.display_vi import JOURNEY_LEGEND
+
+    captions = [item.value for item in at.caption]
+    assert sum(JOURNEY_LEGEND == text for text in captions) == 1
+
+
 def test_journey_has_one_row_per_requirement() -> None:
     import app
 
