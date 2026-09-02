@@ -712,20 +712,22 @@ CHAT_CSS = f"""
 # hiện thành một cái ô.
 PROPOSAL_CSS = """
 <style>
-/* Thanh trên bám lại khi cuộn: sửa nội dung ở giữa trang mà nút lùi/tiến và
-   nút Chat trôi mất khỏi màn hình thì mỗi lần dùng phải cuộn ngược lên đầu. */
+/* Cụm nút lùi/tiến + Chat nổi cố định, luôn nằm trong tầm mắt.
+   KHÔNG dùng `position: sticky`: đã thử và không ăn — Streamlit lồng nhiều
+   tầng khối dọc, chỉ cần một tầng có `overflow` là sticky bị vô hiệu, mà
+   không báo lỗi gì. `fixed` neo theo khung nhìn nên không phụ thuộc tổ tiên;
+   đây cũng đúng cơ chế đang chạy được cho bảng chat. */
 .st-key-topbar {
-    position: sticky;
-    top: 0;
-    z-index: 40;
+    position: fixed;
+    top: 3.4rem;
+    right: 1.2rem;
+    width: 21rem;
+    z-index: 60;
     background: #12161C;
-    padding-top: .4rem;
-}
-[data-testid="stTabs"] > div:first-child {
-    position: sticky;
-    top: 5.2rem;
-    z-index: 39;
-    background: #12161C;
+    border: 1px solid #2A323C;
+    border-radius: 10px;
+    padding: .3rem .5rem;
+    box-shadow: 0 2px 12px rgba(0, 0, 0, .45);
 }
 [data-testid="stPopover"] > div > button {
     background: transparent !important;
@@ -756,6 +758,8 @@ CHAT_RESERVE_CSS = """
 [data-testid="stMainBlockContainer"] {
     padding-right: calc(var(--chat-dock-w) + 2rem);
 }
+/* Cụm nút nổi phải né bảng chat, nếu không hai cái chồng lên nhau. */
+.st-key-topbar { right: calc(var(--chat-dock-w) + 1.2rem); }
 </style>
 """
 
@@ -4209,18 +4213,15 @@ def main() -> None:
     # CSS ghim thanh trên nằm trong PROPOSAL_CSS, mà khối đó chỉ được nhả khi
     # đã có hồ sơ. Nhả thêm ở đây để thanh trên bám ngay từ lúc chưa sinh gì.
     st.markdown(PROPOSAL_CSS, unsafe_allow_html=True)
+    st.title("RFP Proposal Studio")
+    st.caption("Sinh hồ sơ thầu tiếng Nhật, mỗi câu đều truy được về nguồn")
+    # Khối này được CSS neo cố định ở góc trên bên phải, nên nó KHÔNG chứa tiêu
+    # đề — chỉ chứa đúng những nút phải luôn với tới được.
     with st.container(key="topbar"):
-        title_left, title_history, title_right = st.columns(
-            [4, 1, 1], vertical_alignment="center"
-        )
-        with title_left:
-            st.title("RFP Proposal Studio")
-            st.caption(
-                "Sinh hồ sơ thầu tiếng Nhật, mỗi câu đều truy được về nguồn"
-            )
-        with title_history:
+        history_column, chat_column = st.columns([1, 1], vertical_alignment="center")
+        with history_column:
             render_history_buttons()
-        with title_right:
+        with chat_column:
             render_chat_toggle()
     tabs = st.tabs(
         [

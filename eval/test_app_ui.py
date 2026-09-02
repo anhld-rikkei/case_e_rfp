@@ -3694,3 +3694,39 @@ def test_sentence_mark_separates_added_from_replaced() -> None:
         == "replaced"
     )
     assert app.sentence_mark({"origin": "precedent"}) == "plain"
+
+
+def test_toolbar_is_pinned_with_fixed_not_sticky() -> None:
+    """`position: sticky` đã thử và KHÔNG ăn.
+
+    Streamlit lồng nhiều tầng khối dọc; chỉ cần một tầng có `overflow` là sticky
+    bị vô hiệu, mà không báo lỗi gì — sửa CSS mấy lần cũng không thấy đổi.
+    `fixed` neo theo khung nhìn nên không phụ thuộc tổ tiên.
+    """
+    at = _app_with_result()
+    css = " ".join(item.value for item in at.markdown)
+    assert ".st-key-topbar" in css
+    assert "position: fixed" in css
+    # Không được quay lại sticky cho khối này
+    block = css.split(".st-key-topbar")[1].split("}")[0]
+    assert "sticky" not in block
+
+
+def test_pinned_toolbar_moves_aside_when_the_chat_dock_opens() -> None:
+    """Hai khối cùng neo cố định ở mép phải thì phải nhường nhau."""
+    closed = " ".join(item.value for item in _app_with_result().markdown)
+    assert "right: calc(var(--chat-dock-w)" not in closed
+
+    opened = " ".join(
+        item.value for item in _app_with_result(chat_open=True).markdown
+    )
+    assert ".st-key-topbar { right: calc(var(--chat-dock-w) + 1.2rem); }" in opened
+
+
+def test_pinned_toolbar_holds_only_the_controls() -> None:
+    """Khối bị neo cố định thì KHÔNG được chứa tiêu đề — nó sẽ đè lên nội dung."""
+    at = _app_with_result()
+    titles = [item.value for item in at.title]
+    assert titles == ["RFP Proposal Studio"]
+    keys = {item.key for item in at.button}
+    assert {"undo_button", "redo_button", "chat_open_button"} <= keys
