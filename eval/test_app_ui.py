@@ -2138,17 +2138,31 @@ def test_generating_by_criteria_only_makes_what_is_missing() -> None:
 COLLAPSED_LABEL = 2  # LabelVisibilityMessage.LabelVisibilityOptions.COLLAPSED
 
 
-def test_sidebar_golden_picker_is_labelled_for_a_tester() -> None:
+def test_golden_picker_is_a_button_like_the_sample_rfp_ones() -> None:
+    """Cùng kiểu với ba nút "Chọn RFP-2025-00x" ngay trên nó.
+
+    Trước đây là expander nên nhãn dính mép trái. Canh giữa nhãn expander phải
+    nhắm vào DOM nội bộ của Streamlit, mà bản này không dựng expander bằng
+    <summary> — CSS khớp rỗng, sửa xong màn hình y nguyên. Nút thì tự canh giữa.
+    """
     at = AppTest.from_file(APP_PATH, default_timeout=180)
     at.run()
-    labels = [item.label for item in at.sidebar.expander]
+    labels = [item.label for item in at.sidebar.button]
     assert "Chọn golden test" in labels
-    # Nhãn "Chọn ca" trên ô select là thừa khi khối đã tên là "Chọn golden test".
-    # Streamlit vẫn giữ label trong cây (cho trình đọc màn hình), nên phải kiểm
-    # đúng cờ ẩn chứ không kiểm chuỗi label.
+    assert "Chọn golden test" not in [item.label for item in at.sidebar.expander]
+    # Chưa bấm thì chưa bung danh sách
+    assert not [item for item in at.sidebar.selectbox if item.key == "golden_picker"]
+
+
+def test_golden_picker_opens_and_hides_its_redundant_label() -> None:
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.session_state["golden_picker_open"] = True
+    at.run()
     picker = next(
         item for item in at.sidebar.selectbox if item.key == "golden_picker"
     )
+    # Nhãn "Chọn ca" thừa khi nút đã tên là "Chọn golden test". Streamlit vẫn
+    # giữ label trong cây (cho trình đọc màn hình) nên phải kiểm đúng cờ ẩn.
     assert picker.proto.label_visibility.value == COLLAPSED_LABEL
 
 
@@ -2159,6 +2173,7 @@ def test_sidebar_explains_what_the_selected_case_checks() -> None:
     dụng: đọc xong vẫn không biết nhìn vào đâu để chấm.
     """
     at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.session_state["golden_picker_open"] = True
     at.run()
     shown = " ".join(item.value for item in at.sidebar.markdown) + " ".join(
         item.value for item in at.sidebar.caption
@@ -2172,6 +2187,7 @@ def test_sidebar_explains_what_the_selected_case_checks() -> None:
 def test_sidebar_can_load_a_golden_case_into_the_rfp_box() -> None:
     """Chạy một ca golden qua đúng luồng sản phẩm, không chỉ qua runner."""
     at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.session_state["golden_picker_open"] = True
     at.run()
     assert "Nạp vào ô RFP" in [button.label for button in at.sidebar.button]
     at.button(key="golden_picker_load").click().run()
@@ -2368,36 +2384,48 @@ def _chat_css(at: AppTest) -> str:
     return " ".join(item.value for item in at.markdown)
 
 
-def test_chat_column_is_draggable_and_the_document_column_reflows() -> None:
-    """Kéo cột bằng chuột: cần đủ BA thứ, thiếu một là không kéo được.
+def test_chat_dock_is_a_pinned_panel_the_mouse_can_resize() -> None:
+    """Một bảng riêng neo mép phải, kéo được — không phải một cột trôi theo trang.
 
-    `resize` cần `overflow` khác `visible`; cột Streamlit là flex item có sẵn
-    `flex-basis` nên `width` do người dùng kéo sẽ bị bỏ qua nếu không ép
-    `flex: 0 0 auto`; và cột hồ sơ phải `flex: 1 1 0` để tự co lấp phần thừa,
-    không thì kéo hẹp cột chat sẽ chừa một khoảng trắng.
+    `resize` chỉ ăn khi `overflow` khác `visible`. `direction: rtl` đẩy tay kéo
+    sang góc dưới BÊN TRÁI: bảng dính mép phải màn hình, tay kéo bên phải là
+    kéo ra ngoài màn hình.
     """
-    at = _app_with_result(chat_open=True)
-    css = _chat_css(at)
-    assert '<div id="chat-dock"></div>' in css
-    assert '<div id="doc-body"></div>' in css
-    for rule in ("resize: horizontal", "overflow: auto", "flex: 0 0 auto"):
-        assert rule in css, rule
-    assert "flex: 1 1 0" in css
-    # Tay kéo phải nằm ở mép TRÁI: cột dính mép phải màn hình, tay kéo bên
-    # phải là kéo ra ngoài màn hình.
-    assert "direction: rtl" in css
-    assert "direction: ltr" in css
-
-
-def test_chat_column_has_a_width_floor_and_ceiling() -> None:
-    """Kéo hẹp quá thì ô chat vỡ, kéo rộng quá thì hồ sơ không còn chỗ."""
     css = _chat_css(_app_with_result(chat_open=True))
-    assert "min-width" in css and "max-width" in css
+    assert ".st-key-chat_dock" in css
+    for rule in (
+        "position: fixed",
+        "resize: horizontal",
+        "overflow: auto",
+        "direction: rtl",
+        "direction: ltr",
+        "min-width",
+        "max-width",
+    ):
+        assert rule in css, rule
+    # Chừa chỗ để bảng không đè lên hồ sơ
+    assert "stMainBlockContainer" in css and "padding-right" in css
 
 
-def test_golden_picker_label_is_centred_like_the_sample_buttons() -> None:
-    at = _app_with_result()
-    assert ".st-key-golden_picker_box summary" in _chat_css(at)
+def test_chat_dock_reserves_no_space_when_it_is_closed() -> None:
+    css = _chat_css(_app_with_result())
+    assert "padding-right" not in css
+
+
+def test_chat_styling_never_depends_on_has_or_the_avatar_testid() -> None:
+    """Chốt lại đúng hai lỗi đã mắc — cả hai đều "sửa code mà màn hình y nguyên".
+
+    1. Streamlit 1.61 không dựng expander bằng <details>/<summary>.
+    2. Truyền `avatar=` làm test-id đổi thành stChatMessageAvatarCustom, nên
+       `:has([data-testid="stChatMessageAvatarUser"])` khớp rỗng.
+    Không selector nào được dựa vào hai thứ đó nữa.
+    """
+    css = _chat_css(_app_with_result(chat_open=True))
+    assert ":has(" not in css
+    assert "stChatMessageAvatarUser" not in css
+    assert "summary" not in css
+    # Cách thay thế: class `st-key-` mà Streamlit gắn cho container có key
+    assert '[class*="st-key-chatturn_user"]' in css
 
 
 def test_chat_panel_offers_suggestions_only_before_the_first_turn() -> None:
@@ -2555,3 +2583,89 @@ def test_a_blocked_turn_leaves_no_new_version_but_still_answers() -> None:
         assert last["reply"]["outcome"] == "blocked"
     finally:
         app.refine_all = original
+
+
+# ── Banner nháp và nút tải ───────────────────────────────────────────────
+
+def _ordered(at: AppTest) -> list[tuple[str, str]]:
+    """Danh sách phẳng (loại, nhãn) theo đúng thứ tự hiện trên trang."""
+    out = []
+    for element in at.main:
+        label = getattr(element, "label", None)
+        if label is None:
+            label = str(getattr(element, "value", ""))
+        out.append((element.type, str(label)))
+    return out
+
+
+def _tab_slice(at: AppTest, name: str) -> list[tuple[str, str]]:
+    """Chỉ lấy phần tử của MỘT tab.
+
+    `at.main` gộp phẳng cả sáu tab, nên "không còn gì phía sau" tính trên cả
+    danh sách sẽ luôn sai — phần sau là nội dung của tab kế tiếp.
+    """
+    order = _ordered(at)
+    start = next(
+        index for index, (kind, label) in enumerate(order)
+        if kind == "tab" and label == name
+    )
+    later = [
+        index for index, (kind, _) in enumerate(order)
+        if kind == "tab" and index > start
+    ]
+    return order[start : later[0] if later else len(order)]
+
+
+def test_draft_notice_is_no_longer_a_red_block() -> None:
+    """Khối đỏ bỏ theo yêu cầu — nhưng nhãn "bản nháp" phải còn trên màn hình."""
+    from rfp.export import DRAFT_BANNER_TITLE
+
+    at = _app_with_result()
+    reds = " ".join(item.value for item in at.error)
+    assert DRAFT_BANNER_TITLE not in reds
+    captions = " ".join(item.value for item in at.caption)
+    assert DRAFT_BANNER_TITLE in captions
+    assert "Chat review" in captions
+
+
+def test_download_button_sits_at_the_very_bottom_of_the_tab() -> None:
+    """Tải về là việc sau cùng.
+
+    Đặt nút tải ngay đầu trang là mời người dùng tải trước khi đọc bất cứ thứ gì.
+    """
+    order = _tab_slice(_app_with_result(), "Tổng quan")
+    downloads = [
+        index for index, (kind, _) in enumerate(order) if kind == "download_button"
+    ]
+    assert len(downloads) == 1
+    at_index = downloads[0]
+    # Không còn khối nội dung nào phía sau nó TRONG tab này
+    for kind, label in order[at_index + 1 :]:
+        assert kind not in {"subheader", "dataframe", "toggle"}, (kind, label)
+    detail = next(
+        index for index, (_, label) in enumerate(order) if label == "Chi tiết hồ sơ"
+    )
+    assert at_index > detail
+
+
+def test_download_still_refuses_a_draft_the_guard_would_block() -> None:
+    """Không bao giờ mở đường tải cho bản chưa qua guard."""
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app as _app
+        from rfp.guard import GuardViolation
+
+        original = _app.to_markdown
+        _app.to_markdown = lambda *a, **k: (_ for _ in ()).throw(
+            GuardViolation("ISO/IEC 27017")
+        )
+        try:
+            _app.render_download(state)
+        finally:
+            _app.to_markdown = original
+
+    at = _render(body, _state())
+    assert not at.download_button
+    assert any("final guard chặn" in item.value for item in at.error)
