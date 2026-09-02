@@ -3787,3 +3787,44 @@ def test_mapping_table_has_a_shorter_name() -> None:
     headings = [item.value for item in at.subheader]
     assert "Nguồn RFP của từng mục" in headings
     assert "Mỗi mục hồ sơ lấy từ chương nào của RFP" not in headings
+
+
+def test_chat_bubbles_hug_opposite_sides() -> None:
+    """AI bám lề trái, người dùng bám lề phải, không bên nào kéo hết ngang.
+
+    Bong bóng kéo hết bề ngang thì hai bên nhìn giống hệt nhau — chừa lề bên
+    kia mới thấy được ai đang nói.
+    """
+    css = " ".join(item.value for item in _app_with_result(chat_open=True).markdown)
+    assert "max-width: 88%" in css
+    assert "margin-right: auto" in css          # bong bóng AI dạt trái
+    assert "margin-left: auto" in css           # bong bóng người dùng dạt phải
+
+
+def test_chat_input_is_tall_enough_for_an_instruction() -> None:
+    css = " ".join(item.value for item in _app_with_result(chat_open=True).markdown)
+    assert "stChatInputTextArea" in css
+    assert "min-height: 4.5rem" in css
+
+
+def test_suggestions_sit_inside_the_conversation_not_by_the_input() -> None:
+    """Gợi ý là câu trả lời cho câu hỏi ngay trên nó, không phải thanh công cụ.
+
+    Đẩy xuống cạnh ô nhập thì nó tách khỏi câu hỏi vừa được hỏi.
+    """
+    at = _app_with_result(chat_open=True)
+    flat = _ordered(at)
+    question = next(
+        index
+        for index, (_, label) in enumerate(flat)
+        if "Bạn muốn chỉnh phần nào" in label
+    )
+    first_option = next(
+        index
+        for index, (kind, label) in enumerate(flat)
+        if kind == "button" and label.startswith("1. Toàn bộ hồ sơ")
+    )
+    chat_input = next(
+        index for index, (kind, _) in enumerate(flat) if kind == "chat_input"
+    )
+    assert question < first_option < chat_input

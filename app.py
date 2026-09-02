@@ -689,12 +689,21 @@ CHAT_CSS = f"""
     border-radius: 14px;
     background: #1B2129;
     border: 1px solid #2A323C;
+    /* Bong bóng kéo hết bề ngang thì hai bên nhìn giống hệt nhau — phải chừa
+       lề bên kia mới thấy được ai đang nói. */
+    max-width: 88%;
+    width: fit-content;
+    margin-right: auto;
 }}
 [data-testid="stChatMessage"] p {{ margin-bottom: .3rem; }}
+/* Ô nhập một dòng quá thấp cho một câu chỉ thị. */
+[data-testid="stChatInputTextArea"] {{ min-height: 4.5rem !important; }}
 [class*="st-key-chatturn_user"] [data-testid="stChatMessage"] {{
     flex-direction: row-reverse;
     background: #1E6F4C;
     border-color: #2F8F63;
+    margin-left: auto;
+    margin-right: 0;
 }}
 [class*="st-key-chatturn_user"] [data-testid="stChatMessage"] p {{
     color: #EAF6EF;
@@ -1341,8 +1350,10 @@ def render_chat_panel(state: dict[str, Any]) -> None:
                         f"Đang chỉnh **{scope_label(state, scope)}**. "
                         "Chọn một gợi ý hoặc tự gõ chỉ thị."
                     )
-
-    render_chat_options(state, scope)
+        # Gợi ý nằm NGAY DƯỚI câu hỏi vừa hỏi, trong cùng khung hội thoại.
+        # Đẩy xuống cạnh ô nhập thì nó đọc như một thanh công cụ rời, không
+        # phải câu trả lời cho câu hỏi ngay trên.
+        render_chat_options(state, scope)
 
     typed = st.chat_input("Nhập tin nhắn…", key="chat_input")
     pending = st.session_state.pop("chat_pending", None)
