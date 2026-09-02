@@ -1304,6 +1304,7 @@ def test_confidence_table_uses_coverage_vocabulary_of_the_other_tab() -> None:
 # rò rỉ ra ngoài. Lệnh cấm dưới đây vẫn giữ nguyên cho mọi màn còn lại.
 GOLDEN_SCREEN_FUNCTIONS = {
     "render_golden",
+    "render_case_brief",
     "render_golden_coverage",
     "render_golden_picker",
     "load_golden_into_input",
@@ -2132,6 +2133,40 @@ def test_generating_by_criteria_only_makes_what_is_missing() -> None:
     assert {case.metadata["axis"] for case in cases} == {"client_leak"}
     assert all(case.source == "coverage" for case in cases)
     assert not at.exception
+
+
+COLLAPSED_LABEL = 2  # LabelVisibilityMessage.LabelVisibilityOptions.COLLAPSED
+
+
+def test_sidebar_golden_picker_is_labelled_for_a_tester() -> None:
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.run()
+    labels = [item.label for item in at.sidebar.expander]
+    assert "Chọn golden test" in labels
+    # Nhãn "Chọn ca" trên ô select là thừa khi khối đã tên là "Chọn golden test".
+    # Streamlit vẫn giữ label trong cây (cho trình đọc màn hình), nên phải kiểm
+    # đúng cờ ẩn chứ không kiểm chuỗi label.
+    picker = next(
+        item for item in at.sidebar.selectbox if item.key == "golden_picker"
+    )
+    assert picker.proto.label_visibility.value == COLLAPSED_LABEL
+
+
+def test_sidebar_explains_what_the_selected_case_checks() -> None:
+    """Người chấm phải hiểu ca này thử gì mà không cần mở file JSON.
+
+    Dòng cũ ("3 điều kiện · must_cover · must_flag_insufficient") đúng nhưng vô
+    dụng: đọc xong vẫn không biết nhìn vào đâu để chấm.
+    """
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.run()
+    shown = " ".join(item.value for item in at.sidebar.markdown) + " ".join(
+        item.value for item in at.sidebar.caption
+    )
+    assert "Đưa vào" in shown
+    assert "Máy chấm" in shown
+    for jargon in ("must_cover", "must_flag_insufficient", "must_not_contain"):
+        assert jargon not in shown, jargon
 
 
 def test_sidebar_can_load_a_golden_case_into_the_rfp_box() -> None:

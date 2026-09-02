@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c ' *)",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_desc_tests.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"sidebar or golden\")",
+      "Bash(git commit -q -m ' *)"
+    ]
+  }
+}

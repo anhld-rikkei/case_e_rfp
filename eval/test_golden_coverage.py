@@ -216,3 +216,96 @@ def test_current_golden_set_still_has_exactly_one_gap() -> None:
     axes = cov.coverage_report(load_cases())
     gaps = [axis.key for axis in axes if not axis.is_full]
     assert gaps == ["client_leak"]
+
+
+# ── Chú thích ca test: người chấm phải hiểu mà không cần đọc code ─────────
+
+def test_brief_explains_every_assertion_in_plain_words() -> None:
+    """Mỗi điều kiện phải kèm câu yêu cầu gốc và lý do — không để trơ tên kỹ thuật."""
+    from eval.golden.describe import describe_case
+
+    case = _case(
+        "発注業種：金融\n\n第3章 技術要件\n3.1 ネットワーク構築・保守に対応できること。\n"
+        "\n第4章 セキュリティ要件\n4.1 ISO/IEC 27018認証を有すること。\n",
+        [
+            Assertion("must_cover", "3.1", "trong năng lực"),
+            Assertion("must_flag_insufficient", "4.1", "ngoài năng lực"),
+            Assertion("must_not_contain", "ISO/IEC 27018", "không được tuyên bố"),
+        ],
+    )
+    brief = describe_case(case)
+    assert brief.tier == "cấm-sai"
+
+    # Điều kiện phải nhắc lại nguyên văn yêu cầu, không chỉ nói "Mục 4.1"
+    assert "ISO/IEC 27018認証を有すること。" in brief.checks[1].what
+    assert "ネットワーク構築・保守" in brief.checks[0].what
+    # Và phải nói VÌ SAO
+    assert "KHÔNG có chứng chỉ" in brief.checks[2].why
+
+    text = " ".join(check.what + check.why for check in brief.checks)
+    for jargon in ("must_cover", "must_flag_insufficient", "must_not_contain"):
+        assert jargon not in text, jargon
+
+
+def test_brief_summarises_what_goes_in() -> None:
+    from eval.golden.describe import describe_case
+
+    normal = describe_case(
+        _case(
+            "発注業種：金融\n\n第3章 技術要件\n3.1 x。\n",
+            [Assertion("must_cover", "3.1", "r")],
+        )
+    )
+    assert any("金融" in line for line in normal.inputs)
+    assert any("1 yêu cầu" in line for line in normal.inputs)
+
+    # Ca biên: phải nói RÕ là cố ý thiếu, không để người test tưởng lỗi dữ liệu
+    missing = describe_case(
+        _case("第3章 技術要件\n3.1 x。\n", [Assertion("must_cover", "3.1", "r")])
+    )
+    assert any("cố ý" in line for line in missing.inputs)
+
+
+def test_brief_names_the_route_and_ask_targets_in_plain_words() -> None:
+    from eval.golden.describe import describe_case
+
+    brief = describe_case(
+        _case(
+            "第3章 技術要件\n3.1 x。\n",
+            [
+                Assertion("must_ask_user", "industry", "thiếu ngành"),
+                Assertion("must_route", "completed", "vẫn phải chạy xong"),
+                Assertion("must_route", "industry:医療", "giữ đúng ngành"),
+            ],
+        )
+    )
+    what = [check.what for check in brief.checks]
+    assert "業種" in what[0] and "industry" not in what[0]
+    assert "chạy xong" in what[1] and "completed" not in what[1]
+    assert "医療" in what[2]
+
+
+def test_brief_purpose_reads_as_a_sentence_for_every_saved_case() -> None:
+    """Không ca nào rơi vào nhánh mặc định trống rỗng."""
+    from eval.golden.describe import describe_case
+
+    for case in load_cases():
+        brief = describe_case(case)
+        assert brief.purpose.endswith((".", ")")), case.case_id
+        assert brief.tier in {"phổ biến", "biên", "cấm-sai"}, case.case_id
+        assert len(brief.checks) == len(case.assertions)
+        assert "RFP nền" not in brief.purpose, case.case_id
+
+
+def test_leak_check_explains_it_is_a_client_name() -> None:
+    from eval.golden.describe import describe_case
+
+    name = cov.leaked_client_names()[0]
+    brief = describe_case(
+        _case(
+            "発注業種：金融\n\n第3章 技術要件\n3.1 x。\n",
+            [Assertion("must_not_contain", name, "tên khách hàng")],
+        )
+    )
+    assert "khách hàng" in brief.checks[0].why
+    assert "rò rỉ" in brief.checks[0].why

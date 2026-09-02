@@ -29,6 +29,7 @@ from config.settings import (
     COST_PER_1M_INPUT,
     COST_PER_1M_OUTPUT,
 )
+from eval.golden.describe import describe_case
 from eval.golden.coverage import (
     coverage_report,
     report_rows as coverage_rows,
@@ -289,6 +290,27 @@ def render_source_status() -> None:
                 )
 
 
+def render_case_brief(case: GoldenCase) -> None:
+    """Ca này thử cái gì, đưa vào cái gì, máy chấm dựa trên điều gì.
+
+    Dòng “3 điều kiện · must_cover · must_flag_insufficient” trước đây đúng
+    nhưng vô dụng: người test đọc xong vẫn không biết phải nhìn vào đâu để
+    chấm. Mỗi điều kiện giờ kèm câu yêu cầu gốc và lý do nó phải như vậy.
+    """
+    brief = describe_case(case)
+    st.caption(f"**{brief.tier}** · {brief.purpose}")
+    st.markdown("**Đưa vào**")
+    st.markdown("\n".join(f"- {line}" for line in brief.inputs))
+    st.markdown(f"**Máy chấm {len(brief.checks)} điều kiện**")
+    st.markdown(
+        "\n".join(
+            f"- {check.icon} {check.what}  \n  <small>{check.why}</small>"
+            for check in brief.checks
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 def render_golden_picker() -> None:
     """Chạy một ca golden qua ĐÚNG luồng sản phẩm.
 
@@ -296,7 +318,7 @@ def render_golden_picker() -> None:
     thật sự ra cái gì cho một ca biên thì phải nạp nó vào đây và bấm sinh như
     một RFP bình thường.
     """
-    with st.expander("Ca golden test", expanded=False):
+    with st.expander("Chọn golden test", expanded=False):
         cases = [load_case(path) for path in discover_case_files(DEFAULT_GOLDEN_DIR)]
         if not cases:
             st.caption("Chưa có ca nào trong golden set.")
@@ -306,17 +328,13 @@ def render_golden_picker() -> None:
             "Chọn ca",
             list(by_id),
             key="golden_picker",
+            label_visibility="collapsed",
             format_func=lambda case_id: (
                 f"{case_id} · {by_id[case_id].metadata.get('tier', by_id[case_id].source)}"
             ),
         )
+        render_case_brief(by_id[picked])
         case = by_id[picked]
-        st.caption(
-            f"{len(case.assertions)} điều kiện · "
-            + " · ".join(
-                sorted({assertion.kind for assertion in case.assertions})
-            )
-        )
         st.button(
             "Nạp vào ô RFP",
             key="golden_picker_load",
