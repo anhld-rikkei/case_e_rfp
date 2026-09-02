@@ -80,8 +80,10 @@ VERDICT_HINT = {
 # vào" với "chat sửa cách viết nhưng giữ nguồn và số liệu".
 USER_BLOCK_LABEL = "✎ Người dùng bổ sung — chưa kiểm chứng"
 EDITED_LABEL = "✎ đã chỉnh cách viết"
+REPLACED_BLOCK_LABEL = "Người dùng đổi sang nguồn khác — chưa kiểm chứng"
+
 MARK_LEGEND = (
-    "Nền vàng = người dùng bổ sung qua chat, hệ thống chưa kiểm chứng · "
+    "Nền xanh = do người đưa vào hoặc đổi, hệ thống chưa kiểm chứng · "
     "viền trái = chat chỉnh cách viết nhưng giữ nguyên nguồn và số liệu · "
     "không đánh dấu = máy sinh từ căn cứ"
 )

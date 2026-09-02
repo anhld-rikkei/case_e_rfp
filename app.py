@@ -78,6 +78,7 @@ from config.display_vi import (
     MARK_LEGEND,
     NO_EVIDENCE_REASON,
     ORIGIN_HINT,
+    REPLACED_BLOCK_LABEL,
     USER_BLOCK_LABEL,
     SKIP_LEGEND,
     SKIP_REASON_VI,
@@ -711,6 +712,21 @@ CHAT_CSS = f"""
 # hiện thành một cái ô.
 PROPOSAL_CSS = """
 <style>
+/* Thanh trên bám lại khi cuộn: sửa nội dung ở giữa trang mà nút lùi/tiến và
+   nút Chat trôi mất khỏi màn hình thì mỗi lần dùng phải cuộn ngược lên đầu. */
+.st-key-topbar {
+    position: sticky;
+    top: 0;
+    z-index: 40;
+    background: #12161C;
+    padding-top: .4rem;
+}
+[data-testid="stTabs"] > div:first-child {
+    position: sticky;
+    top: 5.2rem;
+    z-index: 39;
+    background: #12161C;
+}
 [data-testid="stPopover"] > div > button {
     background: transparent !important;
     border: none !important;
@@ -1433,12 +1449,13 @@ def render_version_history() -> None:
         + (" · 📌 giữ lại câu ghim" if item.get("restored") else "")
         for item in versions
     ]
-    picked = st.radio(
+    # Dropdown chứ không phải radio trải ngang: mười mấy bản thì hàng radio
+    # đẩy hết nội dung xuống dưới màn hình, cuộn mãi mới tới bản đang đọc.
+    picked = st.selectbox(
         "Bản đang hiển thị (cũng là bản sẽ tải về)",
         range(len(versions)),
         index=index,
         format_func=lambda i: labels[i],
-        horizontal=True,
         key="version_picker",
     )
     if picked != index:
@@ -1486,6 +1503,8 @@ def sentence_mark(sentence: dict[str, Any]) -> str:
     """
     if sentence.get("origin") == "user":
         return "user"
+    if sentence.get("replaced_by_user"):
+        return "replaced"
     if sentence.get("edited_by_chat"):
         return "edited"
     return "plain"
@@ -1726,33 +1745,46 @@ def requirement_labels(state: dict[str, Any], section: dict[str, Any]) -> dict[s
 def requirement_groups(
     state: dict[str, Any], section: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """Câu của mục, gom theo yêu cầu RFP mà câu đó đáp.
+    """Câu của mục, cắt thành CỤM LIÊN TIẾP theo yêu cầu mà chúng đáp.
 
-    Yêu cầu KHÔNG có câu nào đáp vẫn phải xuất hiện — chỗ trống mới là thứ
-    người rà soát cần thấy, ẩn đi thì hồ sơ đọc như đã đủ.
+    Giữ NGUYÊN thứ tự câu trong tài liệu — đây là một bài viết, không phải một
+    bảng tra. Bản trước gom câu vào rổ theo mã yêu cầu rồi sắp lại theo mã và
+    dồn mọi câu không gắn yêu cầu xuống cuối; câu nối vốn nằm GIỮA khối năng
+    lực và khối hồ sơ quá khứ ("các năng lực này được chứng minh bằng thành
+    tích…") bị đẩy xuống sau chính những câu nó dẫn vào, và màn hình khác hẳn
+    thứ tự file xuất ra.
 
-    Chỉ số gốc của câu được giữ kèm: bản dịch khớp theo chỉ số, gom nhóm mà
-    đánh mất chỉ số là hai cột lệch nhau ngay.
+    Yêu cầu KHÔNG có câu nào đáp vẫn phải xuất hiện — xếp ở cuối mục. Chỗ trống
+    mới là thứ người rà soát cần thấy.
+
+    Chỉ số gốc của câu đi kèm: bản dịch khớp theo chỉ số.
     """
     labels = requirement_labels(state, section)
-    buckets: dict[str, list[tuple[int, dict[str, Any]]]] = {
-        req_id: [] for req_id in labels
-    }
-    loose: list[tuple[int, dict[str, Any]]] = []
+    groups: list[dict[str, Any]] = []
+    answered: set[str] = set()
+    current: object = object()
     for index, sentence in enumerate(section.get("sentences", [])):
         req_ids = sentence.get("req_ids") or []
-        if not req_ids:
-            loose.append((index, sentence))
-            continue
-        # Câu đáp nhiều yêu cầu chỉ in MỘT lần, dưới yêu cầu đầu tiên; các mã
-        # còn lại hiện trong ô tra nguồn của chính câu đó.
-        buckets.setdefault(req_ids[0], []).append((index, sentence))
-    groups = [
-        {"req_id": req_id, "text": labels.get(req_id, ""), "items": items}
-        for req_id, items in sorted(buckets.items())
-    ]
-    if loose:
-        groups.append({"req_id": None, "text": "", "items": loose})
+        # Câu đáp nhiều yêu cầu đi theo mã đầu tiên; các mã còn lại hiện trong
+        # ô tra nguồn của chính câu đó.
+        req_id = req_ids[0] if req_ids else None
+        if req_id is not None:
+            answered.add(req_id)
+        if req_id != current:
+            groups.append(
+                {
+                    "req_id": req_id,
+                    "text": labels.get(req_id, "") if req_id else "",
+                    "items": [],
+                }
+            )
+            current = req_id
+        groups[-1]["items"].append((index, sentence))
+    groups.extend(
+        {"req_id": req_id, "text": text, "items": []}
+        for req_id, text in labels.items()
+        if req_id not in answered
+    )
     return groups
 
 
@@ -1770,7 +1802,8 @@ def render_marked_sentences(
             label_line = USER_BLOCK_LABEL + (" · 📌 đã ghim" if pinned else "")
             # icon phải là emoji thật — Streamlit từ chối "✎" (ký tự dingbat).
             # Giữ ✎ trong nhãn chữ để khớp ký hiệu dùng ở file export.
-            st.warning(f"{body}\n\n**{label_line}**", icon="✏️")
+            # Xanh dương = bàn tay người, khác hẳn mọi thứ máy sinh.
+            st.info(f"{body}\n\n**{label_line}**", icon="✏️")
             if allow_unpin:
                 for item_index, item in enumerate(pinned):
                     st.button(
@@ -1783,6 +1816,8 @@ def render_marked_sentences(
                             "câu này."
                         ),
                     )
+        elif mark == "replaced":
+            st.info(f"{body}\n\n**{REPLACED_BLOCK_LABEL}**", icon="🔁")
         elif mark == "edited":
             st.markdown(
                 f"> {body}\n>\n> *{EDITED_LABEL}*"
@@ -1886,7 +1921,11 @@ def render_marked_block(
         st.caption("*(chưa có bản dịch cho phần này)*")
         return
     if mark == "user":
-        st.warning(f"{body}\n\n**{USER_BLOCK_LABEL}{label_suffix}**", icon="✏️")
+        # Xanh dương = do NGƯỜI đưa vào. Khác hẳn màu của mọi thứ máy sinh, nên
+        # lướt qua trang là thấy ngay chỗ nào có bàn tay người.
+        st.info(f"{body}\n\n**{USER_BLOCK_LABEL}{label_suffix}**", icon="✏️")
+    elif mark == "replaced":
+        st.info(f"{body}\n\n**{REPLACED_BLOCK_LABEL}{label_suffix}**", icon="🔁")
     elif mark == "edited":
         st.markdown(f"> {body}\n>\n> *{EDITED_LABEL}*")
     else:
@@ -4167,16 +4206,22 @@ def main() -> None:
     text, submitted = sidebar_controls()
     # Nút Chat đặt cạnh tiêu đề, không nằm lẫn trong thân hồ sơ: muốn chat thì
     # bấm được ngay, không phải cuộn đi tìm.
-    title_left, title_history, title_right = st.columns(
-        [4, 1, 1], vertical_alignment="center"
-    )
-    with title_left:
-        st.title("RFP Proposal Studio")
-        st.caption("Sinh hồ sơ thầu tiếng Nhật, mỗi câu đều truy được về nguồn")
-    with title_history:
-        render_history_buttons()
-    with title_right:
-        render_chat_toggle()
+    # CSS ghim thanh trên nằm trong PROPOSAL_CSS, mà khối đó chỉ được nhả khi
+    # đã có hồ sơ. Nhả thêm ở đây để thanh trên bám ngay từ lúc chưa sinh gì.
+    st.markdown(PROPOSAL_CSS, unsafe_allow_html=True)
+    with st.container(key="topbar"):
+        title_left, title_history, title_right = st.columns(
+            [4, 1, 1], vertical_alignment="center"
+        )
+        with title_left:
+            st.title("RFP Proposal Studio")
+            st.caption(
+                "Sinh hồ sơ thầu tiếng Nhật, mỗi câu đều truy được về nguồn"
+            )
+        with title_history:
+            render_history_buttons()
+        with title_right:
+            render_chat_toggle()
     tabs = st.tabs(
         [
             "Tổng quan",

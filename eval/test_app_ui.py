@@ -664,7 +664,7 @@ def test_adjacent_user_sentences_group_into_one_block() -> None:
     assert len(groups[1][1]) == 2
 
 
-def test_user_block_renders_with_warning_and_label() -> None:
+def test_user_block_renders_in_blue_with_its_label() -> None:
     from config.display_vi import USER_BLOCK_LABEL
 
     def body(root):
@@ -687,11 +687,12 @@ def test_user_block_renders_with_warning_and_label() -> None:
 
     at = _render(body)
     assert not at.exception
-    warnings = " ".join(item.value for item in at.warning)
-    assert "người dùng thêm" in warnings
-    assert USER_BLOCK_LABEL in warnings
-    # Câu máy sinh KHÔNG nằm trong vùng vàng
-    assert "máy sinh" not in warnings
+    # Nền XANH: bàn tay người, khác hẳn màu của mọi thứ máy sinh
+    blocks = " ".join(item.value for item in at.info)
+    assert "người dùng thêm" in blocks
+    assert USER_BLOCK_LABEL in blocks
+    # Câu máy sinh KHÔNG nằm trong vùng xanh
+    assert "máy sinh" not in blocks
 
 
 def test_edited_sentence_marked_more_lightly_than_user() -> None:
@@ -808,8 +809,8 @@ def test_pinned_user_block_shows_pin_icon() -> None:
         )
 
     at = _render(body, _pinned_state())
-    warnings = " ".join(item.value for item in at.warning)
-    assert "📌" in warnings
+    blocks = " ".join(item.value for item in at.info)
+    assert "📌" in blocks
 
 
 def test_unpin_button_appears_only_where_allowed() -> None:
@@ -846,8 +847,8 @@ def test_full_proposal_renders_every_section_with_marks() -> None:
     assert not at.exception
     text = " ".join(item.value for item in at.markdown)
     assert "技術要件への対応" in text  # tiêu đề mục
-    warnings = " ".join(item.value for item in at.warning)
-    assert "BIツールとPL-300資格で対応します。" in warnings  # vùng vàng user
+    blocks = " ".join(item.value for item in at.info)
+    assert "BIツールとPL-300資格で対応します。" in blocks  # vùng xanh: người thêm
 
 
 def test_version_label_marks_lineage_when_branching() -> None:
@@ -1158,9 +1159,9 @@ def test_translated_column_keeps_user_label() -> None:
 
     at = _render(body, state)
     assert not at.exception
-    warnings = [item.value for item in at.warning]
-    # Vùng vàng xuất hiện ở CẢ HAI cột, mỗi bên mang nhãn ✎
-    user_blocks = [text for text in warnings if "Người dùng bổ sung" in text]
+    # Vùng XANH (bàn tay người) xuất hiện ở CẢ HAI cột, mỗi bên mang nhãn ✎
+    notes = [item.value for item in at.info]
+    user_blocks = [text for text in notes if "Người dùng bổ sung" in text]
     assert len(user_blocks) == 2
     assert any("người dùng thêm" in text for text in user_blocks)
     assert any("Câu dịch 3." in text for text in user_blocks)
@@ -3174,9 +3175,12 @@ def test_sentences_are_grouped_under_the_requirement_they_answer() -> None:
     assert by_id["3.1"]["items"]
     assert by_id["3.2"]["items"] == []
     assert by_id["3.2"]["text"]  # nguyên văn yêu cầu, không chỉ mã
-    # Câu không gắn yêu cầu nào xếp cuối, không bị bỏ rơi
-    assert groups[-1]["req_id"] is None
-    assert groups[-1]["items"]
+    # Thứ tự tài liệu được giữ nguyên: cụm câu đi theo đúng thứ tự câu, và
+    # yêu cầu CHƯA có câu nào đáp mới là thứ xếp cuối.
+    assert groups[-1]["req_id"] == "3.2"
+    assert groups[-1]["items"] == []
+    positions = [index for group in groups for index, _ in group["items"]]
+    assert positions == sorted(positions)
 
 
 def test_a_requirement_with_no_sentence_is_shown_not_hidden() -> None:
@@ -3647,3 +3651,46 @@ def test_undo_keeps_the_version_picker_in_step() -> None:
     at.button(key="undo_button").click().run()
     assert at.session_state["version_index"] == 1
     assert at.session_state["version_picker"] == 1
+
+
+def test_human_touched_sentences_are_blue_not_yellow() -> None:
+    """Vàng đã dùng cho cảnh báo của mục; người sửa phải có màu RIÊNG.
+
+    Lướt qua trang phải thấy ngay chỗ nào có bàn tay người — cả câu tự thêm
+    lẫn câu đổi sang nguồn khác.
+    """
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_marked_sentences(
+            [
+                {"text": "người thêm", "origin": "user", "verdict": "USER_PROVIDED"},
+                {
+                    "text": "người đổi nguồn",
+                    "origin": "precedent",
+                    "replaced_by_user": True,
+                    "verdict": "UNVERIFIABLE",
+                },
+            ]
+        )
+
+    at = _render(body)
+    assert not at.exception
+    blocks = " ".join(item.value for item in at.info)
+    assert "người thêm" in blocks
+    assert "người đổi nguồn" in blocks
+    assert not at.warning
+
+
+def test_sentence_mark_separates_added_from_replaced() -> None:
+    import app
+
+    assert app.sentence_mark({"origin": "user"}) == "user"
+    assert (
+        app.sentence_mark({"origin": "precedent", "replaced_by_user": True})
+        == "replaced"
+    )
+    assert app.sentence_mark({"origin": "precedent"}) == "plain"

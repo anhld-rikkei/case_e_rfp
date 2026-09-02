@@ -87,7 +87,17 @@
       "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_replace_tests.py\")",
       "Bash(python -m pytest eval/test_app_ui.py -q -k \"undo_and_redo_walk or source_scores_are_available or still_traceable\")",
       "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/fix_three.py\")",
-      "Bash(python -m pytest eval/test_app_ui.py -q -k \"undo_and_redo_walk or undo_is_disabled\")"
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"undo_and_redo_walk or undo_is_disabled\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_order.py\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_order2.py\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_sticky.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"source_scores_are_available\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/redo.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"translated_column_keeps_user_label\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/fix_user_blue.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"user_block_renders or pinned_user_block or full_proposal_renders\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/fix_blue_tests.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"user_block_renders_in_blue\")"
     ]
   }
 }
