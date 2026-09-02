@@ -271,18 +271,26 @@ RETRIEVAL_STAGE_VI = {
 # ── Ghi chú mục (coverage.py sinh ra bằng tiếng Nhật) ─────────────────────
 # Ba câu ATTRIBUTE_ONLY là chuỗi cố định trong `assess_coverage`, khớp nguyên
 # văn được. Ghi chú lạ thì giữ nguyên tiếng Nhật, không đoán.
+# Mỗi ghi chú nói HAI phần: máy đã làm gì, và điều đó nghĩa là gì với hồ sơ.
+# Bản trước chỉ có phần đầu ("bỏ qua bước tìm trong hồ sơ cũ") — đúng nhưng
+# người đọc không rút ra được phải làm gì tiếp.
 SECTION_NOTE_VI = {
     "RFPに対応する原章がないため、能力表のみで構成しました。": (
-        "RFP không có chương tương ứng, nên mục này chỉ dựng từ bảng năng lực "
-        "công ty."
+        "RFP không có chương nào ứng với mục này, nên mục được dựng hoàn toàn "
+        "từ bảng năng lực công ty. **Không có yêu cầu cụ thể nào để đối chiếu** "
+        "— cần người đọc lại xem nội dung có hợp với gói thầu này không."
     ),
     "属性の完全一致により検索を省略し、能力表のみで回答しました。": (
-        "Mọi yêu cầu khớp thẳng bảng năng lực nên bỏ qua bước tìm trong hồ sơ "
-        "cũ."
+        "Mọi yêu cầu của mục này trùng đúng một năng lực công ty đang có, nên "
+        "hệ thống trả lời thẳng từ bảng năng lực và **không đi tìm trong hồ sơ "
+        "quá khứ** (tìm cũng không cho câu đúng hơn). Hệ quả: câu trả lời là "
+        "năng lực chung, **chưa có ví dụ dự án thật kèm số liệu** — muốn "
+        "thuyết phục hơn thì người viết bổ sung một dự án cụ thể."
     ),
     "参照可能な先行事例がないため、能力表のみで回答しました。": (
-        "Không có hồ sơ quá khứ nào dùng được, nên chỉ trả lời bằng bảng năng "
-        "lực công ty."
+        "Đã tìm trong hồ sơ quá khứ nhưng **không câu nào đủ sát** để dùng, nên "
+        "mục chỉ trả lời bằng bảng năng lực công ty. Hệ quả: chưa có ví dụ dự "
+        "án thật kèm số liệu."
     ),
 }
 
