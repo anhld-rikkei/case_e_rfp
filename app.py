@@ -496,12 +496,16 @@ def render_download(state: dict[str, Any]) -> None:
         # Không bao giờ mở đường tải cho bản chưa qua guard.
         st.error(f"Không xuất được: final guard chặn — {violation}")
         return
-    st.download_button(
-        "⬇ Tải file (.md)",
-        data=markdown.encode("utf-8"),
-        file_name=export_filename(state),
-        mime="text/markdown",
-    )
+    # Căn phải: nút cuối trang, không phải một khối nội dung.
+    spacer, action = st.columns([4, 1])
+    with action:
+        st.download_button(
+            "⬇ Tải file (.md)",
+            data=markdown.encode("utf-8"),
+            file_name=export_filename(state),
+            mime="text/markdown",
+            width="stretch",
+        )
 
 
 def parse_evidence_note(note: str) -> list[dict[str, str]]:
@@ -676,6 +680,20 @@ CHAT_CSS = f"""
 }}
 .chat-dock-handle:hover, .chat-dock-handle.dragging {{ background: #2F8F63; }}
 
+/* Câu văn là nút bấm để tra nguồn — nên nó phải TRÔNG như câu văn. Hỏng CSS
+   thì tệ nhất là nó giống một cái nút, vẫn bấm được, vẫn ra nguồn. */
+[data-testid="stPopoverButton"] {{
+    background: transparent !important;
+    border: none !important;
+    padding: .15rem 0 !important;
+    text-align: left !important;
+    font-weight: 400 !important;
+    justify-content: flex-start !important;
+}}
+[data-testid="stPopoverButton"]:hover {{
+    background: #1B2129 !important;
+    text-decoration: underline dotted;
+}}
 [data-testid="stChatMessage"] {{
     padding: .7rem .9rem;
     margin-bottom: .5rem;
@@ -684,7 +702,21 @@ CHAT_CSS = f"""
     border: 1px solid #2A323C;
 }}
 [data-testid="stChatMessage"] p {{ margin-bottom: .3rem; }}
-[class*="st-key-chatturn_user"] [data-testid="stChatMessage"] {{
+[class*="st-key-chatturn_user"] /* Câu văn là nút bấm để tra nguồn — nên nó phải TRÔNG như câu văn. Hỏng CSS
+   thì tệ nhất là nó giống một cái nút, vẫn bấm được, vẫn ra nguồn. */
+[data-testid="stPopoverButton"] {{
+    background: transparent !important;
+    border: none !important;
+    padding: .15rem 0 !important;
+    text-align: left !important;
+    font-weight: 400 !important;
+    justify-content: flex-start !important;
+}}
+[data-testid="stPopoverButton"]:hover {{
+    background: #1B2129 !important;
+    text-decoration: underline dotted;
+}}
+[data-testid="stChatMessage"] {{
     flex-direction: row-reverse;
     background: #1E6F4C;
     border-color: #2F8F63;
@@ -1435,22 +1467,71 @@ def sentence_source(state: dict[str, Any], text: str) -> dict[str, str] | None:
 def render_source_lookup(
     state: dict[str, Any] | None, text: str, *, key: str
 ) -> None:
-    """Kính lúp: bấm là hiện đúng nguồn của CÂU ĐÓ, ngay cạnh nó.
+    """Chính CÂU đó là nút: bấm vào câu là hiện nguồn của nó.
 
-    Trước đây muốn đối chiếu phải sang tab khác rồi tự dò lại câu trong bảng —
-    đọc tới câu nào cũng phải rời trang một lần.
+    Bản trước để một nút kính lúp riêng ở cuối câu — thêm một thứ phải nhắm
+    trúng, trong khi thứ người đọc đang nhìn chính là câu văn.
     """
     if state is None:
+        st.write(text)
         return
     row = sentence_source(state, text)
     if row is None:
+        st.write(text)
         return
-    with st.popover("🔍", help="Xem nguồn của câu này"):
-        st.markdown(f"**Câu:** {row['Câu (tiếng Nhật)']}")
+    with st.popover(text, width="stretch"):
         st.markdown(f"**Nguồn:** {row['Nguồn']}")
         st.markdown(f"**Mã nguồn:** `{row['Mã nguồn']}`")
         st.markdown(f"**Kiểm chứng:** {row['Kiểm chứng']}")
         st.markdown(f"**Cách lấy nguồn:** {row['Cách lấy nguồn']}")
+        if row["_req_ids"]:
+            st.markdown(f"**Đáp ứng yêu cầu:** {' · '.join(row['_req_ids'])}")
+
+
+def requirement_labels(state: dict[str, Any], section: dict[str, Any]) -> dict[str, str]:
+    """Mã yêu cầu -> nguyên văn yêu cầu, lấy từ các chương RFP nuôi mục này."""
+    chapters = {chapter["id"]: chapter for chapter in state.get("chapters", [])}
+    labels: dict[str, str] = {}
+    for chapter_id in section.get("source_chapters", []):
+        chapter = chapters.get(chapter_id)
+        if not chapter:
+            continue
+        for requirement in chapter.get("requirements", []):
+            labels[requirement["req_id"]] = requirement.get("text", "")
+    return labels
+
+
+def requirement_groups(
+    state: dict[str, Any], section: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Câu của mục, gom theo yêu cầu RFP mà câu đó đáp.
+
+    Yêu cầu KHÔNG có câu nào đáp vẫn phải xuất hiện — chỗ trống mới là thứ
+    người rà soát cần thấy, ẩn đi thì hồ sơ đọc như đã đủ.
+
+    Chỉ số gốc của câu được giữ kèm: bản dịch khớp theo chỉ số, gom nhóm mà
+    đánh mất chỉ số là hai cột lệch nhau ngay.
+    """
+    labels = requirement_labels(state, section)
+    buckets: dict[str, list[tuple[int, dict[str, Any]]]] = {
+        req_id: [] for req_id in labels
+    }
+    loose: list[tuple[int, dict[str, Any]]] = []
+    for index, sentence in enumerate(section.get("sentences", [])):
+        req_ids = sentence.get("req_ids") or []
+        if not req_ids:
+            loose.append((index, sentence))
+            continue
+        # Câu đáp nhiều yêu cầu chỉ in MỘT lần, dưới yêu cầu đầu tiên; các mã
+        # còn lại hiện trong ô tra nguồn của chính câu đó.
+        buckets.setdefault(req_ids[0], []).append((index, sentence))
+    groups = [
+        {"req_id": req_id, "text": labels.get(req_id, ""), "items": items}
+        for req_id, items in sorted(buckets.items())
+    ]
+    if loose:
+        groups.append({"req_id": None, "text": "", "items": loose})
+    return groups
 
 
 def render_marked_sentences(
@@ -1486,16 +1567,11 @@ def render_marked_sentences(
             )
         else:
             for item_index, item in enumerate(group):
-                text = item.get("text", "")
-                body_column, lookup_column = st.columns([20, 1])
-                with body_column:
-                    st.write(text)
-                with lookup_column:
-                    render_source_lookup(
-                        state,
-                        text,
-                        key=f"look_{section_key}_{group_index}_{item_index}",
-                    )
+                render_source_lookup(
+                    state,
+                    item.get("text", ""),
+                    key=f"look_{section_key}_{group_index}_{item_index}",
+                )
 
 
 def render_full_proposal(state: dict[str, Any], *, allow_unpin: bool = False) -> None:
@@ -1597,6 +1673,14 @@ def render_marked_block(
                 st.write(line)
 
 
+def render_requirement_heading(group: dict[str, Any]) -> None:
+    """Nhãn yêu cầu đứng trên cụm câu đáp nó."""
+    if group["req_id"] is None:
+        st.caption("Câu chung của mục — không gắn yêu cầu cụ thể")
+        return
+    st.markdown(f"`{group['req_id']}` **{group['text']}**")
+
+
 def render_bilingual_proposal(
     state: dict[str, Any],
     *,
@@ -1605,16 +1689,32 @@ def render_bilingual_proposal(
 ) -> None:
     """Hồ sơ tiếng Nhật, kèm bản dịch song song theo TỪNG MỤC khi được bật.
 
-    Dịch **theo yêu cầu**: chỉ gọi LLM khi người dùng bật công tắc, không dịch
-    tự động sau mỗi lượt chat. Cache băm nội dung lo phần trùng lặp, nên bật/tắt
-    hay quay lại một phiên bản cũ đều không tốn thêm lệnh gọi.
+    Trong mỗi mục, câu được gom theo YÊU CẦU RFP mà nó đáp (2.1, 2.2…), và yêu
+    cầu chưa có câu nào đáp vẫn hiện — chỗ trống mới là thứ người rà soát cần
+    thấy, ẩn đi thì hồ sơ đọc như đã đủ.
+
+    Dịch **theo yêu cầu**: chỉ gọi LLM khi người dùng bật công tắc. Cache băm
+    nội dung lo phần trùng lặp, nên bật/tắt hay quay lại một phiên bản cũ đều
+    không tốn thêm lệnh gọi.
     """
     sections = state.get("sections", [])
-    show = st.toggle(
-        "Hiện bản dịch tiếng Việt",
-        key=f"{key_prefix}_bilingual",
-        help="Dịch bản đang hiển thị để đối chiếu. Bản nộp vẫn là bản tiếng Nhật.",
+    heading_column, toggle_column = st.columns([3, 2], vertical_alignment="center")
+    with heading_column:
+        st.subheader("Chi tiết")
+    with toggle_column:
+        show = st.toggle(
+            "Hiện bản dịch tiếng Việt",
+            key=f"{key_prefix}_bilingual",
+            help="Dịch bản đang hiển thị để đối chiếu. Bản nộp vẫn là bản tiếng Nhật.",
+        )
+    render_mark_legend(
+        [
+            sentence
+            for section in sections
+            for sentence in section.get("sentences", [])
+        ]
     )
+
     translated_sections: list[list[str]] = []
     if show:
         with st.spinner("Đang dịch bản đang hiển thị…"):
@@ -1641,8 +1741,7 @@ def render_bilingual_proposal(
 
         if show:
             # Tên mục tiếng Việt nằm ở CỘT PHẢI, thẳng hàng với tên tiếng Nhật
-            # bên trái — cùng quy ước với phần thân, nên nhìn một cái là biết
-            # bên nào là bản dịch.
+            # bên trái — cùng quy ước với phần thân.
             title_left, title_right = st.columns(2)
             with title_left:
                 st.markdown(title, help=status_help)
@@ -1651,41 +1750,51 @@ def render_bilingual_proposal(
         else:
             st.markdown(title, help=status_help)
 
-        # Ghi chú và cảnh báo thiếu căn cứ nói về CẢ MỤC, không thuộc bên nào,
-        # nên chiếm hết bề ngang thay vì nằm trong một cột.
+        # Ghi chú nói về CẢ MỤC, không thuộc bên nào, nên chiếm hết bề ngang.
         render_section_note(state, section)
 
-        if not show:
-            render_marked_sentences(
-                sentences,
-                section_key=section["key"],
-                allow_unpin=allow_unpin,
-                state=state,
-            )
-            continue
-
-        # Hai cột: chia theo TỪNG NHÓM đánh dấu, nên vùng vàng "người dùng bổ
-        # sung" nằm cùng hàng ở cả hai ngôn ngữ.
-        chunks = align_translation(sentences, vi_lines)
-        position = 0
-        for group_index, (mark, group) in enumerate(group_by_mark(sentences)):
-            vi_chunk = [
-                line
-                for offset in range(position, position + len(group))
-                if offset < len(chunks)
-                for line in chunks[offset]
-            ]
-            position += len(group)
-            left, right = st.columns(2)
-            with left:
+        chunks = align_translation(sentences, vi_lines) if show else []
+        for group in requirement_groups(state, section):
+            render_requirement_heading(group)
+            if not group["items"]:
+                st.caption("⛔ Chưa có câu nào đáp yêu cầu này.")
+                continue
+            group_sentences = [sentence for _, sentence in group["items"]]
+            if not show:
                 render_marked_sentences(
-                    group,
+                    group_sentences,
                     section_key=section["key"],
-                    allow_unpin=allow_unpin and mark == "user",
+                    allow_unpin=allow_unpin,
                     state=state,
                 )
-            with right:
-                render_marked_block(mark, vi_chunk)
+                continue
+            # Hai cột: chia theo TỪNG NHÓM đánh dấu, nên vùng vàng "người dùng
+            # bổ sung" nằm cùng hàng ở cả hai ngôn ngữ.
+            position = 0
+            for group_index, (mark, marked) in enumerate(
+                group_by_mark(group_sentences)
+            ):
+                indexes = [
+                    group["items"][offset][0]
+                    for offset in range(position, position + len(marked))
+                ]
+                position += len(marked)
+                vi_chunk = [
+                    line
+                    for offset in indexes
+                    if offset < len(chunks)
+                    for line in chunks[offset]
+                ]
+                left, right = st.columns(2)
+                with left:
+                    render_marked_sentences(
+                        marked,
+                        section_key=f"{section['key']}_{group['req_id']}_{group_index}",
+                        allow_unpin=allow_unpin and mark == "user",
+                        state=state,
+                    )
+                with right:
+                    render_marked_block(mark, vi_chunk)
         st.divider()
 
 
@@ -1711,14 +1820,6 @@ def render_proposal_body(state: dict[str, Any]) -> None:
     render_mapping(state)
     st.divider()
 
-    st.subheader("Chi tiết")
-    render_mark_legend(
-        [
-            sentence
-            for section in state.get("sections", [])
-            for sentence in section["sentences"]
-        ]
-    )
     render_bilingual_proposal(state, key_prefix="detail")
     render_version_history()
     render_download(state)
@@ -1830,6 +1931,34 @@ def render_confidence(state: dict[str, Any]) -> None:
         st.caption(
             "x/y = trong y yêu cầu RFP giao cho mục này, x đã có căn cứ thật."
         )
+    render_requirement_table(state)
+
+
+def render_requirement_table(state: dict[str, Any]) -> None:
+    """Cùng dữ liệu, nhưng một dòng cho MỘT yêu cầu RFP.
+
+    Bảng theo mục chỉ nói "đáp ứng 1/4" — muốn biết ba yêu cầu còn lại là gì
+    thì phải đọc phần đuôi của ô đó. Bảng này gọi tên từng yêu cầu và nói ngay
+    có mấy câu đang đáp nó.
+    """
+    rows = [
+        {
+            "Mục": section["title_ja"],
+            "Yêu cầu": group["req_id"] or "—",
+            "Nội dung yêu cầu": group["text"] or "(câu chung của mục)",
+            "Số câu đáp": len(group["items"]),
+            "Tình trạng": (
+                "🟢 đã có câu đáp" if group["items"] else "🔴 chưa có căn cứ"
+            ),
+        }
+        for section in state.get("sections", [])
+        for group in requirement_groups(state, section)
+        if group["req_id"] is not None
+    ]
+    if not rows:
+        return
+    with st.expander(f"Theo từng yêu cầu RFP — {len(rows)} yêu cầu", expanded=False):
+        st.dataframe(rows, width="stretch", hide_index=True)
 
 
 def render_related_sources(state: dict[str, Any], section: dict[str, Any]) -> None:
@@ -1847,17 +1976,26 @@ def render_related_sources(state: dict[str, Any], section: dict[str, Any]) -> No
             continue
         for item in related_sources(chapter.get("retrieval", {})):
             items.append({**item, "_chapter": chapter_id})
+    # Điểm 0 nghĩa là KHÔNG liên quan chút nào — liệt kê chúng dưới nhãn "có
+    # thể liên quan" là mời người rà soát đi tra một chỗ chắc chắn không có gì.
+    items = [
+        item
+        for item in items
+        if float((item.get("scores") or {}).get("rerank", 0.0)) > 0
+    ]
     if not items:
         return
+    items.sort(key=lambda item: -float((item.get("scores") or {}).get("rerank", 0.0)))
     items = items[:RELATED_SOURCES_TOP_N]
     with st.expander(
-        f"🔎 {len(items)} nguồn có thể liên quan — **không phải câu trả lời**",
+        f"🔎 {len(items)} câu trong hồ sơ cũ có nhắc tới chuyện tương tự",
         expanded=False,
     ):
         st.caption(
-            "Những câu này đã bị loại ở bước chọn nguồn vì không đủ liên quan. "
-            "Hệ thống **không** dùng chúng để viết hồ sơ; liệt kê ở đây chỉ để "
-            "người bổ sung có chỗ bắt đầu tra."
+            "**Không phải câu trả lời.** Hệ thống đã loại chúng ở bước chọn "
+            "nguồn vì chưa đủ sát yêu cầu, và **không** dùng để viết hồ sơ. "
+            "Liệt kê ở đây để người bổ sung có chỗ bắt đầu tra. Điểm càng cao "
+            "thì càng sát yêu cầu (thang 0–1)."
         )
         st.dataframe(
             [
@@ -1865,8 +2003,8 @@ def render_related_sources(state: dict[str, Any], section: dict[str, Any]) -> No
                     "Chương": item["_chapter"],
                     "Mã câu": item.get("sent_id"),
                     "Câu (tiếng Nhật)": item.get("text"),
-                    "Điểm": round(
-                        float((item.get("scores") or {}).get("rerank", 0.0)), 4
+                    "Điểm sát yêu cầu": round(
+                        float((item.get("scores") or {}).get("rerank", 0.0)), 3
                     ),
                 }
                 for item in items
@@ -2017,6 +2155,7 @@ def sentence_rows(state: dict[str, Any]) -> list[dict[str, str]]:
             ).strip(),
             "_origin": sentence["origin"],
             "_verdict": sentence["verdict"],
+            "_req_ids": list(sentence.get("req_ids") or []),
         }
         for section in state.get("sections", [])
         for sentence in section["sentences"]

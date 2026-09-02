@@ -146,6 +146,11 @@ def test_submit_button_is_vietnamese() -> None:
 
 # ── Các bảng dùng tiêu đề cột tiếng Việt ──────────────────────────────────
 
+def _sentence_buttons(at: AppTest) -> list[str]:
+    """Câu văn giờ CHÍNH LÀ nút bấm tra nguồn — nhãn nằm ở proto."""
+    return [item.proto.popover.label for item in at.get("popover")]
+
+
 def _columns_of(at: AppTest) -> list[list[str]]:
     return [list(frame.value.columns) for frame in at.dataframe]
 
@@ -188,7 +193,11 @@ def test_internal_keys_never_reach_the_source_lookup() -> None:
         "Kiểm chứng",
     }
     assert shown <= set(row)
-    assert {key for key in row if key.startswith("_")} == {"_origin", "_verdict"}
+    assert {key for key in row if key.startswith("_")} == {
+        "_origin",
+        "_verdict",
+        "_req_ids",
+    }
 
     def body(root, state, text):
         import sys as _s
@@ -233,9 +242,8 @@ def test_japanese_proposal_text_is_not_translated() -> None:
         item.value for item in list(at.markdown) + list(at.caption)
     )
     assert "技術要件への対応" in rendered  # tiêu đề mục giữ tiếng Nhật
-    assert "基幹システム構築の実績があります。" in " ".join(
-        item.value for item in at.markdown
-    )
+    # Câu hồ sơ giữ nguyên tiếng Nhật; nó là nhãn của nút tra nguồn.
+    assert "基幹システム構築の実績があります。" in _sentence_buttons(at)
     # Trạng thái đi cùng tiêu đề dưới dạng chấm màu; chữ nằm ở tooltip, và
     # bảng "Kết quả" ngay trên đã ghi rõ bằng chữ cho từng mục.
     title = next(
@@ -1427,10 +1435,16 @@ def test_related_sources_block_says_it_is_not_an_answer() -> None:
     at = _render(body, state, section)
     assert not at.exception
     captions = " ".join(item.value for item in at.caption)
-    assert "không đủ liên quan" in captions
-    assert "**không** dùng chúng" in captions
-    assert any(list(f.value.columns) == ["Chương", "Mã câu", "Câu (tiếng Nhật)", "Điểm"]
-               for f in at.dataframe)
+    assert "Không phải câu trả lời" in captions
+    assert "chưa đủ sát yêu cầu" in captions
+    assert "**không** dùng để viết hồ sơ" in captions
+    # Thang điểm phải nói ra, nếu không thì con số 0.4 không đọc được thành gì
+    assert "0–1" in captions
+    assert any(
+        list(frame.value.columns)
+        == ["Chương", "Mã câu", "Câu (tiếng Nhật)", "Điểm sát yêu cầu"]
+        for frame in at.dataframe
+    )
 
 
 def test_related_sources_silent_when_nothing_left() -> None:
@@ -3010,11 +3024,11 @@ def test_sidebar_upload_still_fills_the_rfp_box() -> None:
 
 # ── Tra nguồn ngay tại câu ────────────────────────────────────────────────
 
-def test_every_sentence_gets_a_magnifier_to_its_source() -> None:
-    """Đọc tới câu nào tra được ngay câu đó, không phải rời trang.
+def test_the_sentence_itself_is_the_button() -> None:
+    """Bấm vào câu là ra nguồn — không còn nút kính lúp riêng.
 
-    Trước đây muốn đối chiếu phải sang tab "Nguồn từng câu" rồi tự dò lại câu
-    trong bảng — đọc tới câu nào cũng phải rời trang một lần.
+    Nút riêng ở cuối câu là thêm một thứ phải nhắm trúng, trong khi thứ người
+    đọc đang nhìn chính là câu văn.
     """
     state = _state()
 
@@ -3028,16 +3042,13 @@ def test_every_sentence_gets_a_magnifier_to_its_source() -> None:
 
     at = _render(body, state)
     assert not at.exception
-    # Mỗi câu máy sinh một kính lúp
     plain = [
-        sentence
+        sentence["text"]
         for section in state["sections"]
         for sentence in section["sentences"]
     ]
-    assert len(at.get("popover")) == len(plain)
-    shown = " ".join(item.value for item in at.markdown)
-    for sentence in plain:
-        assert f"**Câu:** {sentence['text']}" in shown
+    assert _sentence_buttons(at) == plain
+    assert "🔍" not in " ".join(item.label for item in at.button)
 
 
 def test_the_lookup_shows_the_same_fields_the_old_tab_did() -> None:
@@ -3055,6 +3066,7 @@ def test_the_lookup_shows_the_same_fields_the_old_tab_did() -> None:
         _app.render_source_lookup(state, text, key="k")
 
     at = _render(body, state, text)
+    assert _sentence_buttons(at) == [text]
     shown = " ".join(item.value for item in at.markdown)
     row = app.sentence_source(state, text)
     for field in ("Nguồn", "Mã nguồn", "Kiểm chứng", "Cách lấy nguồn"):
@@ -3076,6 +3088,10 @@ def test_lookup_is_silent_for_a_sentence_it_cannot_place() -> None:
     at = _render(body, _state())
     assert not at.exception
     assert not at.get("popover")
+    # Không tra được nguồn thì vẫn phải in câu ra, đừng nuốt mất nội dung
+    written = " ".join(item.value for item in at.markdown)
+    assert "câu không có trong hồ sơ" in written
+    assert "bất kỳ" in written
 
 
 def test_source_tab_is_gone() -> None:
@@ -3083,3 +3099,126 @@ def test_source_tab_is_gone() -> None:
     at.run()
     assert not at.exception
     assert "Nguồn từng câu" not in [tab.label for tab in at.tabs]
+
+
+# ── Bóc tách theo từng yêu cầu RFP ───────────────────────────────────────
+
+def test_sentences_are_grouped_under_the_requirement_they_answer() -> None:
+    import app
+
+    state = _state()
+    groups = app.requirement_groups(state, state["sections"][0])
+    by_id = {group["req_id"]: group for group in groups}
+    # 3.1 có câu đáp, 3.2 không — cả hai đều phải có mặt
+    assert by_id["3.1"]["items"]
+    assert by_id["3.2"]["items"] == []
+    assert by_id["3.2"]["text"]  # nguyên văn yêu cầu, không chỉ mã
+    # Câu không gắn yêu cầu nào xếp cuối, không bị bỏ rơi
+    assert groups[-1]["req_id"] is None
+    assert groups[-1]["items"]
+
+
+def test_a_requirement_with_no_sentence_is_shown_not_hidden() -> None:
+    """Chỗ trống mới là thứ người rà soát cần thấy."""
+    state = _state()
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_bilingual_proposal(state, key_prefix="gap")
+
+    at = _render(body, state)
+    assert not at.exception
+    shown = " ".join(item.value for item in list(at.markdown) + list(at.caption))
+    assert "`3.1`" in shown and "`3.2`" in shown
+    assert "Chưa có câu nào đáp yêu cầu này" in shown
+
+
+def test_grouping_keeps_the_original_index_for_translation_alignment() -> None:
+    """Gom nhóm mà đánh mất chỉ số gốc là hai cột lệch nhau ngay."""
+    import app
+
+    state = _state()
+    groups = app.requirement_groups(state, state["sections"][0])
+    seen = sorted(index for group in groups for index, _ in group["items"])
+    assert seen == list(range(len(state["sections"][0]["sentences"])))
+
+
+def test_result_block_also_breaks_down_per_requirement() -> None:
+    state = _scored_state()
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_confidence(state)
+
+    at = _render(body, state)
+    assert not at.exception
+    columns = [list(frame.value.columns) for frame in at.dataframe]
+    assert [
+        "Mục",
+        "Yêu cầu",
+        "Nội dung yêu cầu",
+        "Số câu đáp",
+        "Tình trạng",
+    ] in columns
+
+
+def test_related_sources_drop_the_zero_score_ones() -> None:
+    """Điểm 0 = không liên quan chút nào. Liệt kê chúng là mời đi tra chỗ trống."""
+    import app
+
+    state = _state()
+    state["chapters"][0]["retrieval"] = {
+        "selected": [],
+        "candidates": [
+            {"sent_id": "A", "text": "câu 0 điểm", "scores": {"rerank": 0.0}},
+            {"sent_id": "B", "text": "câu có điểm", "scores": {"rerank": 0.4}},
+        ],
+    }
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app as _app
+
+        _app.render_related_sources(state, state["sections"][0])
+
+    at = _render(body, state)
+    assert not at.exception
+    frames = [frame.value for frame in at.dataframe]
+    assert frames
+    texts = list(frames[0]["Câu (tiếng Nhật)"])
+    assert "câu có điểm" in texts
+    assert "câu 0 điểm" not in texts
+    assert "Điểm sát yêu cầu" in frames[0].columns
+
+
+def test_related_sources_hidden_when_everything_scores_zero() -> None:
+    state = _state()
+    state["chapters"][0]["retrieval"] = {
+        "selected": [],
+        "candidates": [
+            {"sent_id": "A", "text": "câu 0 điểm", "scores": {"rerank": 0.0}}
+        ],
+    }
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app as _app
+
+        _app.render_related_sources(state, state["sections"][0])
+
+    at = _render(body, state)
+    assert not at.exception
+    assert not at.dataframe
+    assert not at.get("expander")
