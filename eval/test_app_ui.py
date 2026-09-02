@@ -19,6 +19,7 @@ from streamlit.testing.v1 import AppTest  # noqa: E402
 from config.display_vi import (  # noqa: E402
     ATTRIBUTE_COVERED_REASON,
     NO_EVIDENCE_REASON,
+    SECTION_STATUS_ICON,
     SECTION_STATUS_VI,
     SKIP_LEGEND,
     STAGE_VI,
@@ -223,7 +224,6 @@ def test_japanese_proposal_text_is_not_translated() -> None:
         app.render_proposal(state)
 
     at = _render(body, state)
-    # Tiêu đề mục render bằng markdown, nhãn trạng thái bằng caption.
     rendered = " ".join(
         item.value for item in list(at.markdown) + list(at.caption)
     )
@@ -231,7 +231,13 @@ def test_japanese_proposal_text_is_not_translated() -> None:
     assert "基幹システム構築の実績があります。" in " ".join(
         item.value for item in at.markdown
     )
-    assert SECTION_STATUS_VI["OK"] in rendered  # nhãn trạng thái đã dịch
+    # Trạng thái đi cùng tiêu đề dưới dạng chấm màu; chữ nằm ở tooltip, và
+    # bảng "Kết quả" ngay trên đã ghi rõ bằng chữ cho từng mục.
+    title = next(
+        item for item in at.markdown if "技術要件への対応" in item.value
+    )
+    assert SECTION_STATUS_ICON["OK"] in title.value
+    assert SECTION_STATUS_VI["OK"] in (title.proto.help or "")
 
 
 # ── Cảnh báo thiếu căn cứ: không lộ chuỗi enum thô ────────────────────────
@@ -1199,12 +1205,10 @@ def test_bilingual_puts_one_sided_elements_outside_columns() -> None:
     # Cảnh báo thiếu căn cứ hiện đúng MỘT lần (không nhân đôi vào hai cột)
     warnings = [item.value for item in at.warning]
     assert sum("Thiếu căn cứ" in text for text in warnings) == 1
-    # Tiêu đề mục và dòng trạng thái cũng chỉ một lần
-    assert sum("技術要件への対応" in item.value for item in at.markdown) == 1
-    assert sum(
-        "Đủ căn cứ" in item.value or "Thiếu căn cứ" in item.value
-        for item in at.caption
-    ) == 1
+    # Tiêu đề mục kèm chấm trạng thái cũng chỉ một lần
+    titles = [item for item in at.markdown if "技術要件への対応" in item.value]
+    assert len(titles) == 1
+    assert SECTION_STATUS_ICON["INSUFFICIENT_EVIDENCE"] in titles[0].value
 
 
 def test_stacked_layout_keeps_japanese_first() -> None:
@@ -2261,8 +2265,8 @@ def test_sidebar_explains_what_the_selected_case_checks() -> None:
     shown = " ".join(item.value for item in at.sidebar.markdown) + " ".join(
         item.value for item in at.sidebar.caption
     )
-    assert "Đưa vào" in shown
-    assert "Máy chấm" in shown
+    assert "Input" in shown
+    assert "Output" in shown
     for jargon in ("must_cover", "must_flag_insufficient", "must_not_contain"):
         assert jargon not in shown, jargon
 
@@ -2911,9 +2915,53 @@ def test_attribute_only_section_does_not_repeat_itself() -> None:
 
     at = _render(body, state)
     assert not at.exception
-    captions = " ".join(item.value for item in at.caption)
-    assert "🟡" in captions
-    assert "bảng năng lực công ty" not in captions
+    title = next(item for item in at.markdown if "技術要件への対応" in item.value)
+    assert SECTION_STATUS_ICON["ATTRIBUTE_ONLY"] in title.value
+    # Không nhắc lại cụm trạng thái thành chữ ngay cạnh tiêu đề
+    assert "bảng năng lực công ty" not in title.value
     # Lý do thật vẫn còn, ở hộp ghi chú
     warnings = " ".join(item.value for item in at.warning)
     assert "hồ sơ quá khứ" in warnings
+
+
+def test_section_title_translation_appears_only_with_the_toggle() -> None:
+    """Tên mục là tiếng Nhật — bản dịch tên mục đi cùng lúc với bản dịch thân."""
+    state = _state()
+
+    def body(root, state, translate):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import streamlit as st
+
+        import app
+
+        app.translate_proposal = lambda s: (
+            "[PROPOSAL]\n1. Đáp ứng yêu cầu kỹ thuật\nCâu dịch 1.\n"
+        )
+        st.session_state["t_bilingual"] = translate
+        app.render_bilingual_proposal(state, key_prefix="t")
+
+    off = _render(body, state, False)
+    assert not off.exception
+    assert not any(
+        "Đáp ứng yêu cầu kỹ thuật" in item.value for item in off.caption
+    )
+
+    on = _render(body, state, True)
+    assert not on.exception
+    assert any("Đáp ứng yêu cầu kỹ thuật" in item.value for item in on.caption)
+
+
+def test_the_tab_ends_with_one_small_download_button() -> None:
+    """Ba vạch kẻ chồng nhau rồi một nút to hết bề ngang — đã bỏ."""
+    at = _app_with_result()
+    order = _tab_slice(at, "Tổng quan")
+    download = next(
+        index for index, (kind, _) in enumerate(order) if kind == "download_button"
+    )
+    # Không còn vạch kẻ ngay trước nút tải
+    assert order[download - 1][0] != "divider"
+    assert order[download][1] == "⬇ Tải file (.md)"
+    button = next(item for item in at.download_button)
+    assert button.proto.use_container_width is False

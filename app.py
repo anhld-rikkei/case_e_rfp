@@ -299,9 +299,9 @@ def render_case_brief(case: GoldenCase) -> None:
     """
     brief = describe_case(case)
     st.caption(f"**{brief.tier}** · {brief.purpose}")
-    st.markdown("**Đưa vào**")
+    st.markdown("**Input**")
     st.markdown("\n".join(f"- {line}" for line in brief.inputs))
-    st.markdown(f"**Máy chấm {len(brief.checks)} điều kiện**")
+    st.markdown(f"**Output** — máy chấm {len(brief.checks)} điều kiện")
     st.markdown(
         "\n".join(
             f"- {check.icon} {check.what}  \n  <small>{check.why}</small>"
@@ -477,13 +477,11 @@ def render_download(state: dict[str, Any]) -> None:
         # Không bao giờ mở đường tải cho bản chưa qua guard.
         st.error(f"Không xuất được: final guard chặn — {violation}")
         return
-    st.divider()
     st.download_button(
-        "⬇ Tải bản nháp (.md)",
+        "⬇ Tải file (.md)",
         data=markdown.encode("utf-8"),
         file_name=export_filename(state),
         mime="text/markdown",
-        width="stretch",
     )
 
 
@@ -1587,17 +1585,18 @@ def render_bilingual_proposal(
         # Phần chỉ có MỘT bên (tiêu đề, trạng thái, cảnh báo thiếu căn cứ) nằm
         # NGOÀI cặp cột và chiếm hết bề ngang. Để chúng trong cột trái sẽ đẩy
         # thân văn bản bên trái tụt xuống, và cả mục lệch nhau từ dòng đầu.
-        st.markdown(f"**{index + 1}. {section['title_ja']}**")
-        vi_heading = vi_lines[0] if vi_lines else section["title_vi"]
-        # ATTRIBUTE_ONLY luôn kèm ghi chú nói rõ VÌ SAO mục chỉ dựng từ bảng
-        # năng lực (RFP không có chương tương ứng / khớp thẳng / không có hồ sơ
-        # cũ dùng được). Nhắc thêm một cụm trạng thái chung chung ở đây là nói
-        # hai lần, mà lần này mơ hồ hơn.
-        redundant = status == "ATTRIBUTE_ONLY" and section.get("note")
-        st.caption(
-            f"{vi_heading} · {SECTION_STATUS_ICON.get(status, '')}"
-            + ("" if redundant else f" {label(SECTION_STATUS_VI, status)}")
+        # Tiêu đề là tiếng Nhật kèm một chấm màu trạng thái — nội dung hồ sơ
+        # là tiếng Nhật, tên mục cũng vậy. Bản dịch tên mục chỉ hiện khi người
+        # dùng bật dịch, cùng lúc với phần thân được dịch.
+        # Trạng thái để nguyên dạng chấm màu: bảng "Kết quả" ngay trên đã ghi
+        # rõ bằng chữ từng mục, viết lại ở đây là nói hai lần.
+        st.markdown(
+            f"**{index + 1}. {section['title_ja']}** "
+            f"{SECTION_STATUS_ICON.get(status, '')}",
+            help=label(SECTION_STATUS_VI, status),
         )
+        if show:
+            st.caption(vi_lines[0] if vi_lines else section["title_vi"])
         render_section_note(state, section)
 
         if not (show and not stacked):
@@ -1674,7 +1673,6 @@ def render_proposal_body(state: dict[str, Any]) -> None:
         ]
     )
     render_bilingual_proposal(state, key_prefix="detail")
-    st.divider()
     render_version_history()
     render_download(state)
 

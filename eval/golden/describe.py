@@ -118,7 +118,7 @@ def input_lines(case: GoldenCase) -> list[str]:
         lines.append(f"{len(chapters)} chương: {' · '.join(chapters)}")
     else:
         lines.append("**Không có tiêu đề 第N章** — cố ý bỏ đánh số chương")
-    lines.append(f"{len(requirements)} yêu cầu cần đáp")
+    lines.append(f"{len(requirements)} yêu cầu cần đáp ứng")
     return lines
 
 
