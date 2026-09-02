@@ -2364,16 +2364,40 @@ def test_chat_panel_closes_from_its_own_button() -> None:
     assert not at.chat_input
 
 
-def test_chat_width_presets_keep_the_document_column_wider() -> None:
-    """Cột trong trang không kéo được như sidebar, nên đổi rộng bằng nút.
+def _chat_css(at: AppTest) -> str:
+    return " ".join(item.value for item in at.markdown)
 
-    Mức nào cũng phải để cột hồ sơ >= cột chat: hồ sơ mới là thứ đang đọc.
+
+def test_chat_column_is_draggable_and_the_document_column_reflows() -> None:
+    """Kéo cột bằng chuột: cần đủ BA thứ, thiếu một là không kéo được.
+
+    `resize` cần `overflow` khác `visible`; cột Streamlit là flex item có sẵn
+    `flex-basis` nên `width` do người dùng kéo sẽ bị bỏ qua nếu không ép
+    `flex: 0 0 auto`; và cột hồ sơ phải `flex: 1 1 0` để tự co lấp phần thừa,
+    không thì kéo hẹp cột chat sẽ chừa một khoảng trắng.
     """
-    import app
+    at = _app_with_result(chat_open=True)
+    css = _chat_css(at)
+    assert '<div id="chat-dock"></div>' in css
+    assert '<div id="doc-body"></div>' in css
+    for rule in ("resize: horizontal", "overflow: auto", "flex: 0 0 auto"):
+        assert rule in css, rule
+    assert "flex: 1 1 0" in css
+    # Tay kéo phải nằm ở mép TRÁI: cột dính mép phải màn hình, tay kéo bên
+    # phải là kéo ra ngoài màn hình.
+    assert "direction: rtl" in css
+    assert "direction: ltr" in css
 
-    assert set(app.CHAT_WIDTHS) == {"Hẹp", "Vừa", "Rộng"}
-    for name, (body, chat) in app.CHAT_WIDTHS.items():
-        assert body >= chat, name
+
+def test_chat_column_has_a_width_floor_and_ceiling() -> None:
+    """Kéo hẹp quá thì ô chat vỡ, kéo rộng quá thì hồ sơ không còn chỗ."""
+    css = _chat_css(_app_with_result(chat_open=True))
+    assert "min-width" in css and "max-width" in css
+
+
+def test_golden_picker_label_is_centred_like_the_sample_buttons() -> None:
+    at = _app_with_result()
+    assert ".st-key-golden_picker_box summary" in _chat_css(at)
 
 
 def test_chat_panel_offers_suggestions_only_before_the_first_turn() -> None:

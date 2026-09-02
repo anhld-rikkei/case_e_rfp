@@ -318,7 +318,8 @@ def render_golden_picker() -> None:
     thật sự ra cái gì cho một ca biên thì phải nạp nó vào đây và bấm sinh như
     một RFP bình thường.
     """
-    with st.expander("Chọn golden test", expanded=False):
+    box = st.container(key="golden_picker_box")
+    with box, st.expander("Chọn golden test", expanded=False):
         cases = [load_case(path) for path in discover_case_files(DEFAULT_GOLDEN_DIR)]
         if not cases:
             st.caption("Chưa có ca nào trong golden set.")
@@ -592,47 +593,65 @@ def version_diff(older: dict[str, Any], newer: dict[str, Any]) -> str:
 ALL_TARGET = "__all__"
 
 # Bảng màu panel chat — cùng hệ với sơ đồ luồng và dark theme của app.
-# Bong bóng để ở mức toàn trang chứ không bọc trong `:has()`: chat chỉ xuất
-# hiện đúng một chỗ, mà `:has()` không chạy thì mất luôn cả kiểu bong bóng.
+#
+# Kéo rộng bằng chuột: cột chat được đặt `resize: horizontal`. Cột của
+# Streamlit là flex item có `flex-basis` nên `width` bị bỏ qua — phải ép
+# `flex: 0 0 auto` thì con số width do người dùng kéo mới có tác dụng, và cột
+# hồ sơ để `flex: 1 1 0` để tự co lại lấp phần còn thừa.
+#
+# `direction: rtl` chỉ để đẩy tay kéo sang góc dưới BÊN TRÁI của cột — cột dính
+# mép phải màn hình, tay kéo nằm bên phải thì kéo ra ngoài màn hình. Nội dung
+# bên trong trả lại `ltr` ngay.
 CHAT_CSS = """
 <style>
-[data-testid="stChatMessage"] {
-    padding: .5rem .7rem;
-    margin-bottom: .35rem;
-    border-radius: 12px;
-    background: #1B2129;
-    border: 1px solid #2A323C;
-}
-[data-testid="stChatMessage"] p { margin-bottom: .25rem; }
-/* Lượt của người dùng: đảo bên, đổi nền — nhìn một cái là biết ai nói.
-   `:has()` không chạy thì chỉ mất phần đảo bên, bong bóng vẫn đọc được. */
-[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
-    flex-direction: row-reverse;
-    background: #17322A;
-    border-color: #2F6B52;
-}
-/* Cột chat dính lại khi cuộn: đọc hồ sơ ở cột trái mà ô chat trôi mất khỏi
-   màn hình thì phải cuộn ngược lên mỗi lần muốn ra chỉ thị. */
-[data-testid="stColumn"]:has(#chat-panel) {
+[data-testid="stColumn"]:has(#chat-dock) {
+    flex: 0 0 auto;
+    width: 30rem;
+    min-width: 20rem;
+    max-width: 65vw;
+    resize: horizontal;
+    overflow: auto;
+    direction: rtl;
     position: sticky;
     top: 3.2rem;
     align-self: flex-start;
     max-height: 90vh;
-    overflow-y: auto;
     border-left: 1px solid #2A323C;
     padding-left: 1rem;
 }
+[data-testid="stColumn"]:has(#chat-dock) > * { direction: ltr; }
+[data-testid="stColumn"]:has(#doc-body) { flex: 1 1 0; min-width: 0; }
+
+[data-testid="stChatMessage"] {
+    padding: .7rem .9rem;
+    margin-bottom: .55rem;
+    border-radius: 14px;
+    background: #1B2129;
+    border: 1px solid #2A323C;
+}
+[data-testid="stChatMessage"] p { margin-bottom: .3rem; }
+/* Lượt của người dùng: đảo bên, nền màu nhấn — nhìn một cái là biết ai nói.
+   `:has()` không chạy thì chỉ mất phần đảo bên, bong bóng vẫn đọc được. */
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+    flex-direction: row-reverse;
+    background: #1E6F4C;
+    border-color: #2F8F63;
+}
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) p {
+    color: #EAF6EF;
+}
+/* Nhãn khối "Chọn golden test" canh giữa cho khớp mấy nút RFP mẫu ngay trên. */
+.st-key-golden_picker_box summary { justify-content: center; }
 </style>
 """
 
-# Ba mức rộng cho cột chat. Cột trong trang không kéo được như sidebar của
-# Streamlit, nên đổi bằng nút bấm — chọn sẵn mấy mức thay vì một thanh trượt
-# vô nghĩa tới từng pixel.
-CHAT_WIDTHS = {
-    "Hẹp": (4, 1.6),
-    "Vừa": (3, 2),
-    "Rộng": (2, 2),
-}
+# Tỉ lệ cột lúc mở. Chỉ là điểm xuất phát: CSS ở trên cho kéo lại bằng chuột,
+# và trình duyệt không hỗ trợ `:has()` thì đây là bề rộng cố định.
+CHAT_COLUMN_RATIO = (3, 2)
+
+# Avatar mặc định của Streamlit là icon cam, lạc hệ màu của app.
+ASSISTANT_AVATAR = "🤖"
+AVATARS = {"assistant": ASSISTANT_AVATAR, "user": "🧑"}
 
 CHIP_STYLE = (
     "display:inline-block;margin:.15rem .2rem 0 0;padding:.1rem .45rem;"
@@ -894,21 +913,16 @@ def render_chat_panel(state: dict[str, Any]) -> None:
     còn đối chiếu. Streamlit chỉ có một sidebar, nên panel thứ hai phải là một
     cột trong trang.
     """
-    st.markdown('<div id="chat-panel"></div>', unsafe_allow_html=True)
+    st.markdown('<div id="chat-dock"></div>', unsafe_allow_html=True)
     header_left, header_right = st.columns([3, 1])
     with header_left:
         st.subheader("Chat review")
     with header_right:
         st.button("✕", key="chat_close", on_click=close_chat_panel, help="Đóng chat")
-    st.segmented_control(
-        "Độ rộng",
-        list(CHAT_WIDTHS),
-        key="chat_width",
-        label_visibility="collapsed",
-    )
     st.caption(
         "Chỉnh **cách viết trên căn cứ sẵn có** — không thêm được nội dung chưa "
-        "có bằng chứng, không đổi được số liệu."
+        "có bằng chứng, không đổi được số liệu.  \n"
+        "Kéo mép trái của bảng này để đổi bề rộng."
     )
     render_review_checklist()
 
@@ -922,15 +936,15 @@ def render_chat_panel(state: dict[str, Any]) -> None:
         return
 
     turns = chat_turns(_versions(), last=st.session_state.get("chat_last"))
-    with st.container(height=300, autoscroll=True, key="chat_log"):
-        with st.chat_message("assistant"):
+    with st.container(height=340, autoscroll=True, key="chat_log", border=False):
+        with st.chat_message("assistant", avatar=ASSISTANT_AVATAR):
             st.markdown(f"Hồ sơ đã sinh xong. {sentence_breakdown(state)}")
             st.markdown(
                 chip("chỉ viết lại trên căn cứ sẵn có") + chip("không đổi số liệu"),
                 unsafe_allow_html=True,
             )
         for turn in turns:
-            with st.chat_message(turn["role"]):
+            with st.chat_message(turn["role"], avatar=AVATARS[turn["role"]]):
                 if turn["role"] == "user":
                     st.markdown(turn["text"])
                     if turn.get("target"):
@@ -954,7 +968,7 @@ def render_chat_panel(state: dict[str, Any]) -> None:
     )
 
     if not turns:
-        st.caption("Gợi ý chỉ thị")
+        st.caption("💡 Gợi ý chỉ thị")
         for index, item in enumerate(instruction_suggestions(state)):
             st.button(
                 item["instruction"],
@@ -1400,11 +1414,11 @@ def render_proposal(state: dict[str, Any]) -> None:
     if not chat_is_open():
         render_proposal_body(state)
         return
-    width = st.session_state.get("chat_width") or "Vừa"
-    body_column, chat_column = st.columns(CHAT_WIDTHS[width], gap="medium")
+    body_column, chat_column = st.columns(CHAT_COLUMN_RATIO, gap="medium")
     with chat_column:
         render_chat_panel(state)
     with body_column:
+        st.markdown('<div id="doc-body"></div>', unsafe_allow_html=True)
         render_proposal_body(state)
 
 
