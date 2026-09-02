@@ -49,6 +49,7 @@ from config.settings import (
     CONFIDENCE_T_HIGH,
     CONFIDENCE_T_LOW,
     CONFIDENCE_UNVERIFIABLE,
+    CONFIDENCE_USER_APPROVED,
     INCOMPLETE_COVERAGE_FACTOR,
     NO_PRECEDENT_FACTOR,
 )
@@ -66,6 +67,11 @@ def sentence_confidence(
     rerank_by_source: dict[str, float] | None = None,
 ) -> float | None:
     """Điểm của MỘT câu. None = không chấm (câu nối, câu người dùng thêm)."""
+    # Người viết đã bấm duyệt câu này -> nó có căn cứ, và căn cứ là chữ ký của
+    # người chịu trách nhiệm. Kiểm trước cả nhánh "user" bên dưới, vì đúng
+    # những câu đó mới là thứ cần duyệt.
+    if sentence.get("approved_by_user"):
+        return CONFIDENCE_USER_APPROVED
     origin = sentence.get("origin")
     if origin in ("bridge", "user"):
         return None
@@ -118,11 +124,16 @@ def section_confidence(
     # một mục `OK` xuống tầng chuyển người — đúng lỗi đã bắt được khi chạy thật.
     complete = total == 0 or covered == total
     has_precedent = any(item.get("origin") == "precedent" for item in sentences)
+    # Người viết đã duyệt cũng là một chỗ dựa: phạt "không có hồ sơ quá khứ
+    # chống lưng" ở đây sẽ đẩy mục xuống tầng "cần người xem lại" trong khi
+    # người vừa xem xong. T2 nghĩa là CHƯA ai xem — nói vậy là sai sự thật.
+    approved = any(item.get("approved_by_user") for item in sentences)
+    supported = has_precedent or approved
 
     score = base
     if not complete:
         score *= INCOMPLETE_COVERAGE_FACTOR
-    elif not has_precedent and total > 0:
+    elif not supported and total > 0:
         # Phạt "không có hồ sơ quá khứ nào chống lưng" chỉ đúng khi mục CÓ yêu
         # cầu phải đáp. Mục cố định (会社概要) vốn chỉ dựng từ bảng năng lực
         # theo thiết kế — phạt nó là hạ tầng một mục vốn đủ căn cứ.
@@ -138,6 +149,9 @@ def section_confidence(
         "total_requirements": total,
         "missing_requirements": missing,
         "has_precedent": has_precedent,
+        "approved_sentences": sum(
+            1 for item in sentences if item.get("approved_by_user")
+        ),
     }
 
 
@@ -148,6 +162,7 @@ def _coverage(
         req_id
         for sentence in section.get("sentences", [])
         if sentence.get("origin") in ("capability", "precedent")
+        or sentence.get("approved_by_user")
         for req_id in sentence.get("req_ids", [])
     }
     chapters = {chapter["id"]: chapter for chapter in state.get("chapters", [])}

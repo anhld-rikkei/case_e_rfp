@@ -84,6 +84,10 @@ CONFIDENCE_T_LOW = 0.45    # >= : T2, người xem lại; dưới nữa: T3, chu
 CONFIDENCE_CAPABILITY_BASE = 1.00   # câu từ capability sheet, đã VERIFIED
 CONFIDENCE_PRECEDENT_BASE = 0.70    # câu từ hồ sơ cũ, đã VERIFIED
 CONFIDENCE_PRECEDENT_SPAN = 0.30    # cộng thêm theo điểm rerank của nguồn
+# Câu do NGƯỜI viết tự điền, sau khi chính người đó bấm duyệt. Bằng chứng ở
+# đây là chữ ký của người chịu trách nhiệm, không phải một phép kiểm của máy
+# — nhãn trên giao diện và trong file xuất phải nói rõ điều đó.
+CONFIDENCE_USER_APPROVED = 1.00
 CONFIDENCE_UNVERIFIABLE = 0.30      # có nguồn nhưng claim-check không xác nhận
 
 INCOMPLETE_COVERAGE_FACTOR = 0.40   # mục còn requirement chưa có câu dẫn

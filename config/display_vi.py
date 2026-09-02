@@ -80,6 +80,10 @@ VERDICT_HINT = {
 # vào" với "chat sửa cách viết nhưng giữ nguồn và số liệu".
 USER_BLOCK_LABEL = "✎ Người dùng bổ sung — chưa kiểm chứng"
 EDITED_LABEL = "✎ đã chỉnh cách viết"
+# Duyệt KHÁC kiểm chứng: câu vẫn do người viết, hệ thống vẫn không xác minh
+# được nó. Nhãn phải nói ai chịu trách nhiệm, không được đọc thành "đã kiểm".
+APPROVED_BLOCK_LABEL = "✎ Người viết đã duyệt — hệ thống không kiểm chứng"
+
 REPLACED_BLOCK_LABEL = "Người dùng đổi sang nguồn khác — chưa kiểm chứng"
 
 MARK_LEGEND = (

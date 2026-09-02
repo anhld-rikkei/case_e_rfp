@@ -30,8 +30,8 @@ APP_PATH = str(PROJECT_ROOT / "app.py")
 
 EXPECTED_TABS = [
     "Tổng quan",
-    "Độ đáp ứng",
-    "Truy vết",
+    "Phân tích RFP",
+    "Độ tin cậy và phản hồi",
     "Sinh bộ test",
     "Báo cáo hệ thống",
 ]
@@ -3866,3 +3866,129 @@ def test_report_section_got_its_new_name() -> None:
     labels = [tab.label for tab in at.tabs]
     assert "Báo cáo hệ thống" in labels
     assert "Kết quả đánh giá" not in labels
+
+
+# ── Người viết duyệt ─────────────────────────────────────────────────────
+
+def _state_needing_human() -> dict[str, Any]:
+    """Một mục thiếu căn cứ, được người viết tự điền một câu."""
+    state = _state()
+    state["sections"][0]["sentences"] = [
+        {
+            "text": "người viết tự điền",
+            "origin": "user",
+            "source_id": None,
+            "req_ids": ["3.1", "3.2"],
+            "verdict": "USER_PROVIDED",
+        }
+    ]
+    return state
+
+
+def test_default_scoring_is_unchanged_without_a_signature() -> None:
+    """Thêm khái niệm duyệt KHÔNG được đổi hành vi mặc định.
+
+    Chưa ai ký thì câu người dùng vẫn không được chấm, và mục vẫn báo thiếu
+    căn cứ — đúng như trước.
+    """
+    from rfp.confidence import annotate, sentence_confidence
+
+    sentence = {"origin": "user", "verdict": "USER_PROVIDED"}
+    assert sentence_confidence(sentence) is None
+
+    info = annotate(_state_needing_human())["sections"][0]["confidence"]
+    assert info["covered_requirements"] == 0
+    assert info["tier"] == "T3"
+
+
+def test_a_signature_makes_the_sentence_count_as_evidence() -> None:
+    from config.settings import CONFIDENCE_USER_APPROVED
+    from rfp.confidence import annotate, sentence_confidence
+
+    signed = {"origin": "user", "verdict": "USER_PROVIDED", "approved_by_user": True}
+    assert sentence_confidence(signed) == CONFIDENCE_USER_APPROVED
+
+    state = _state_needing_human()
+    state["sections"][0]["sentences"][0]["approved_by_user"] = True
+    info = annotate(state)["sections"][0]["confidence"]
+    assert info["covered_requirements"] == info["total_requirements"]
+    assert info["approved_sentences"] == 1
+    # Người vừa xem xong thì không được báo "cần người xem lại"
+    assert info["tier"] == "T1"
+
+
+def test_review_button_signs_and_rescoreS_into_a_new_version() -> None:
+    """Ghi thành BẢN MỚI để còn lùi lại được."""
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import streamlit as st
+
+        import app as _app
+
+        st.session_state["versions"] = [{"label": "v1", "state": state}]
+        st.session_state["version_index"] = 0
+        _app.review_and_approve()
+
+    at = _render(body, _state_needing_human())
+    assert not at.exception
+    versions = at.session_state["versions"]
+    assert len(versions) == 2
+    signed = versions[1]["state"]["sections"][0]["sentences"][0]
+    assert signed["approved_by_user"] is True
+    # Bản cũ giữ nguyên
+    assert "approved_by_user" not in versions[0]["state"]["sections"][0]["sentences"][0]
+    # Chấm lại luôn, không đợi lượt sau
+    assert versions[1]["state"]["sections"][0]["confidence"]["tier"] == "T1"
+    assert "duyệt 1 câu" in at.session_state["review_note"]
+
+
+def test_review_button_says_so_when_there_is_nothing_to_sign() -> None:
+    """Nút không được im lặng khi bấm mà không có gì để duyệt."""
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import streamlit as st
+
+        import app as _app
+
+        st.session_state["versions"] = [{"label": "v1", "state": state}]
+        st.session_state["version_index"] = 0
+        _app.review_and_approve()
+
+    at = _render(body, _state())
+    assert not at.exception
+    assert "Không có câu nào của người để duyệt" in at.session_state["review_note"]
+
+
+def test_approved_sentence_still_says_the_system_did_not_verify_it() -> None:
+    """Duyệt KHÁC kiểm chứng — nhãn không được đọc thành "đã kiểm"."""
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_marked_sentences(
+            [
+                {
+                    "text": "người viết tự điền",
+                    "origin": "user",
+                    "verdict": "USER_PROVIDED",
+                    "approved_by_user": True,
+                }
+            ]
+        )
+
+    at = _render(body)
+    assert not at.exception
+    blocks = " ".join(item.value for item in at.info)
+    assert "Người viết đã duyệt" in blocks
+    assert "hệ thống không kiểm chứng" in blocks
+
+
+def test_review_button_is_in_the_pinned_controls() -> None:
+    at = _app_with_result()
+    assert "✅ Duyệt lại" in [item.label for item in at.button]

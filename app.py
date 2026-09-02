@@ -78,6 +78,7 @@ from config.display_vi import (
     MARK_LEGEND,
     NO_EVIDENCE_REASON,
     ORIGIN_HINT,
+    APPROVED_BLOCK_LABEL,
     REPLACED_BLOCK_LABEL,
     USER_BLOCK_LABEL,
     SKIP_LEGEND,
@@ -741,7 +742,7 @@ PROPOSAL_CSS = """
     position: fixed;
     top: 3.4rem;
     right: 1.2rem;
-    width: 21rem;
+    width: 30rem;
     z-index: 60;
     background: #12161C;
     border: 1px solid #2A323C;
@@ -1127,6 +1128,71 @@ def step_version(delta: int) -> None:
     # Bản dịch thuộc về NỘI DUNG, không thuộc về phiên làm việc — đổi bản mà
     # giữ bản dịch cũ là hai ngôn ngữ nói hai chuyện khác nhau.
     st.session_state["translation"] = ""
+
+
+def human_touched(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Những câu do người đưa vào hoặc đổi — thứ cần một chữ ký."""
+    return [
+        sentence
+        for section in state.get("sections", [])
+        for sentence in section.get("sentences", [])
+        if sentence.get("origin") == "user" or sentence.get("replaced_by_user")
+    ]
+
+
+def review_and_approve() -> None:
+    """Người viết duyệt phần mình tự điền, rồi chấm điểm lại cả hồ sơ.
+
+    Đây là chữ ký, không phải một phép kiểm của máy: hệ thống không thể xác
+    minh câu người dùng viết, nhưng người viết thì chịu trách nhiệm được. Sau
+    khi ký, những câu đó được tính là căn cứ cho yêu cầu chúng đáp — nên mục
+    đang "thiếu căn cứ" chỉ vì người tự điền sẽ thôi báo đỏ.
+
+    Nhãn ✎ và mục checklist về câu người dùng vẫn giữ nguyên: duyệt không biến
+    câu tự điền thành câu có nguồn.
+
+    Ghi thành BẢN MỚI để còn lùi lại được.
+    """
+    import copy
+
+    from rfp.confidence import annotate
+
+    version = current_version()
+    if not version:
+        return
+    state = copy.deepcopy(version["state"])
+    pending = [
+        sentence
+        for sentence in human_touched(state)
+        if not sentence.get("approved_by_user")
+    ]
+    for sentence in pending:
+        sentence["approved_by_user"] = True
+    state = annotate(state)
+
+    parent_index = st.session_state.get("version_index", len(_versions()) - 1)
+    push_version(
+        state,
+        label=version_label(_versions(), parent_index),
+        instruction=f"Người viết duyệt {len(pending)} câu rồi chấm lại",
+        target="Toàn bộ hồ sơ",
+        rejected=[],
+        counts={
+            "changed": 0,
+            "dropped": 0,
+            "kept": len(pending),
+            "added": 0,
+            "blocked": 0,
+        },
+        restored=0,
+        parent_index=parent_index,
+    )
+    st.session_state["translation"] = ""
+    st.session_state["review_note"] = (
+        f"Đã duyệt {len(pending)} câu do người viết đưa vào và chấm lại cả hồ sơ."
+        if pending
+        else "Không có câu nào của người để duyệt — đã chấm lại cả hồ sơ."
+    )
 
 
 def render_history_buttons() -> None:
@@ -1841,7 +1907,11 @@ def render_marked_sentences(
         body = "  \n".join(item.get("text", "") for item in group)
         if mark == "user":
             pinned = [item for item in group if item.get("pinned")]
-            label_line = USER_BLOCK_LABEL + (" · 📌 đã ghim" if pinned else "")
+            label_line = (
+                APPROVED_BLOCK_LABEL
+                if all(item.get("approved_by_user") for item in group)
+                else USER_BLOCK_LABEL
+            ) + (" · 📌 đã ghim" if pinned else "")
             # icon phải là emoji thật — Streamlit từ chối "✎" (ký tự dingbat).
             # Giữ ✎ trong nhãn chữ để khớp ký hiệu dùng ở file export.
             # Xanh dương = bàn tay người, khác hẳn mọi thứ máy sinh.
@@ -2136,6 +2206,9 @@ def render_proposal(state: dict[str, Any]) -> None:
 
 
 def render_proposal_body(state: dict[str, Any]) -> None:
+    note = st.session_state.pop("review_note", None)
+    if note:
+        st.success(note, icon="✅")
     render_draft_banner(state)
     st.success(sentence_breakdown(state))
     # KẾT QUẢ trước, CHI TIẾT sau: người mở tab cần thấy ngay bức tranh tổng —
@@ -4249,16 +4322,28 @@ def main() -> None:
     # Khối này được CSS neo cố định ở góc trên bên phải, nên nó KHÔNG chứa tiêu
     # đề — chỉ chứa đúng những nút phải luôn với tới được.
     with st.container(key="topbar"):
-        history_column, chat_column = st.columns([1, 1], vertical_alignment="center")
+        history_column, review_column, chat_column = st.columns(
+            [2, 2, 2], vertical_alignment="center"
+        )
         with history_column:
             render_history_buttons()
+        with review_column:
+            st.button(
+                "✅ Duyệt lại",
+                key="review_button",
+                width="stretch",
+                on_click=review_and_approve,
+                help=(
+                    "Người viết ký vào phần mình tự điền, rồi chấm lại cả hồ sơ"
+                ),
+            )
         with chat_column:
             render_chat_toggle()
     tabs = st.tabs(
         [
             "Tổng quan",
-            "Độ đáp ứng",
-            "Truy vết",
+            "Phân tích RFP",
+            "Độ tin cậy và phản hồi",
             "Sinh bộ test",
             "Báo cáo hệ thống",
         ]
