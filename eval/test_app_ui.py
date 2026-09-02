@@ -2455,8 +2455,8 @@ def test_chat_opens_on_the_right_and_leaves_the_rfp_panel_alone() -> None:
     at.button(key="chat_open_button").click().run()
     assert at.session_state["chat_open"] is True
     # Sidebar không bị chiếm
-    assert [item.value for item in at.sidebar.title] == ["RFP đầu vào"]
-    assert "Dán RFP" in [item.label for item in at.sidebar.text_area]
+    assert "RFP" in [item.value for item in at.sidebar.subheader]
+    assert "RFP" in [item.label for item in at.sidebar.text_area]
     assert not at.sidebar.chat_input
     # Chat nằm trong thân trang
     assert at.chat_input
@@ -2965,3 +2965,35 @@ def test_the_tab_ends_with_one_small_download_button() -> None:
     assert order[download][1] == "⬇ Tải file (.md)"
     button = next(item for item in at.download_button)
     assert button.proto.use_container_width is False
+
+
+def test_sidebar_has_two_parts_and_groups_every_way_in() -> None:
+    """Hai phần: kho dữ liệu nguồn, và RFP của lượt này.
+
+    Ô tải file trước đây nằm CHEN giữa hai phần đó — đọc từ trên xuống là một
+    chuỗi việc không liên quan nhau. Nay mọi cách đưa RFP vào nằm chung một
+    chỗ, ngay dưới ô RFP.
+    """
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.run()
+    assert not at.exception
+    headings = [item.value for item in at.sidebar.subheader]
+    assert headings == ["Dữ liệu nguồn", "RFP"]
+
+    blocks = [item.label for item in at.sidebar.expander]
+    for name in ("Tình trạng kho tri thức", "RFP mẫu", "Upload file RFP"):
+        assert name in blocks, name
+    # Khu chọn nhanh đứng SAU ô RFP
+    assert blocks.index("RFP mẫu") > blocks.index("Tình trạng kho tri thức")
+
+
+def test_sidebar_upload_still_fills_the_rfp_box() -> None:
+    """Gộp lại thành khu riêng nhưng vẫn phải nạp được nội dung vào ô RFP."""
+    import app
+
+    assert callable(app.render_rfp_upload)
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.run()
+    assert not at.exception
+    uploads = [item for item in at.sidebar.file_uploader]
+    assert len(uploads) == 1

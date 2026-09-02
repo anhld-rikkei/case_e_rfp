@@ -360,46 +360,65 @@ def render_golden_picker() -> None:
     )
 
 
+def render_rfp_upload() -> None:
+    """Ô tải file RFP. Nạp xong thì nội dung nằm trong ô RFP như dán tay."""
+    uploaded = st.file_uploader(
+        "Tải file .txt (UTF-8)",
+        type=["txt"],
+        key="rfp_upload",
+        label_visibility="collapsed",
+    )
+    if uploaded is None:
+        return
+    content = _load_uploaded_rfp(uploaded)
+    # Chỉ nạp một lần cho mỗi file: nếu ghi đè mỗi lần chạy lại script thì
+    # người dùng không sửa nổi nội dung trong ô text.
+    if content is not None and st.session_state.get("loaded_upload") != uploaded.name:
+        st.session_state["loaded_upload"] = uploaded.name
+        select_sample(content)
+        st.rerun()
+
+
 def sidebar_controls() -> tuple[str, bool]:
+    """Bảng trái, hai phần: kho dữ liệu nguồn và RFP của lượt này.
+
+    Trước đây ô tải file nằm CHEN giữa hai phần đó, nên đọc từ trên xuống là
+    một chuỗi việc không liên quan nhau. Nay mọi cách đưa RFP vào — dán, chọn
+    mẫu, tải file — nằm chung một chỗ, ngay dưới ô RFP.
+    """
     with st.sidebar:
-        st.title("RFP đầu vào")
-        with st.expander("Dữ liệu nguồn", expanded=False):
+        st.subheader("Dữ liệu nguồn")
+        with st.expander("Tình trạng kho tri thức", expanded=False):
             render_source_status()
-        uploaded = st.file_uploader(
-            "Tải file RFP (.txt, UTF-8)",
-            type=["txt"],
-            key="rfp_upload",
-        )
-        if uploaded is not None:
-            content = _load_uploaded_rfp(uploaded)
-            # Chỉ nạp một lần cho mỗi file: nếu ghi đè mỗi lần chạy lại script
-            # thì người dùng không sửa nổi nội dung trong ô text.
-            if content is not None and st.session_state.get(
-                "loaded_upload"
-            ) != uploaded.name:
-                st.session_state["loaded_upload"] = uploaded.name
-                select_sample(content)
-                st.rerun()
+
+        st.divider()
+        st.subheader("RFP")
         text = st.text_area(
-            "Dán RFP",
+            "RFP",
             key="rfp_input",
-            height=430,
+            height=380,
+            label_visibility="collapsed",
             placeholder="Dán nội dung RFP tiếng Nhật tại đây…",
         )
         if text.strip():
             with st.expander("Bản dịch RFP (tiếng Việt)", expanded=False):
                 render_rfp_translation(text)
-        st.markdown("#### RFP mẫu")
-        for path in sorted(Path(RFP_DIR).glob("*.txt"))[:SAMPLE_RFP_LIMIT]:
-            sample_text = path.read_text(encoding="utf-8")
-            st.button(
-                f"Chọn {path.stem}",
-                key=f"sample_{path.stem}",
-                on_click=select_sample,
-                args=(sample_text,),
-                width="stretch",
-            )
-        render_golden_picker()
+
+        st.caption("Hoặc lấy sẵn từ:")
+        with st.expander("RFP mẫu", expanded=False):
+            for path in sorted(Path(RFP_DIR).glob("*.txt"))[:SAMPLE_RFP_LIMIT]:
+                sample_text = path.read_text(encoding="utf-8")
+                st.button(
+                    f"Chọn {path.stem}",
+                    key=f"sample_{path.stem}",
+                    on_click=select_sample,
+                    args=(sample_text,),
+                    width="stretch",
+                )
+            render_golden_picker()
+        with st.expander("Upload file RFP", expanded=False):
+            render_rfp_upload()
+
         submitted = st.button(
             "Nộp và sinh hồ sơ",
             type="primary",
