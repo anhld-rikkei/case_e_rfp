@@ -70,7 +70,18 @@
       "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/fix_note_term.py\")",
       "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_six.py\")",
       "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_six_tests.py\")",
-      "Bash(python -m pytest eval/test_app_ui.py -q -k \"no_sentence_is_shown\")"
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"no_sentence_is_shown\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_trace.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"journey_covers_all_three or plain_words_not_jargon\")",
+      "Bash(sed -n '/def test_journey_covers_all_three_branches/,/^def test_journey_sorts/p' eval/test_app_ui.py)",
+      "Bash(sed -n '/def test_flow_svg_uses_plain_words_not_jargon/,/^def /p' eval/test_app_ui.py)",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_trace_tests.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"shows_all_three_branches_with_counts or really_finds_evidence or sorts_red_first or summary_percentages\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_fixture.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"one_row_per_requirement or sorts_red_first or summary_percentages or highlighted_path or highlight_marks\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_fixture2.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"one_row_per_requirement or sorts_red_first or summary_percentages\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_hover.py\")"
     ]
   }
 }

@@ -1535,11 +1535,16 @@ def _journey_state() -> dict[str, Any]:
                 "requirements": [
                     {"req_id": "3.1", "text": "yc một"},
                     {"req_id": "3.2", "text": "yc hai"},
+                    {"req_id": "3.3", "text": "yc bốn"},
                 ],
                 "retrieval": {
                     "source_strategy": "hybrid-bm25+dense",
                     "selected": [
-                        {"sent_id": "S1", "text": "x", "scores": {"rerank": 0.9}}
+                        {"sent_id": "S1", "text": "x", "scores": {"rerank": 0.9}},
+                        # rerank 0 -> điểm 0.70: nằm giữa hai ngưỡng, đúng nhánh
+                        # "phải kiểm lại". Không có dòng này thì fixture chỉ còn
+                        # hai nhánh và mấy bài đếm phần trăm mất chỗ dựa.
+                        {"sent_id": "S2", "text": "y", "scores": {"rerank": 0.0}},
                     ],
                     "candidates": [
                         {"sent_id": "C9", "text": "gần đúng", "scores": {"rerank": 0.5}}
@@ -1570,7 +1575,14 @@ def _journey_state() -> dict[str, Any]:
                         "source_id": "S1",
                         "req_ids": ["3.1"],
                         "verdict": "VERIFIED",
-                    }
+                    },
+                    {
+                        "text": "c",
+                        "origin": "precedent",
+                        "source_id": "S2",
+                        "req_ids": ["3.3"],
+                        "verdict": "VERIFIED",
+                    },
                 ],
             },
             {
@@ -1603,8 +1615,9 @@ def test_flow_svg_shows_all_three_branches_with_counts() -> None:
     for name in ("Dùng được ngay", "Dùng được, phải kiểm lại",
                  "Người phải bổ sung"):
         assert name in svg
-    # Mỗi nhánh 1/3 yêu cầu
-    assert svg.count("1 (33%)") == 3
+    # 4 yêu cầu: 2 điểm cao, 1 điểm giữa, 1 điểm thấp
+    assert svg.count("2 (50%)") == 1
+    assert svg.count("1 (25%)") == 2
 
 
 def test_flow_svg_describes_how_the_system_really_finds_evidence() -> None:
@@ -1622,7 +1635,8 @@ def test_flow_svg_describes_how_the_system_really_finds_evidence() -> None:
         "Không tìm được — chỉ liệt kê nguồn gần đúng",
     ):
         assert name in svg
-    assert "cùng lúc" in svg
+    # Tên thật của kỹ thuật, theo yêu cầu "chỉ rõ truy xuất kiểu gì"
+    assert "BM25 + vector ngữ nghĩa" in svg
 
 
 def test_flow_svg_shows_the_processing_steps_in_order() -> None:
@@ -1642,19 +1656,41 @@ def test_flow_svg_shows_the_processing_steps_in_order() -> None:
     assert "9 câu" in svg and "1 vòng" in svg
 
 
-def test_flow_svg_uses_plain_words_not_jargon() -> None:
-    """Người đọc là người làm hồ sơ thầu, không phải kỹ sư retrieval."""
+def test_flow_svg_keeps_plain_titles_and_puts_technique_in_the_subline() -> None:
+    """Tiêu đề nói việc, dòng phụ nói kỹ thuật.
+
+    Người đọc hỏi cả hai câu: "hệ thống làm gì" và "làm bằng cách nào". Tên
+    thật của kỹ thuật (BM25, MMR) nằm ở dòng phụ; tên nội bộ của code
+    (`source_strategy`, `hybrid-bm25+dense`) thì không bao giờ được lên màn
+    hình — nó chỉ có nghĩa với người đọc source.
+    """
     import app
 
     import re
 
     svg = app.flow_svg(app.requirement_journey(_journey_state()), blocked=0)
     # Chỉ soi CHỮ NGƯỜI ĐỌC THẤY. Khoá máy đọc trong data-edge vẫn giữ tên gốc
-    # (`hybrid-bm25+dense`) để test và log truy được về source_strategy.
+    # để test và log truy được về source_strategy.
     visible = " ".join(re.findall(r"<text[^>]*>([^<]*)</text>", svg))
-    for jargon in ("BM25", "embedding", "semantic", "sankey", "source_strategy",
-                   "hybrid", "MMR", "rerank"):
-        assert jargon.lower() not in visible.lower(), jargon
+    for internal in ("source_strategy", "sankey", "hybrid-bm25", "capability-only"):
+        assert internal.lower() not in visible.lower(), internal
+    # Kỹ thuật thật thì phải gọi tên
+    assert "BM25" in visible and "MMR" in visible
+
+
+def test_flow_svg_marks_where_the_llm_is_called() -> None:
+    """Câu hỏi đầu tiên của người xem sơ đồ, mà trước đây phải tự đoán."""
+    import app
+
+    import re
+
+    svg = app.flow_svg(app.requirement_journey(_journey_state()), blocked=0)
+    visible = " ".join(re.findall(r"<text[^>]*>([^<]*)</text>", svg))
+    # Ba bước gọi LLM: viết câu, kiểm lại từng câu, soi lại văn bản
+    assert visible.count(app.LLM_BADGE) == 3
+    # Tìm căn cứ và chấm điểm thì KHÔNG: BM25 là thống kê, vector do mô hình
+    # nhúng chạy tại chỗ, chấm điểm là số học.
+    assert visible.count(app.NO_LLM_BADGE) == 2
 
 
 def test_flow_svg_dims_edges_with_no_requirements() -> None:
@@ -1714,7 +1750,7 @@ def test_flow_highlighted_path_is_the_only_thicker_edge() -> None:
     thick = re.findall(
         rf'stroke-width="{app._W_LIT:.1f}"[^>]*data-edge="([^"]+)"', svg
     )
-    assert set(thick) == {"out:capability-only", "branch:warn", "guard:warn"}
+    assert set(thick) == {"out:capability-only", "branch:auto", "guard:auto"}
 
 
 def test_flow_arrows_land_on_the_middle_of_a_box_edge() -> None:
@@ -1765,11 +1801,11 @@ def test_flow_highlight_marks_only_the_selected_path() -> None:
     lit = app.flow_svg(rows, blocked=0, highlight="4.1")
 
     assert plain != lit
-    # 4.1 đi qua "capability-only" và nhánh warn -> cạnh đó sáng
+    # 4.1 đi qua "capability-only" và — theo phép chia mới — nhánh auto
     active = re.findall(r'opacity="0\.95"[^>]*data-edge="out:capability-only"', lit)
     assert active
     # Cạnh của nhánh không được chọn bị mờ đi
-    assert re.findall(r'opacity="0\.15"[^>]*data-edge="branch:auto"', lit)
+    assert re.findall(r'opacity="0\.15"[^>]*data-edge="branch:warn"', lit)
     # Điểm tin cậy của chính yêu cầu đó hiện trên hình
     assert f"{rows[0]['score']:.2f}" in lit or "1.00" in lit
 
@@ -1814,18 +1850,43 @@ def test_journey_has_one_row_per_requirement() -> None:
     import app
 
     rows = app.requirement_journey(_journey_state())
-    assert len(rows) == 3
-    assert {row["req_id"] for row in rows} == {"3.1", "3.2", "4.1"}
+    assert len(rows) == 4
+    assert {row["req_id"] for row in rows} == {"3.1", "3.2", "3.3", "4.1"}
 
 
-def test_journey_covers_all_three_branches() -> None:
+def test_journey_branch_follows_the_score_not_the_source_kind() -> None:
+    """Lỗi thật: cạnh dán nhãn "điểm cao/giữa/thấp" mà nhánh lại quyết bằng
+    "có precedent hay không".
+
+    Câu lấy thẳng từ bảng năng lực có điểm 1.00 — cao nhất thang — vẫn rơi vào
+    nhánh "điểm giữa". Với kho dữ liệu này phần lớn câu đến từ bảng năng lực,
+    nên nhánh "điểm cao" gần như không bao giờ có ai: lúc nào cũng 0%.
+    """
     import app
 
     rows = app.requirement_journey(_journey_state())
     by_id = {row["req_id"]: row for row in rows}
-    assert by_id["3.1"]["branch"] == "auto"    # có precedent, mục T1
-    assert by_id["4.1"]["branch"] == "warn"    # chỉ bảng năng lực, mục T2
+    # Mỗi dòng phải khớp đúng phép chia theo điểm
+    for row in rows:
+        assert row["branch"] == app.score_branch(row["score"]), row
+    # Câu từ bảng năng lực (điểm 1.00) giờ vào đúng nhánh điểm cao
+    assert by_id["4.1"]["score"] >= 0.75
+    assert by_id["4.1"]["branch"] == "auto"
     assert by_id["3.2"]["branch"] == "human"   # chưa có câu nào dẫn
+    assert by_id["3.3"]["branch"] == "warn"    # precedent điểm giữa
+
+
+def test_score_branch_uses_the_same_thresholds_as_the_tiers() -> None:
+    """Một phép chia cho cả bảng Kết quả lẫn sơ đồ — hai chỗ tự chia riêng là
+    lúc màn hình nói hai chuyện khác nhau về cùng một câu."""
+    import app
+    from config.settings import CONFIDENCE_T_HIGH, CONFIDENCE_T_LOW
+
+    assert app.score_branch(CONFIDENCE_T_HIGH) == "auto"
+    assert app.score_branch(CONFIDENCE_T_HIGH - 0.01) == "warn"
+    assert app.score_branch(CONFIDENCE_T_LOW) == "warn"
+    assert app.score_branch(CONFIDENCE_T_LOW - 0.01) == "human"
+    assert app.score_branch(0.0) == "human"
 
 
 def test_journey_sorts_red_first_then_yellow_then_green() -> None:
@@ -1833,7 +1894,7 @@ def test_journey_sorts_red_first_then_yellow_then_green() -> None:
     import app
 
     branches = [row["branch"] for row in app.requirement_journey(_journey_state())]
-    assert branches == ["human", "warn", "auto"]
+    assert branches == ["human", "warn", "auto", "auto"]
 
 
 def test_uncovered_requirement_lists_related_sources_as_not_an_answer() -> None:
@@ -1891,7 +1952,7 @@ def test_journey_summary_percentages_match_row_counts() -> None:
 
     at = _render(body, _journey_state())
     values = {item.label: item.value for item in at.metric}
-    assert values["🟢 Dùng được ngay"] == "1"
+    assert values["🟢 Dùng được ngay"] == "2"
     assert values["🟡 Phải kiểm lại"] == "1"
     assert values["🔴 Người phải bổ sung"] == "1"
 
@@ -3328,3 +3389,32 @@ def test_section_notes_read_as_a_short_chain() -> None:
         lines = [line for line in note.split("\n") if line.strip()]
         assert len(lines) >= 2
         assert all(len(line) < 120 for line in lines), note
+
+
+def test_each_flow_box_carries_its_own_detail_on_hover() -> None:
+    """Chi tiết của bước nằm NGAY trên ô đó, không phải một danh sách cuối trang.
+
+    Dùng `<title>` của SVG: trình duyệt tự hiện tooltip, không JS, không CSS —
+    nên không có gì để hỏng.
+    """
+    import app
+    import re
+
+    statuses = {name: "completed" for name in app.FLOW_STAGES}
+    statuses["review"] = "running"
+    svg = app.pipeline_svg(statuses, _state())
+    titles = re.findall(r"<title>(.*?)</title>", svg, re.S)
+    assert len(titles) == len(app.FLOW_STAGES)
+    joined = " ".join(titles)
+    # Mỗi tooltip nói tên bước, trạng thái, và có gọi LLM không
+    assert "Đọc RFP — xong" in joined
+    assert "Review chất lượng — đang chạy" in joined
+    assert joined.count(app.LLM_BADGE) == 3
+    assert joined.count(app.NO_LLM_BADGE) == len(app.FLOW_STAGES) - 3
+
+
+def test_llm_map_covers_every_stage_in_the_flow() -> None:
+    """Thiếu một bước là tooltip của bước đó im lặng về chuyện gọi LLM."""
+    import app
+
+    assert set(app.STAGE_USES_LLM) >= set(app.FLOW_STAGES)

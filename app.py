@@ -20,6 +20,8 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from config.settings import (
+    CONFIDENCE_T_HIGH,
+    CONFIDENCE_T_LOW,
     PROMPT_VERSION,
     RELATED_SOURCES_TOP_N,
     SAMPLE_RFP_LIMIT,
@@ -2380,8 +2382,53 @@ def _flow_box_xy(index: int) -> tuple[float, float]:
     )
 
 
-def pipeline_svg(statuses: dict[str, str]) -> str:
-    """Sơ đồ luồng chạy cho lượt này, trạng thái in thẳng trong từng ô."""
+# Bước nào gọi LLM. Suy từ chỗ `rfp.llm` được import thật trong code:
+# parse (parser dự phòng), sinh từng mục (viết câu + claim-check), review.
+# Truy xuất KHÔNG gọi LLM — BM25 là thống kê, vector do mô hình nhúng chạy tại
+# chỗ, chấm lại và MMR là công thức.
+STAGE_USES_LLM = {
+    "parse_input": True,
+    "check_complete": False,
+    "route_reference_rfp": False,
+    "plan_sections": False,
+    "retrieve_per_chapter": False,
+    "generate_per_section": True,
+    "review": True,
+    "assemble": False,
+}
+
+
+def stage_detail(state: dict[str, Any], name: str, status: str) -> str:
+    """Dòng chi tiết cho tooltip của một bước.
+
+    Nội dung lấy từ `trace.stages` — chính thứ mà khối "Chi tiết kỹ thuật theo
+    node" đang in ra thành một danh sách dài. Đưa vào tooltip thì người xem hỏi
+    ở đâu trả lời ở đó, không phải cuộn xuống cuối trang tìm.
+    """
+    stage = (state.get("trace", {}).get("stages", {}) or {}).get(name, {})
+    parts = [f"{STAGE_VI[name]} — {label(STAGE_STATUS_VI, status)}"]
+    parts.append(LLM_BADGE if STAGE_USES_LLM.get(name) else NO_LLM_BADGE)
+    note = stage.get("note") or stage.get("reason")
+    if note:
+        parts.append(str(note))
+    children = stage.get("children") or []
+    for child in children:
+        child_status = label(STAGE_STATUS_VI, child.get("status", "pending"))
+        parts.append(f"· {child.get('label', '')} — {child_status}")
+    seconds = stage.get("seconds")
+    if isinstance(seconds, (int, float)):
+        parts.append(f"· {seconds:.1f}s")
+    return "\n".join(parts)
+
+
+def pipeline_svg(
+    statuses: dict[str, str], state: dict[str, Any] | None = None
+) -> str:
+    """Sơ đồ luồng chạy cho lượt này, trạng thái in thẳng trong từng ô.
+
+    Mỗi ô mang một `<title>`: rê chuột vào là trình duyệt hiện chi tiết của
+    bước đó. Không JS, không CSS — nên không có gì để hỏng.
+    """
     out = [
         '<svg viewBox="0 0 1400 240" width="100%" '
         f'style="background:{_FLOW_BG};border-radius:12px">',
@@ -2391,9 +2438,12 @@ def pipeline_svg(statuses: dict[str, str]) -> str:
         status = statuses.get(name, "pending")
         stroke, fill, text_color = STAGE_TONE.get(status, STAGE_TONE["pending"])
         x, y = _flow_box_xy(index)
+        detail = stage_detail(state or {}, name, status)
         out.append(
-            f'<rect x="{x}" y="{y}" width="{_FLOW_BOX_W}" height="{_FLOW_BOX_H}" '
+            f'<g data-stage="{name}"><rect x="{x}" y="{y}" '
+            f'width="{_FLOW_BOX_W}" height="{_FLOW_BOX_H}" '
             f'rx="10" fill="{fill}" stroke="{stroke}" stroke-width="1.6"/>'
+            f"<title>{_esc(detail)}</title></g>"
         )
         out.append(
             _svg_text(
@@ -2463,7 +2513,8 @@ def render_flow(
 
     with target.container():
         st.progress(done / len(FLOW_STAGES), text=f"{done}/{len(FLOW_STAGES)} bước")
-        st.markdown(pipeline_svg(statuses), unsafe_allow_html=True)
+        st.markdown(pipeline_svg(statuses, state), unsafe_allow_html=True)
+        st.caption("Rê chuột vào một ô để xem chi tiết bước đó.")
         present = set(statuses.values())
         if "skipped" in present:
             st.caption(f"{STAGE_STATUS_ICON['skipped']} {SKIP_LEGEND}.")
@@ -2678,16 +2729,27 @@ def render_review_rounds(state: dict[str, Any]) -> None:
 BRANCH_ORDER = {"human": 0, "warn": 1, "auto": 2}
 
 
+def score_branch(score: float) -> str:
+    """Điểm -> nhánh, dùng ĐÚNG hai ngưỡng đang chấm tầng cho cả hồ sơ.
+
+    Một phép chia duy nhất cho cả bảng Kết quả lẫn sơ đồ hành trình; hai chỗ
+    tự chia riêng là lúc màn hình nói hai chuyện khác nhau về cùng một câu.
+    """
+    if score >= CONFIDENCE_T_HIGH:
+        return "auto"
+    if score >= CONFIDENCE_T_LOW:
+        return "warn"
+    return "human"
+
+
 def requirement_journey(state: dict[str, Any]) -> list[dict[str, Any]]:
     """Hành trình của TỪNG yêu cầu RFP — kể chuyện theo yêu cầu, không theo node.
 
     Mọi thứ ở đây suy từ state đã có: `source_strategy` của chương, điểm tin cậy
     của câu dẫn, và danh sách nguồn bị loại. Không đo thêm, không gọi thêm.
 
-    Nhánh của một yêu cầu:
-      chưa có câu nào dẫn nó          -> 🔴 chuyển người
-      có câu dẫn, mục đạt tầng T1     -> 🟢 tự trả lời
-      có câu dẫn, mục ở T2/T3         -> 🟡 cảnh báo
+    Nhánh của một yêu cầu suy từ ĐIỂM của chính nó, qua `score_branch` — cùng
+    hai ngưỡng với tầng tin cậy của cả hồ sơ.
     """
     from rfp.confidence import rerank_scores, sentence_confidence
 
@@ -2725,18 +2787,17 @@ def requirement_journey(state: dict[str, Any]) -> list[dict[str, Any]]:
                     else "— chưa có nguồn nào"
                 )
             else:
-                # Nhánh theo bằng chứng của CHÍNH yêu cầu này, không theo tầng
-                # của mục: một yêu cầu đã có precedent chống lưng không nên bị
-                # tô vàng chỉ vì yêu cầu anh em trong cùng mục còn thiếu.
-                branch = (
-                    "auto"
-                    if any(item.get("origin") == "precedent" for item in supporting)
-                    else "warn"
-                )
+                # Nhánh suy từ ĐIỂM của chính yêu cầu này, theo đúng hai ngưỡng
+                # đang chấm tầng cho cả hồ sơ. Trước đây nhánh quyết bằng "có
+                # precedent hay không", nên câu lấy thẳng từ bảng năng lực —
+                # điểm 1.00, cao nhất thang — vẫn rơi vào nhánh "điểm giữa", và
+                # nhánh "điểm cao" gần như không bao giờ có ai. Cạnh thì dán
+                # nhãn "điểm cao/giữa/thấp": nhãn nói một đằng, phép chia một nẻo.
                 score = max(
                     sentence_confidence(item, rerank_by_source=scores) or 0.0
                     for item in supporting
                 )
+                branch = score_branch(score)
                 source_text = " · ".join(
                     dict.fromkeys(
                         str(item.get("source_id")) for item in supporting
@@ -2799,17 +2860,17 @@ _TIER_CHAIN = (
     (
         "capability-only",
         "Đối chiếu bảng năng lực công ty",
-        "khớp thẳng, không cần tìm ở đâu nữa",
+        "regex khớp thẳng — không tìm ở đâu nữa",
     ),
     (
         "hybrid-bm25+dense",
         "Tìm trong hồ sơ thầu cũ",
-        "từ khoá + ngữ nghĩa cùng lúc, rồi chọn câu sát nhất",
+        "BM25 + vector ngữ nghĩa → chấm lại → MMR",
     ),
     (
         "dense-only",
-        "Tìm bằng ngữ nghĩa (khi tắt từ khoá)",
-        "chỉ dùng khi cấu hình tắt tìm theo từ khoá",
+        "Chỉ tìm bằng vector ngữ nghĩa",
+        "khi cấu hình tắt BM25",
     ),
     (
         "fallback-listing",
@@ -2818,6 +2879,12 @@ _TIER_CHAIN = (
     ),
 )
 
+# Chỗ nào gọi LLM, chỗ nào không. Người đọc sơ đồ hỏi ngay câu này, mà trước
+# đây phải tự đoán. Truy xuất KHÔNG gọi LLM: BM25 là thống kê, vector ngữ nghĩa
+# do mô hình nhúng chạy tại chỗ, chấm lại và MMR là công thức. Chấm điểm và
+# chốt chặn cũng không — một cái là số học, một cái là regex.
+LLM_BADGE = "◆ LLM"
+NO_LLM_BADGE = "○ không LLM"
 
 _MARKER_IDS = {
     _FLOW_LINE: "ar-line",
@@ -2950,8 +3017,9 @@ def flow_svg(rows, *, blocked, highlight=None, checked=0, reviewed=0):
         f'<rect x="176" y="40" width="330" height="318" rx="12" fill="none" '
         f'stroke="{_FLOW_LINE}" stroke-width="1.4"/>'
     )
-    out.append(_svg_text(341, 64, "① Tìm căn cứ cho từng yêu cầu", size=12.5,
+    out.append(_svg_text(341, 58, "① Tìm căn cứ cho từng yêu cầu", size=12.5,
                          weight="600"))
+    out.append(_svg_text(341, 74, NO_LLM_BADGE, size=9.5, color=_FLOW_SUB))
     tier_y = (80, 148, 216, 284)
     for index, (key, title, sub) in enumerate(_TIER_CHAIN):
         count = by_tier.get(key, 0)
@@ -2979,19 +3047,19 @@ def flow_svg(rows, *, blocked, highlight=None, checked=0, reviewed=0):
     )
 
     # 3. Viết câu -> kiểm lại -> soi văn bản: một cột dọc, chạm giữa mép
-    out.append(_card(566, 62, 210, 54, "② Viết câu, gắn nguồn",
+    out.append(_card(566, 62, 210, 54, f"② Viết câu, gắn nguồn  {LLM_BADGE}",
                      "mỗi câu một mã nguồn cụ thể"))
     out.append(_edge("M671,116 V152", key="gen"))
-    out.append(_card(566, 152, 210, 54, "③ Kiểm lại từng câu",
+    out.append(_card(566, 152, 210, 54, f"③ Kiểm lại từng câu  {LLM_BADGE}",
                      f"{checked} câu · đối chiếu bằng chứng"))
     out.append(_edge("M671,206 V242", key="check"))
-    out.append(_card(566, 242, 210, 54, "④ Soi lại văn bản",
+    out.append(_card(566, 242, 210, 54, f"④ Soi lại văn bản  {LLM_BADGE}",
                      f"{reviewed} vòng · bố cục và văn phong"))
     out.append(_edge(_elbow(776, 269, 806, row_mid, 816), key="review"))
 
     # 4. Chấm điểm
     out.append(
-        _card(816, 168, 154, 62, "⑤ Chấm độ tin cậy",
+        _card(816, 168, 154, 62, f"⑤ Chấm độ tin cậy  {NO_LLM_BADGE}",
               f"{picked['score']:.2f} · {picked['req_id']}" if picked
               else "0–1 · ghi log mọi lượt")
     )
@@ -3037,8 +3105,9 @@ def flow_svg(rows, *, blocked, highlight=None, checked=0, reviewed=0):
         f'<circle cx="1372" cy="{row_mid}" r="28" fill="{_FLOW_CARD}" '
         f'stroke="{_FLOW_LINE}" stroke-width="1.4"/>'
     )
-    out.append(_svg_text(1372, 195, "⑥ Chặn", size=10.5, weight="600"))
-    out.append(_svg_text(1372, 209, f"{blocked} câu", size=9.5, color=_FLOW_SUB))
+    out.append(_svg_text(1372, 191, "⑥ Chặn", size=10.5, weight="600"))
+    out.append(_svg_text(1372, 204, f"{blocked} câu", size=9.5, color=_FLOW_SUB))
+    out.append(_svg_text(1372, 216, "regex", size=8.5, color=_FLOW_SUB))
     out.append(_edge(f"M1400,{row_mid} H1416", key="publish"))
     out.append(_card(1416, 168, 58, 62, "Hồ sơ", "nháp"))
     out.append("</svg>")
