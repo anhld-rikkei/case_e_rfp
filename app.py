@@ -1000,14 +1000,32 @@ def toggle_chat_checklist() -> None:
 
 
 def render_chat_toggle() -> None:
-    """Một nút, không phải một khối."""
+    """Nút mở chat, đặt cạnh tiêu đề trang.
+
+    Vô hiệu khi chưa có hồ sơ: chat chỉ viết lại trên căn cứ sẵn có, chưa sinh
+    gì thì không có gì để chỉnh.
+    """
+    ready = displayed_state() is not None
     if chat_is_open():
+        st.button(
+            "✕ Đóng chat",
+            key="chat_close_top",
+            on_click=close_chat_panel,
+            width="stretch",
+        )
         return
     st.button(
         "💬 Chat",
         key="chat_open_button",
+        type="primary",
+        width="stretch",
+        disabled=not ready,
         on_click=open_chat_panel,
-        help="Chỉnh lại hồ sơ bằng chỉ thị, kèm checklist trước khi nộp",
+        help=(
+            "Chỉnh lại hồ sơ bằng chỉ thị, kèm checklist trước khi nộp"
+            if ready
+            else "Sinh hồ sơ xong mới chat được"
+        ),
     )
 
 
@@ -1524,9 +1542,14 @@ def render_bilingual_proposal(
         # thân văn bản bên trái tụt xuống, và cả mục lệch nhau từ dòng đầu.
         st.markdown(f"**{index + 1}. {section['title_ja']}**")
         vi_heading = vi_lines[0] if vi_lines else section["title_vi"]
+        # ATTRIBUTE_ONLY luôn kèm ghi chú nói rõ VÌ SAO mục chỉ dựng từ bảng
+        # năng lực (RFP không có chương tương ứng / khớp thẳng / không có hồ sơ
+        # cũ dùng được). Nhắc thêm một cụm trạng thái chung chung ở đây là nói
+        # hai lần, mà lần này mơ hồ hơn.
+        redundant = status == "ATTRIBUTE_ONLY" and section.get("note")
         st.caption(
-            f"{vi_heading} · {SECTION_STATUS_ICON.get(status, '')} "
-            f"{label(SECTION_STATUS_VI, status)}"
+            f"{vi_heading} · {SECTION_STATUS_ICON.get(status, '')}"
+            + ("" if redundant else f" {label(SECTION_STATUS_VI, status)}")
         )
         render_section_note(state, section)
 
@@ -1591,7 +1614,6 @@ def render_proposal(state: dict[str, Any]) -> None:
 
 
 def render_proposal_body(state: dict[str, Any]) -> None:
-    render_chat_toggle()
     render_draft_banner(state)
     st.success(sentence_breakdown(state))
     # KẾT QUẢ trước, CHI TIẾT sau: người mở tab cần thấy ngay bức tranh tổng —
@@ -2097,6 +2119,98 @@ def _stage_statuses(
     return statuses
 
 
+# Sơ đồ luồng chạy: 4 ô một hàng, 2 hàng, nối bằng mũi tên. Trạng thái nằm
+# NGAY TRONG ô ("đang chạy", "xong", "bỏ qua") nên không cần bảng chú giải
+# riêng — người xem không phải đối chiếu icon với một dòng chữ ở cuối trang.
+STAGE_TONE = {
+    # (viền, nền, màu chữ trạng thái)
+    "pending": ("#2A323C", "#161B22", "#6B7684"),
+    "running": ("#D29922", "#2A2416", "#E6C86A"),
+    "completed": ("#3FB950", "#16281F", "#7EE29A"),
+    "skipped": ("#4B7BA8", "#16222E", "#8FB8DC"),
+    "blocked": ("#F85149", "#2A1A19", "#F0A8A2"),
+    "failed": ("#F85149", "#2A1A19", "#F0A8A2"),
+}
+
+_FLOW_BOX_W = 300
+_FLOW_BOX_H = 62
+_FLOW_GAP = 40
+_FLOW_COLS = 4
+_FLOW_X0 = 24
+_FLOW_ROW_Y = (26, 152)
+
+
+def _flow_box_xy(index: int) -> tuple[float, float]:
+    row, column = divmod(index, _FLOW_COLS)
+    return (
+        _FLOW_X0 + column * (_FLOW_BOX_W + _FLOW_GAP),
+        _FLOW_ROW_Y[row],
+    )
+
+
+def pipeline_svg(statuses: dict[str, str]) -> str:
+    """Sơ đồ luồng chạy cho lượt này, trạng thái in thẳng trong từng ô."""
+    out = [
+        '<svg viewBox="0 0 1400 240" width="100%" '
+        f'style="background:{_FLOW_BG};border-radius:12px">',
+        _markers(),
+    ]
+    for index, name in enumerate(FLOW_STAGES):
+        status = statuses.get(name, "pending")
+        stroke, fill, text_color = STAGE_TONE.get(status, STAGE_TONE["pending"])
+        x, y = _flow_box_xy(index)
+        out.append(
+            f'<rect x="{x}" y="{y}" width="{_FLOW_BOX_W}" height="{_FLOW_BOX_H}" '
+            f'rx="10" fill="{fill}" stroke="{stroke}" stroke-width="1.6"/>'
+        )
+        out.append(
+            _svg_text(
+                x + _FLOW_BOX_W / 2,
+                y + 26,
+                f"{index + 1}. {STAGE_VI[name]}",
+                size=13,
+                weight="600",
+            )
+        )
+        out.append(
+            _svg_text(
+                x + _FLOW_BOX_W / 2,
+                y + 45,
+                label(STAGE_STATUS_VI, status),
+                size=11,
+                color=text_color,
+            )
+        )
+        if index + 1 >= len(FLOW_STAGES):
+            continue
+        next_x, next_y = _flow_box_xy(index + 1)
+        if next_y == y:
+            out.append(
+                _edge(
+                    f"M{x + _FLOW_BOX_W},{y + _FLOW_BOX_H / 2} H{next_x}",
+                    key=f"step:{name}",
+                )
+            )
+        else:
+            # Xuống hàng: đi vòng qua khoảng giữa hai hàng rồi vào ô đầu hàng
+            # dưới. Nối thẳng từ ô cuối hàng trên sang ô đầu hàng dưới sẽ cắt
+            # ngang cả sơ đồ.
+            middle = (y + _FLOW_BOX_H + next_y) / 2
+            out.append(
+                _edge(
+                    f"M{x + _FLOW_BOX_W / 2},{y + _FLOW_BOX_H} "
+                    f"V{middle - 10} Q{x + _FLOW_BOX_W / 2},{middle} "
+                    f"{x + _FLOW_BOX_W / 2 - 10},{middle} "
+                    f"H{next_x + _FLOW_BOX_W / 2 + 10} "
+                    f"Q{next_x + _FLOW_BOX_W / 2},{middle} "
+                    f"{next_x + _FLOW_BOX_W / 2},{middle + 10} V{next_y}",
+                    key=f"step:{name}",
+                )
+            )
+    out.append("</svg>")
+    return "".join(out)
+
+
 def render_flow(
     state: dict[str, Any],
     target: Any,
@@ -2108,8 +2222,8 @@ def render_flow(
     Nguồn trạng thái là `trace.stages` trong chính state mà `stream_graph`
     yield ra sau mỗi node, nên đây là tiến độ thật chứ không phải hoạt ảnh
     phỏng đoán. Giới hạn: một node dài (sinh 5 mục) chỉ có hai mốc *bắt đầu* và
-    *xong* — bên trong nó không phát tín hiệu, nên thanh tiến độ đứng yên trong
-    lúc node đó chạy.
+    *xong* — bên trong nó không phát tín hiệu, nên sơ đồ đứng yên trong lúc
+    node đó chạy.
     """
     target.empty()
     statuses = _stage_statuses(state, failure=failure)
@@ -2117,28 +2231,24 @@ def render_flow(
 
     with target.container():
         st.progress(done / len(FLOW_STAGES), text=f"{done}/{len(FLOW_STAGES)} bước")
-        for name in FLOW_STAGES:
-            status = statuses[name]
-            text = f"{STAGE_STATUS_ICON.get(status, '⚪')} **{STAGE_VI[name]}**"
-            if status == "running":
-                st.markdown(f"{text} — đang chạy…")
-            elif status == "completed":
-                st.markdown(f"{text}")
-            elif status in {"failed", "blocked"}:
-                st.markdown(f"{text} — {label(STAGE_STATUS_VI, status)}")
-                if failure and failure.get("message"):
-                    if status == "blocked":
-                        # Bị chặn là hành vi ĐÚNG: thà không nộp còn hơn nộp hồ
-                        # sơ tuyên bố sai chứng chỉ. Không tô như lỗi hệ thống.
-                        st.warning(failure["message"], icon="🛑")
-                    else:
-                        st.error(failure["message"], icon="❌")
-            elif status == "skipped":
-                st.markdown(f"{text} — {label(STAGE_STATUS_VI, status)}")
-            else:
-                st.markdown(
-                    f":gray[{STAGE_STATUS_ICON['pending']} {STAGE_VI[name]}]"
-                )
+        st.markdown(pipeline_svg(statuses), unsafe_allow_html=True)
+        present = set(statuses.values())
+        if "skipped" in present:
+            st.caption(f"{STAGE_STATUS_ICON['skipped']} {SKIP_LEGEND}.")
+        if "blocked" in present:
+            st.caption(
+                f"{STAGE_STATUS_ICON['blocked']} guard chặn xuất bản là hành vi "
+                "đúng: thà không nộp còn hơn nộp hồ sơ sai."
+            )
+        if not failure or not failure.get("message"):
+            return
+        stage = failure.get("stage")
+        if stage and statuses.get(stage) == "blocked":
+            # Bị chặn là hành vi ĐÚNG: thà không nộp còn hơn nộp hồ sơ tuyên bố
+            # sai chứng chỉ. Không tô như lỗi hệ thống.
+            st.warning(failure["message"], icon="🛑")
+        else:
+            st.error(failure["message"], icon="❌")
 
 
 def _running_stage(state: dict[str, Any] | None) -> str:
@@ -2157,20 +2267,6 @@ def _running_stage(state: dict[str, Any] | None) -> str:
         return FLOW_STAGES[0]
     last_index = FLOW_STAGES.index(done[-1])
     return FLOW_STAGES[min(last_index + 1, len(FLOW_STAGES) - 1)]
-
-
-def render_flow_legend() -> None:
-    st.caption(
-        "  ·  ".join(
-            f"{STAGE_STATUS_ICON[key]} {STAGE_STATUS_VI[key]}"
-            for key in ("pending", "running", "completed", "skipped", "blocked", "failed")
-        )
-    )
-    st.caption(
-        f"{STAGE_STATUS_ICON['skipped']} {SKIP_LEGEND}.  ·  "
-        f"{STAGE_STATUS_ICON['blocked']} guard chặn xuất bản là hành vi đúng: "
-        "thà không nộp còn hơn nộp hồ sơ sai."
-    )
 
 
 def render_pipeline_status(state: dict[str, Any], target: Any) -> None:
@@ -3566,8 +3662,14 @@ def main() -> None:
     st.session_state.setdefault("version_index", 0)
 
     text, submitted = sidebar_controls()
-    st.title("RFP Proposal Studio")
-    st.caption("Sinh hồ sơ thầu tiếng Nhật, mỗi câu đều truy được về nguồn")
+    # Nút Chat đặt cạnh tiêu đề, không nằm lẫn trong thân hồ sơ: muốn chat thì
+    # bấm được ngay, không phải cuộn đi tìm.
+    title_left, title_right = st.columns([4, 1], vertical_alignment="center")
+    with title_left:
+        st.title("RFP Proposal Studio")
+        st.caption("Sinh hồ sơ thầu tiếng Nhật, mỗi câu đều truy được về nguồn")
+    with title_right:
+        render_chat_toggle()
     tabs = st.tabs(
         [
             "Tổng quan",
@@ -3637,8 +3739,6 @@ def main() -> None:
         render_empty_tabs(tabs)
     else:
         render_flow(latest, flow_area, failure=failure)
-        with proposal_tab:
-            render_flow_legend()
         if failure is not None:
             with result_area:
                 if failure["kind"] == "blocked":

@@ -90,7 +90,7 @@ MARK_LEGEND = (
 # ── Trạng thái mục — canonical: coverage.SectionStatus ─────────────────────
 SECTION_STATUS_VI = {
     "OK": "Đủ căn cứ",
-    "ATTRIBUTE_ONLY": "Chỉ có thông tin công ty",
+    "ATTRIBUTE_ONLY": "Chỉ dựa vào bảng năng lực công ty",
     "INSUFFICIENT_EVIDENCE": "Thiếu căn cứ — cần người bổ sung",
 }
 

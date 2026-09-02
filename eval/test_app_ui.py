@@ -504,17 +504,35 @@ def test_trace_tab_explains_every_skip() -> None:
     assert ATTRIBUTE_COVERED_REASON in combined
 
 
-def test_legend_explains_skip_is_not_an_error() -> None:
-    def body(root):
+def _flow_captions(state: dict[str, Any]) -> str:
+    def body(root, state):
         import sys as _s
 
         _s.path[:0] = [root + "/src", root]
+        import streamlit as st
+
         import app
 
-        app.render_flow_legend()
+        app.render_flow(state, st.empty())
 
-    at = _render(body)
-    captions = " ".join(item.value for item in at.caption)
+    at = _render(body, state)
+    assert not at.exception
+    return " ".join(item.value for item in at.caption)
+
+
+def test_skip_is_explained_only_when_a_step_is_actually_skipped() -> None:
+    """Chú giải theo ngữ cảnh, không phải bảng chú thích cố định cuối trang.
+
+    Bảng cố định bắt người xem đối chiếu icon với một dòng chữ ở cuối trang,
+    kể cả khi lượt chạy không có trạng thái nào như vậy.
+    """
+    plain = _state()
+    plain["trace"] = {"stages": {"parse_input": {"status": "completed"}}}
+    assert SKIP_LEGEND not in _flow_captions(plain)
+
+    skipped = _state()
+    skipped["trace"] = {"stages": {"review": {"status": "skipped"}}}
+    captions = _flow_captions(skipped)
     assert SKIP_LEGEND in captions
     assert "⏭️" in captions
 
@@ -1969,7 +1987,6 @@ def _flow_text(failure: dict[str, str] | None) -> str:
 
         holder = st.empty()
         app.render_flow(state, holder, failure=failure)
-        app.render_flow_legend()
 
     at = _render(body, state, failure)
     assert not at.exception
@@ -1980,12 +1997,71 @@ def _flow_text(failure: dict[str, str] | None) -> str:
     return " ".join(parts)
 
 
+def _flow_kinds(failure: dict[str, str]) -> set[str]:
+    """Thông báo hỏng rơi vào khối nào — error hay warning."""
+    state = _state()
+
+    def body(root, state, failure):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import streamlit as st
+
+        import app
+
+        app.render_flow(state, st.empty(), failure=failure)
+
+    at = _render(body, state, failure)
+    kinds = set()
+    if at.error:
+        kinds.add("error")
+    if at.warning:
+        kinds.add("warning")
+    return kinds
+
+
 def test_flow_lists_every_stage_in_vietnamese() -> None:
     text = _flow_text(None)
     for name in ("parse_input", "generate_per_section", "review", "assemble"):
         assert STAGE_VI[name] in text
     # `ask_user` là nhánh rẽ, không thuộc luồng chạy thành công
     assert STAGE_VI["ask_user"] not in text
+
+
+def test_flow_is_a_diagram_not_a_bullet_list() -> None:
+    import app
+    import re
+
+    statuses = {name: "completed" for name in app.FLOW_STAGES}
+    statuses["review"] = "running"
+    svg = app.pipeline_svg(statuses)
+    boxes = re.findall(r"<rect ", svg)
+    assert len(boxes) == len(app.FLOW_STAGES)
+    # Có mũi tên nối giữa các bước, kể cả chỗ xuống hàng
+    arrows = re.findall(r'data-edge="step:([a-z_]+)"', svg)
+    assert len(arrows) == len(app.FLOW_STAGES) - 1
+    assert app.FLOW_STAGES[app.FLOW_STAGES.index("review")] in svg
+
+
+def test_each_step_carries_its_own_status_word() -> None:
+    """Trạng thái nằm TRONG ô — đó là lý do bỏ được bảng chú giải."""
+    import app
+
+    statuses = {name: "pending" for name in app.FLOW_STAGES}
+    statuses["parse_input"] = "completed"
+    statuses["check_complete"] = "running"
+    statuses["review"] = "skipped"
+    svg = app.pipeline_svg(statuses)
+    for word in ("xong", "đang chạy", "bỏ qua", "chưa tới"):
+        assert f">{word}</text>" in svg, word
+
+
+def test_every_status_has_its_own_colour() -> None:
+    import app
+
+    tones = {value[0] for value in app.STAGE_TONE.values()}
+    # blocked và failed cùng đỏ là cố ý; còn lại phải phân biệt được
+    assert len(tones) == len(app.STAGE_TONE) - 1
 
 
 def test_blocked_flow_reads_as_safety_stop_not_technical_error() -> None:
@@ -2000,6 +2076,9 @@ def test_blocked_flow_reads_as_safety_stop_not_technical_error() -> None:
     assert "🛑" in text
     # Không được đọc thành hỏng hóc kỹ thuật
     assert "Lỗi kỹ thuật" not in text
+    # Và phải là khối cảnh báo, không phải khối lỗi
+    assert _flow_kinds({"stage": "assemble", "kind": "blocked",
+                        "message": "x"}) == {"warning"}
 
 
 def test_failed_flow_reads_as_technical_error() -> None:
@@ -2011,7 +2090,11 @@ def test_failed_flow_reads_as_technical_error() -> None:
         }
     )
     assert "Lỗi kỹ thuật" in text
-    assert "❌" in text
+    # Icon nằm ở tham số `icon=` của st.error, không lọt vào chuỗi giá trị —
+    # nên kiểm đúng thứ phân biệt hai ca: lỗi kỹ thuật vào khối ĐỎ, bị guard
+    # chặn vào khối CẢNH BÁO.
+    assert _flow_kinds({"stage": "generate_per_section", "kind": "failed",
+                        "message": "x"}) == {"error"}
 
 
 def test_stages_after_failure_never_show_as_completed() -> None:
@@ -2748,3 +2831,63 @@ def test_download_still_refuses_a_draft_the_guard_would_block() -> None:
     at = _render(body, _state())
     assert not at.download_button
     assert any("final guard chặn" in item.value for item in at.error)
+
+
+def test_chat_button_sits_next_to_the_page_title() -> None:
+    """Bấm chat được ngay, không phải cuộn hết hồ sơ mới thấy nút."""
+    order = _tab_slice(_app_with_result(), "Tổng quan")
+    at = _app_with_result()
+    flat = _ordered(at)
+    title = next(index for index, (kind, _) in enumerate(flat) if kind == "title")
+    button = next(
+        index
+        for index, (kind, label) in enumerate(flat)
+        if kind == "button" and label == "💬 Chat"
+    )
+    # Nút đứng ngay sau tiêu đề, trước cả hàng tab
+    tabs = next(index for index, (kind, _) in enumerate(flat) if kind == "tab")
+    assert title < button < tabs
+    assert not any(label == "💬 Chat" for _, label in order)
+
+
+def test_chat_button_is_disabled_until_there_is_a_proposal() -> None:
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.run()
+    assert not at.exception
+    chat = next(item for item in at.button if item.key == "chat_open_button")
+    assert chat.disabled
+
+
+def test_attribute_only_label_says_what_it_rests_on() -> None:
+    """"Chỉ có thông tin công ty" không nói được gì cho người đọc hồ sơ."""
+    from config import display_vi
+
+    label = display_vi.SECTION_STATUS_VI["ATTRIBUTE_ONLY"]
+    assert "bảng năng lực" in label
+    assert "Chỉ có thông tin công ty" != label
+
+
+def test_attribute_only_section_does_not_repeat_itself() -> None:
+    """Ghi chú ngay dưới đã nói rõ lý do — cụm trạng thái ở trên là thừa."""
+    state = _state()
+    state["sections"][0]["status"] = "ATTRIBUTE_ONLY"
+    state["sections"][0]["note"] = (
+        "参照可能な先行事例がないため、能力表のみで回答しました。"
+    )
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_bilingual_proposal(state, key_prefix="t")
+
+    at = _render(body, state)
+    assert not at.exception
+    captions = " ".join(item.value for item in at.caption)
+    assert "🟡" in captions
+    assert "bảng năng lực công ty" not in captions
+    # Lý do thật vẫn còn, ở hộp ghi chú
+    warnings = " ".join(item.value for item in at.warning)
+    assert "hồ sơ quá khứ" in warnings
