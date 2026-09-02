@@ -2190,3 +2190,295 @@ def test_sidebar_can_load_a_golden_case_into_the_rfp_box() -> None:
     assert at.session_state["rfp_input"] == expected.rfp_text
     # Nạp RFP mới thì kết quả cũ phải bị xoá, nếu không màn hình trộn hai lượt
     assert at.session_state["result_state"] is None
+
+
+# ── Chat review: panel trái thay khối "Chỉnh lại bằng chỉ thị" ────────────
+
+def test_refine_targets_put_the_whole_document_first() -> None:
+    import app
+
+    targets = app.refine_targets(_state())
+    assert targets[0] == (app.ALL_TARGET, "Toàn bộ hồ sơ")
+    assert all(key for key, _ in targets[1:])
+    assert len({key for key, _ in targets}) == len(targets)
+
+
+def test_instruction_suggestions_point_at_real_sections() -> None:
+    """Gợi ý phải bám mục có thật, và không gọi LLM lần nào."""
+    import app
+
+    state = _state()
+    keys = {section["key"] for section in state["sections"]}
+    suggestions = app.instruction_suggestions(state)
+    assert suggestions
+    for item in suggestions:
+        assert item["target"] in keys | {app.ALL_TARGET}
+        assert item["instruction"].strip()
+    # Tất định: cùng đầu vào, cùng gợi ý
+    assert app.instruction_suggestions(state) == suggestions
+
+
+def test_no_suggestions_when_there_is_nothing_to_edit() -> None:
+    import app
+
+    assert app.instruction_suggestions({"sections": []}) == []
+    assert app.instruction_suggestions({"sections": [{"key": "a", "sentences": []}]}) == []
+
+
+def test_chat_history_is_built_from_version_history() -> None:
+    """Lịch sử chat suy TỪ lịch sử phiên bản — không nuôi bản sao thứ hai.
+
+    Hai kho song song rồi lệch nhau là cách chắc chắn nhất để chat kể sai
+    chuyện đã thật sự xảy ra với tài liệu.
+    """
+    import app
+
+    versions = [
+        {"label": "v1", "state": {}},  # bản gốc, không có chỉ thị
+        {
+            "label": "v2",
+            "state": {},
+            "instruction": "viết ngắn hơn",
+            "target": "3. 技術要件",
+            "counts": {"changed": 2, "dropped": 0, "kept": 5, "blocked": 0},
+            "rejected": [],
+            "restored": 0,
+        },
+    ]
+    turns = app.chat_turns(versions)
+    assert [turn["role"] for turn in turns] == ["user", "assistant"]
+    assert turns[0]["text"] == "viết ngắn hơn"
+    assert turns[0]["target"] == "3. 技術要件"
+    assert turns[1]["outcome"] == "changed"
+    assert "v2" in app.chat_reply_text(turns[1])
+
+
+def test_chat_history_appends_the_turn_that_made_no_version() -> None:
+    """Lượt bị chặn KHÔNG sinh bản mới — vẫn phải hiện trong chat.
+
+    Im lặng khi bị chặn đúng là lỗi màn hình cũ đã mắc: người dùng đòi một
+    chứng chỉ công ty không có, hệ thống từ chối đúng, màn hình không nói gì.
+    """
+    import app
+
+    turns = app.chat_turns(
+        [],
+        last={
+            "instruction": "thêm chứng chỉ ISO/IEC 27017",
+            "target": "Toàn bộ hồ sơ",
+            "reply": {
+                "outcome": "blocked",
+                "counts": {"changed": 0, "dropped": 0, "kept": 4, "blocked": 1},
+                "rejected": [{"reason": "chứng chỉ **công ty không có**", "text": None}],
+                "restored": 0,
+            },
+        },
+    )
+    assert [turn["role"] for turn in turns] == ["user", "assistant"]
+    assert "lưới an toàn đã chặn" in app.chat_reply_text(turns[1]).lower()
+    chips = app.chat_reply_chips(turns[1])
+    assert chips and chips[0][1] == "block"
+    # Markdown thô trong lý do phải bị gỡ, chip không render markdown
+    assert "**" not in chips[0][0]
+
+
+def test_three_outcomes_read_differently_in_chat() -> None:
+    import app
+
+    changed = app.chat_reply_text(
+        {"outcome": "changed", "label": "v2", "counts": {"changed": 1, "dropped": 0, "kept": 1, "blocked": 0}}
+    )
+    blocked = app.chat_reply_text({"outcome": "blocked", "counts": {"changed": 0, "dropped": 0, "kept": 1, "blocked": 1}})
+    nothing = app.chat_reply_text({"outcome": "no_change", "counts": {}})
+    assert changed != blocked != nothing != changed
+    assert "chặn" in blocked and "chặn" not in nothing
+
+
+def test_pinned_sentences_show_as_a_chip() -> None:
+    import app
+
+    chips = app.chat_reply_chips({"outcome": "changed", "restored": 2, "rejected": []})
+    assert any("📌" in text and "2" in text for text, _ in chips)
+
+
+def test_refine_counts_keep_added_so_a_turn_replays_correctly() -> None:
+    """`outcome` suy từ changed/dropped/added — thiếu `added` là dựng lại sai."""
+    import app
+    from rfp.refine import RefineResult
+
+    counts = app.refine_counts(RefineResult(state={}, added=3))
+    assert counts["added"] == 3
+    replayed = RefineResult(
+        state={},
+        changed=counts["changed"],
+        dropped=counts["dropped"],
+        added=counts["added"],
+    )
+    assert replayed.outcome == "changed"
+
+
+# ── Panel trái: hai chế độ, không bao giờ cả hai ─────────────────────────
+
+def _app_with_result(**session: Any) -> AppTest:
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.session_state["result_state"] = _state()
+    for key, value in session.items():
+        at.session_state[key] = value
+    at.run()
+    return at
+
+
+def test_review_button_replaces_the_old_instruction_form() -> None:
+    at = _app_with_result()
+    labels = [button.label for button in at.button]
+    assert "💬 Review — chỉnh lại bằng chat" in labels
+    assert "Gửi chỉ thị" not in labels
+    # Ô nhập RFP vẫn là bảng trái khi chưa mở chat
+    assert "RFP đầu vào" in [item.value for item in at.sidebar.title]
+
+
+def test_opening_review_swaps_the_left_panel_to_chat() -> None:
+    at = _app_with_result()
+    at.button(key="chat_open").click().run()
+    assert at.session_state["side_panel"] == "chat"
+    assert [item.value for item in at.sidebar.title] == ["Chat review"]
+    # Ô dán RFP nhường chỗ, không chen chung một cột hẹp
+    assert "Dán RFP" not in [item.label for item in at.sidebar.text_area]
+    assert at.sidebar.chat_input
+
+
+def test_chat_panel_can_be_closed_from_either_side() -> None:
+    at = _app_with_result(side_panel="chat")
+    at.sidebar.button(key="chat_back").click().run()
+    assert at.session_state["side_panel"] == "rfp"
+    assert "RFP đầu vào" in [item.value for item in at.sidebar.title]
+
+
+def test_chat_panel_stays_shut_without_a_finished_proposal() -> None:
+    """Chưa có hồ sơ thì không có gì để chỉnh — bảng trái phải là ô nhập RFP."""
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.session_state["side_panel"] = "chat"
+    at.run()
+    assert "RFP đầu vào" in [item.value for item in at.sidebar.title]
+    assert not at.sidebar.chat_input
+
+
+def test_chat_panel_offers_suggestions_only_before_the_first_turn() -> None:
+    at = _app_with_result(side_panel="chat")
+    suggestion_keys = [
+        button.key for button in at.sidebar.button if button.key.startswith("chat_suggest_")
+    ]
+    assert suggestion_keys
+
+    at2 = _app_with_result(
+        side_panel="chat",
+        versions=[
+            {"label": "v1", "state": _state()},
+            {
+                "label": "v2",
+                "state": _state(),
+                "instruction": "viết ngắn hơn",
+                "target": "Toàn bộ hồ sơ",
+                "counts": {"changed": 1, "dropped": 0, "kept": 1, "blocked": 0},
+                "rejected": [],
+                "restored": 0,
+            },
+        ],
+        version_index=1,
+    )
+    assert not [
+        button.key
+        for button in at2.sidebar.button
+        if button.key.startswith("chat_suggest_")
+    ]
+    assert len(at2.chat_message) >= 3  # lời mở + cặp lượt đã có
+
+
+def test_a_click_on_a_suggestion_runs_a_turn_and_records_a_version() -> None:
+    """Vòng đầy đủ: bấm gợi ý -> chạy -> thành một bản mới + một lượt chat.
+
+    Giả lập `refine_*` để không gọi LLM; cái đang kiểm là đường dây nối, không
+    phải chất lượng câu chữ.
+    """
+    import app
+    from rfp.refine import RefineResult
+
+    original = (app.refine_all, app.refine_section)
+    app.refine_all = lambda state, instruction: RefineResult(
+        state=state, changed=2, kept=3
+    )
+    app.refine_section = lambda state, section_key, instruction: RefineResult(
+        state=state, changed=1, kept=4
+    )
+    try:
+        def body(root, state):
+            import sys as _s
+
+            _s.path[:0] = [root + "/src", root]
+            import streamlit as st
+
+            import app as _app
+
+            st.session_state.setdefault("versions", [{"label": "v1", "state": state}])
+            # Nạp chỉ thị ĐÚNG MỘT LẦN. `setdefault` ở đây sẽ nạp lại sau mỗi
+            # lượt rerun mà panel gọi, thành vòng lặp vô tận — trong app thật
+            # chỉ có cú bấm nút đặt khoá này, không ai đặt lại.
+            if not st.session_state.get("seeded"):
+                st.session_state["seeded"] = True
+                st.session_state["chat_pending"] = {
+                    "instruction": "viết ngắn hơn",
+                    "target_key": _app.ALL_TARGET,
+                }
+            with st.sidebar:
+                _app.render_chat_panel(state)
+
+        at = _render(body, _state())
+        assert not at.exception
+        versions = at.session_state["versions"]
+        assert len(versions) == 2
+        assert versions[1]["instruction"] == "viết ngắn hơn"
+        assert versions[1]["counts"]["changed"] == 2
+        # Lượt đã thành bản mới thì không được giữ thêm bản nháp -> in hai lần
+        assert "chat_last" not in at.session_state
+        turns = app.chat_turns(versions)
+        assert [turn["role"] for turn in turns] == ["user", "assistant"]
+    finally:
+        app.refine_all, app.refine_section = original
+
+
+def test_a_blocked_turn_leaves_no_new_version_but_still_answers() -> None:
+    import app
+    from rfp.refine import RefineResult
+
+    original = app.refine_all
+    app.refine_all = lambda state, instruction: RefineResult(
+        state=state,
+        kept=4,
+        rejected=[{"reason": "chứng chỉ công ty không có", "text": None}],
+    )
+    try:
+        def body(root, state):
+            import sys as _s
+
+            _s.path[:0] = [root + "/src", root]
+            import streamlit as st
+
+            import app as _app
+
+            st.session_state.setdefault("versions", [{"label": "v1", "state": state}])
+            if not st.session_state.get("seeded"):
+                st.session_state["seeded"] = True
+                st.session_state["chat_pending"] = {
+                    "instruction": "thêm ISO/IEC 27017",
+                    "target_key": _app.ALL_TARGET,
+                }
+            with st.sidebar:
+                _app.render_chat_panel(state)
+
+        at = _render(body, _state())
+        assert not at.exception
+        assert len(at.session_state["versions"]) == 1  # không sinh bản mới
+        last = at.session_state["chat_last"]
+        assert last["reply"]["outcome"] == "blocked"
+    finally:
+        app.refine_all = original

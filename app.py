@@ -345,6 +345,17 @@ def render_golden_picker() -> None:
 
 
 def sidebar_controls() -> tuple[str, bool]:
+    """Bảng trái: hoặc ô nhập RFP, hoặc chat review — không bao giờ cả hai.
+
+    Nhồi cả hai vào một cột hẹp thì ô chat bị đẩy xuống dưới ba khối nhập liệu,
+    đúng lúc cần nó nhất thì phải cuộn đi tìm.
+    """
+    chat_state = displayed_state()
+    if st.session_state.get("side_panel") == "chat" and chat_state is not None:
+        with st.sidebar:
+            render_chat_panel(chat_state)
+        return st.session_state.get("rfp_input", ""), False
+
     with st.sidebar:
         st.title("RFP đầu vào")
         with st.expander("Dữ liệu nguồn", expanded=False):
@@ -552,6 +563,17 @@ def version_label(versions: list[dict[str, Any]], parent_index: int | None) -> s
     return label
 
 
+def displayed_state() -> dict[str, Any] | None:
+    """Bản đang hiển thị — cũng là bản mà chat sẽ chỉnh và export sẽ tải về."""
+    version = current_version()
+    if version:
+        return version["state"]
+    latest = st.session_state.get("result_state")
+    if latest and latest.get("status") == "completed":
+        return latest
+    return None
+
+
 def current_version() -> dict[str, Any] | None:
     versions = _versions()
     index = st.session_state.get("version_index", len(versions) - 1)
@@ -577,14 +599,252 @@ def version_diff(older: dict[str, Any], newer: dict[str, Any]) -> str:
     )
 
 
-def render_chat_refine(state: dict[str, Any]) -> None:
-    """Ô chat chỉnh hồ sơ + lịch sử phiên bản."""
-    st.subheader("Chỉnh lại bằng chỉ thị")
+ALL_TARGET = "__all__"
+
+# Bảng màu panel chat — cùng hệ với sơ đồ luồng và dark theme của app.
+CHAT_CSS = """
+<style>
+[data-testid="stSidebar"] [data-testid="stChatMessage"] {
+    padding: .5rem .7rem;
+    margin-bottom: .35rem;
+    border-radius: 12px;
+    background: #1B2129;
+    border: 1px solid #2A323C;
+}
+/* Lượt của người dùng: đảo bên, đổi nền — nhìn một cái là biết ai nói.
+   `:has()` không chạy thì chỉ mất phần đảo bên, bong bóng vẫn đọc được. */
+[data-testid="stSidebar"] [data-testid="stChatMessage"]:has(
+    [data-testid="stChatMessageAvatarUser"]
+) {
+    flex-direction: row-reverse;
+    background: #17322A;
+    border-color: #2F6B52;
+}
+[data-testid="stSidebar"] [data-testid="stChatMessage"] p { margin-bottom: .25rem; }
+</style>
+"""
+
+CHIP_STYLE = (
+    "display:inline-block;margin:.15rem .2rem 0 0;padding:.1rem .45rem;"
+    "border:1px solid {border};border-radius:999px;background:{fill};"
+    "color:{text};font-size:.72rem;line-height:1.5"
+)
+
+
+def chip(text: str, *, tone: str = "muted") -> str:
+    tones = {
+        "muted": ("#2A323C", "#1B2129", "#8B97A6"),
+        "block": ("#6B2B27", "#2A1A19", "#F0A8A2"),
+        "pin": ("#5A4A1E", "#2A2416", "#E6C86A"),
+    }
+    border, fill, color = tones[tone]
+    return (
+        f'<span style="{CHIP_STYLE.format(border=border, fill=fill, text=color)}">'
+        f"{_esc(text)}</span>"
+    )
+
+
+def refine_targets(state: dict[str, Any]) -> list[tuple[str, str]]:
+    """(khoá, nhãn) cho ô chọn phạm vi chỉnh."""
+    return [(ALL_TARGET, "Toàn bộ hồ sơ")] + [
+        (section["key"], f"{index}. {section['title_ja']}")
+        for index, section in enumerate(state.get("sections", []), start=1)
+    ]
+
+
+def instruction_suggestions(state: dict[str, Any]) -> list[dict[str, str]]:
+    """Gợi ý chỉ thị, suy từ chính hồ sơ đang mở. Không gọi LLM.
+
+    Ô chat trống là chỗ người dùng đứng hình: họ không biết chat này làm được
+    gì. Ba gợi ý bấm-là-chạy nói điều đó nhanh hơn một đoạn hướng dẫn.
+    """
+    sections = [
+        section for section in state.get("sections", []) if section.get("sentences")
+    ]
+    if not sections:
+        return []
+    by_size = sorted(
+        sections,
+        key=lambda section: (
+            -sum(len(item.get("text", "")) for item in section["sentences"]),
+            section["key"],
+        ),
+    )
+    longest = by_size[0]
+    suggestions = [
+        {
+            "instruction": f"Viết mục 「{longest['title_ja']}」 ngắn gọn hơn",
+            "target": longest["key"],
+        }
+    ]
+    if len(by_size) > 1:
+        second = by_size[1]
+        suggestions.append(
+            {
+                "instruction": (
+                    f"Gộp các câu trùng ý trong mục 「{second['title_ja']}」"
+                ),
+                "target": second["key"],
+            }
+        )
+    suggestions.append(
+        {
+            "instruction": "Viết lại toàn bộ hồ sơ với văn phong trang trọng hơn",
+            "target": ALL_TARGET,
+        }
+    )
+    return suggestions
+
+
+def chat_turns(
+    versions: list[dict[str, Any]],
+    *,
+    last: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Lịch sử chat dựng TỪ lịch sử phiên bản, không nuôi một bản sao riêng.
+
+    Mỗi bản có chỉ thị là một cặp lượt: người nói, hệ thống đáp. Giữ hai kho
+    song song rồi lệch nhau là cách chắc chắn nhất để chat kể sai chuyện đã xảy
+    ra với tài liệu.
+    """
+    turns: list[dict[str, Any]] = []
+    for version in versions:
+        instruction = version.get("instruction")
+        if not instruction:
+            continue
+        turns.append(
+            {
+                "role": "user",
+                "text": instruction,
+                "target": version.get("target", ""),
+            }
+        )
+        turns.append(
+            {
+                "role": "assistant",
+                "outcome": "changed",
+                "label": version.get("label", ""),
+                "counts": version.get("counts") or {},
+                "rejected": version.get("rejected") or [],
+                "restored": version.get("restored", 0),
+            }
+        )
+    if last:
+        turns.append(
+            {"role": "user", "text": last["instruction"], "target": last["target"]}
+        )
+        turns.append({"role": "assistant", **last["reply"]})
+    return turns
+
+
+def chat_reply_text(turn: dict[str, Any]) -> str:
+    counts = turn.get("counts") or {}
+    if turn["outcome"] == "changed":
+        label = turn.get("label", "")
+        return f"Đã cập nhật — bản **{label}**. " + _counts_line(counts)
+    if turn["outcome"] == "blocked":
+        return (
+            "**Không áp dụng thay đổi nào — lưới an toàn đã chặn.** "
+            + _counts_line(counts)
+        )
+    if turn["outcome"] == "error":
+        return turn.get("message", "Không gọi được mô hình. Hồ sơ giữ nguyên.")
+    return (
+        "**Không có thay đổi nào.** Chat chỉ viết lại, bỏ hoặc đổi thứ tự câu "
+        "đã có — nó không thêm được nội dung chưa có bằng chứng."
+    )
+
+
+def chat_reply_chips(turn: dict[str, Any]) -> list[tuple[str, str]]:
+    chips: list[tuple[str, str]] = []
+    if turn.get("restored"):
+        chips.append((f"📌 giữ lại {turn['restored']} câu bạn thêm", "pin"))
+    for item in turn.get("rejected") or []:
+        reason = re.sub(r"[*`]", "", str(item.get("reason", "")))
+        chips.append((f"🛑 {reason[:90]}", "block"))
+    return chips
+
+
+def submit_instruction(
+    state: dict[str, Any], *, target_key: str, target_label: str, instruction: str
+) -> None:
+    """Chạy một lượt chat rồi ghi kết quả vào lịch sử phiên bản.
+
+    Mọi kết cục đều được ghi lại và hiện thành một lượt trả lời — kể cả lượt bị
+    chặn. Im lặng khi bị chặn là đúng cái lỗi màn hình cũ đã mắc.
+    """
+    try:
+        if target_key == ALL_TARGET:
+            result = refine_all(state, instruction=instruction)
+        else:
+            result = refine_section(
+                state, section_key=target_key, instruction=instruction
+            )
+    except LLMUnavailable as error:
+        st.session_state["chat_last"] = {
+            "instruction": instruction,
+            "target": target_label,
+            "reply": {
+                "outcome": "error",
+                "message": (
+                    f"Nhà cung cấp LLM không phản hồi sau {error.attempts} lần gọi "
+                    f"(lỗi {error.kind}). Hồ sơ giữ nguyên."
+                ),
+            },
+        }
+        return
+
+    if result.outcome == "changed":
+        parent_index = st.session_state.get("version_index", len(_versions()) - 1)
+        push_version(
+            result.state,
+            label=version_label(_versions(), parent_index),
+            instruction=instruction,
+            target=target_label,
+            rejected=result.rejected,
+            counts=refine_counts(result),
+            restored=result.restored,
+            parent_index=parent_index,
+        )
+        st.session_state["translation"] = ""
+        # Bản mới đã mang sẵn lượt trả lời; giữ thêm `chat_last` là in hai lần.
+        st.session_state.pop("chat_last", None)
+        return
+
+    st.session_state["chat_last"] = {
+        "instruction": instruction,
+        "target": target_label,
+        "reply": {
+            "outcome": result.outcome,
+            "counts": refine_counts(result),
+            "rejected": result.rejected,
+            "restored": result.restored,
+        },
+    }
+
+
+def queue_instruction(instruction: str, target_key: str) -> None:
+    st.session_state["chat_pending"] = {
+        "instruction": instruction,
+        "target_key": target_key,
+    }
+
+
+def open_chat_panel() -> None:
+    st.session_state["side_panel"] = "chat"
+
+
+def close_chat_panel() -> None:
+    st.session_state["side_panel"] = "rfp"
+
+
+def render_review_bar(state: dict[str, Any]) -> None:
+    """Nút mở chat review. Bản thân việc chat diễn ra ở panel trái."""
+    st.subheader("Review & chỉnh lại")
     st.caption(
         "Chat chỉnh **cách viết trên căn cứ sẵn có** — không thêm được nội dung "
         "chưa có bằng chứng, và không đổi được số liệu."
     )
-
     if state_is_stale(state):
         st.warning(
             "Dữ liệu nguồn đã thay đổi sau khi hồ sơ này được sinh. Chạy lại hồ "
@@ -593,61 +853,111 @@ def render_chat_refine(state: dict[str, Any]) -> None:
             icon="⚠️",
         )
         return
-
-    sections = state.get("sections", [])
-    options = ["Toàn bộ hồ sơ"] + [
-        f"{index}. {section['title_ja']}"
-        for index, section in enumerate(sections, start=1)
-    ]
-    picked = st.selectbox("Chỉnh phần nào", options, key="refine_target")
-    instruction = st.text_area(
-        "Chỉ thị",
-        key="refine_instruction",
-        placeholder="ví dụ: viết phần bảo mật ngắn gọn hơn",
-        height=80,
+    if st.session_state.get("side_panel") == "chat":
+        st.info(
+            "Chat đang mở ở bảng bên trái. Kéo mép phải của bảng để nới rộng.",
+            icon="💬",
+        )
+        st.button("Đóng chat review", key="chat_close_main", on_click=close_chat_panel)
+        return
+    st.button(
+        "💬 Review — chỉnh lại bằng chat",
+        type="primary",
+        key="chat_open",
+        on_click=open_chat_panel,
     )
 
-    if st.button("Gửi chỉ thị", type="primary", key="refine_submit"):
-        if not instruction.strip():
-            st.warning("Chưa nhập chỉ thị.")
-            return
-        with st.spinner("Đang chỉnh lại…"):
-            try:
-                if picked == options[0]:
-                    result = refine_all(state, instruction=instruction)
-                else:
-                    section = sections[options.index(picked) - 1]
-                    result = refine_section(
-                        state, section_key=section["key"], instruction=instruction
-                    )
-            except LLMUnavailable as error:
-                st.error(
-                    f"Nhà cung cấp LLM không phản hồi sau {error.attempts} lần gọi "
-                    f"(lỗi {error.kind}). Hồ sơ giữ nguyên."
-                )
-                return
-        if result.outcome == "changed":
-            parent_index = st.session_state.get("version_index", len(_versions()) - 1)
-            push_version(
-                result.state,
-                label=version_label(_versions(), parent_index),
-                instruction=instruction,
-                target=picked,
-                rejected=result.rejected,
-                counts=refine_counts(result),
-                restored=result.restored,
-                parent_index=parent_index,
+
+def render_chat_panel(state: dict[str, Any]) -> None:
+    """Panel chat bên trái. Kéo mép phải để nới rộng (sidebar Streamlit).
+
+    Đặt trong sidebar chứ không phải một cột giữa trang: người dùng cần vừa
+    đọc hồ sơ vừa ra chỉ thị, mà cột trong trang thì cuộn cùng nội dung nên
+    trôi mất khỏi tầm mắt.
+    """
+    st.markdown(CHAT_CSS, unsafe_allow_html=True)
+    header_left, header_right = st.columns([3, 2])
+    with header_left:
+        st.title("Chat review")
+    with header_right:
+        st.button(
+            "← RFP đầu vào",
+            key="chat_back",
+            on_click=close_chat_panel,
+            width="stretch",
+        )
+    st.caption("Kéo mép phải của bảng này để nới rộng.")
+
+    turns = chat_turns(_versions(), last=st.session_state.get("chat_last"))
+    with st.container(height=320, autoscroll=True, key="chat_log"):
+        with st.chat_message("assistant"):
+            st.markdown(f"Hồ sơ đã sinh xong. {sentence_breakdown(state)}")
+            st.markdown(
+                chip("chỉ viết lại trên căn cứ sẵn có")
+                + chip("không đổi số liệu"),
+                unsafe_allow_html=True,
             )
-            st.session_state["translation"] = ""
-            st.rerun()
-        render_refine_outcome(result)
+        for turn in turns:
+            with st.chat_message(turn["role"]):
+                if turn["role"] == "user":
+                    st.markdown(turn["text"])
+                    if turn.get("target"):
+                        st.markdown(chip(turn["target"]), unsafe_allow_html=True)
+                    continue
+                st.markdown(chat_reply_text(turn))
+                chips = chat_reply_chips(turn)
+                if chips:
+                    st.markdown(
+                        "".join(chip(text, tone=tone) for text, tone in chips),
+                        unsafe_allow_html=True,
+                    )
+
+    targets = refine_targets(state)
+    labels = {key: label for key, label in targets}
+    picked_key = st.selectbox(
+        "Chỉnh phần nào",
+        [key for key, _ in targets],
+        format_func=lambda key: labels[key],
+        key="refine_target",
+    )
+
+    if not turns:
+        st.caption("Gợi ý chỉ thị")
+        for index, item in enumerate(instruction_suggestions(state)):
+            st.button(
+                item["instruction"],
+                key=f"chat_suggest_{index}",
+                width="stretch",
+                on_click=queue_instruction,
+                args=(item["instruction"], item["target"]),
+            )
+
+    typed = st.chat_input("Nhập chỉ thị…", key="chat_input")
+    pending = st.session_state.pop("chat_pending", None)
+    if typed:
+        pending = {"instruction": typed, "target_key": picked_key}
+    if not pending:
+        return
+
+    target_key = pending["target_key"]
+    with st.spinner("Đang chỉnh lại…"):
+        submit_instruction(
+            state,
+            target_key=target_key,
+            target_label=labels.get(target_key, "Toàn bộ hồ sơ"),
+            instruction=pending["instruction"],
+        )
+    st.rerun()
 
 
 def refine_counts(result: Any) -> dict[str, int]:
+    # `added` không lên dòng tóm tắt nhưng phải lưu: `RefineResult.outcome` suy
+    # từ changed/dropped/added, thiếu nó thì dựng lại lượt cũ ra sai kết cục.
     return {
         "changed": result.changed,
         "dropped": result.dropped,
         "kept": result.kept,
+        "added": result.added,
         "blocked": result.blocked,
     }
 
@@ -1077,7 +1387,7 @@ def render_proposal(state: dict[str, Any]) -> None:
     )
     render_bilingual_proposal(state, key_prefix="detail")
     st.divider()
-    render_chat_refine(state)
+    render_review_bar(state)
     render_version_history()
 
 
@@ -3122,8 +3432,7 @@ def main() -> None:
             # Bản đang hiển thị = bản đang chọn trong lịch sử, và đó cũng là bản
             # được export. Chưa có lịch sử (state nạp lại từ phiên cũ) thì dùng
             # thẳng kết quả pipeline.
-            version = current_version()
-            shown = version["state"] if version else latest
+            shown = displayed_state() or latest
             with result_area:
                 render_proposal(shown)
             with coverage_tab:
