@@ -131,11 +131,15 @@ def _render(body, *args: Any) -> AppTest:
 
 # ── App chạy được và tab đúng tên ─────────────────────────────────────────
 
-def test_app_starts_without_exception_and_has_vietnamese_tabs() -> None:
+def test_app_starts_without_exception_and_has_vietnamese_sections() -> None:
     at = AppTest.from_file(APP_PATH, default_timeout=180)
     at.run()
     assert not at.exception
-    assert [tab.label for tab in at.tabs] == EXPECTED_TABS
+    import app
+
+    assert list(app.NAV_SECTIONS) == EXPECTED_TABS
+    nav = at.get("button_group")[0]
+    assert list(nav.options) == EXPECTED_TABS
 
 
 def test_submit_button_is_vietnamese() -> None:
@@ -2279,8 +2283,7 @@ def test_golden_coverage_table_is_all_green_when_nothing_is_missing() -> None:
 
 
 def test_golden_tab_defaults_to_the_criteria_driven_mode() -> None:
-    at = AppTest.from_file(APP_PATH, default_timeout=180)
-    at.run()
+    at = _app_at_section("Sinh bộ test")
     modes = [option for option in at.radio[0].options]
     assert modes[0] == "Theo tiêu chí phủ · 0 LLM"
     assert at.radio[0].value == "Theo tiêu chí phủ · 0 LLM"
@@ -2292,8 +2295,7 @@ def test_golden_tab_defaults_to_the_criteria_driven_mode() -> None:
 
 def test_generating_by_criteria_only_makes_what_is_missing() -> None:
     """Bấm sinh ở chế độ tiêu chí: ra đúng lô vá chỗ hở, không sinh bừa."""
-    at = AppTest.from_file(APP_PATH, default_timeout=180)
-    at.run()
+    at = _app_at_section("Sinh bộ test")
     at.button(key="golden_generate_preview").click().run()
     cases = at.session_state["golden_preview_cases"]
     assert cases
@@ -2502,6 +2504,17 @@ def test_refine_counts_keep_added_so_a_turn_replays_correctly() -> None:
 
 
 # ── Panel trái: hai chế độ, không bao giờ cả hai ─────────────────────────
+
+def _app_at_section(name: str, **session: Any) -> AppTest:
+    """Mở app ở một mục điều hướng cụ thể."""
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.session_state["active_section"] = name
+    for key, value in session.items():
+        at.session_state[key] = value
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
 
 def _app_with_result(**session: Any) -> AppTest:
     at = AppTest.from_file(APP_PATH, default_timeout=180)
@@ -2846,21 +2859,12 @@ def _ordered(at: AppTest) -> list[tuple[str, str]]:
 
 
 def _tab_slice(at: AppTest, name: str) -> list[tuple[str, str]]:
-    """Chỉ lấy phần tử của MỘT tab.
+    """Phần tử của mục đang mở.
 
-    `at.main` gộp phẳng cả sáu tab, nên "không còn gì phía sau" tính trên cả
-    danh sách sẽ luôn sai — phần sau là nội dung của tab kế tiếp.
+    Trước đây `at.main` gộp phẳng cả năm tab nên phải cắt; nay mỗi lượt chạy
+    chỉ dựng đúng MỘT mục, phần còn lại của trang là header và bảng chat.
     """
-    order = _ordered(at)
-    start = next(
-        index for index, (kind, label) in enumerate(order)
-        if kind == "tab" and label == name
-    )
-    later = [
-        index for index, (kind, _) in enumerate(order)
-        if kind == "tab" and index > start
-    ]
-    return order[start : later[0] if later else len(order)]
+    return _ordered(at)
 
 
 def test_draft_notice_is_no_longer_a_red_block() -> None:
@@ -2918,21 +2922,25 @@ def test_download_still_refuses_a_draft_the_guard_would_block() -> None:
     assert any("final guard chặn" in item.value for item in at.error)
 
 
-def test_chat_button_sits_next_to_the_page_title() -> None:
+def test_chat_button_sits_in_the_pinned_header() -> None:
     """Bấm chat được ngay, không phải cuộn hết hồ sơ mới thấy nút."""
-    order = _tab_slice(_app_with_result(), "Tổng quan")
     at = _app_with_result()
     flat = _ordered(at)
-    title = next(index for index, (kind, _) in enumerate(flat) if kind == "title")
+    name = next(
+        index
+        for index, (kind, label) in enumerate(flat)
+        if kind == "markdown" and "Proposal Studio" in label
+    )
     button = next(
         index
         for index, (kind, label) in enumerate(flat)
         if kind == "button" and label == "💬 Chat"
     )
-    # Nút đứng ngay sau tiêu đề, trước cả hàng tab
-    tabs = next(index for index, (kind, _) in enumerate(flat) if kind == "tab")
-    assert title < button < tabs
-    assert not any(label == "💬 Chat" for _, label in order)
+    nav = next(
+        index for index, (kind, _) in enumerate(flat) if kind == "button_group"
+    )
+    # Tên sản phẩm -> nút -> thanh điều hướng, tất cả trong header
+    assert name < button < nav
 
 
 def test_chat_button_is_never_disabled() -> None:
@@ -2961,12 +2969,11 @@ def test_chat_opens_without_a_proposal_and_says_what_is_missing() -> None:
     assert "📋 Checklist trước khi nộp" in [item.label for item in at.button]
 
 
-def test_chat_dock_lives_outside_the_tabs() -> None:
-    """Mở từ tab nào cũng thấy chat, không riêng tab Tổng quan."""
-    at = _app_with_result(chat_open=True)
-    overview = _tab_slice(at, "Tổng quan")
-    assert not any(kind == "chat_input" for kind, _ in overview)
-    assert at.chat_input
+def test_chat_dock_is_available_from_every_section() -> None:
+    """Mở từ mục nào cũng thấy chat, không riêng Tổng quan."""
+    for name in ("Tổng quan", "Độ đáp ứng", "Sinh bộ test"):
+        at = _app_at_section(name, result_state=_state(), chat_open=True)
+        assert at.chat_input, name
 
 
 def test_attribute_only_label_says_what_it_rests_on() -> None:
@@ -3712,21 +3719,24 @@ def test_toolbar_is_pinned_with_fixed_not_sticky() -> None:
     assert "sticky" not in block
 
 
-def test_pinned_toolbar_moves_aside_when_the_chat_dock_opens() -> None:
-    """Hai khối cùng neo cố định ở mép phải thì phải nhường nhau."""
-    closed = " ".join(item.value for item in _app_with_result().markdown)
-    assert "right: calc(var(--chat-dock-w)" not in closed
+def test_pinned_header_reserves_room_for_itself() -> None:
+    """Header trải hết bề ngang nên phải đẩy sidebar VÀ nội dung xuống.
 
-    opened = " ".join(
-        item.value for item in _app_with_result(chat_open=True).markdown
-    )
-    assert ".st-key-topbar { right: calc(var(--chat-dock-w) + 1.2rem); }" in opened
+    Thiếu một trong hai thì nó đè lên thứ nằm dưới — và đó là loại lỗi chỉ thấy
+    khi cuộn, không bài kiểm phần tử nào bắt được.
+    """
+    css = " ".join(item.value for item in _app_with_result().markdown)
+    assert "--topbar-h" in css
+    assert '[data-testid="stSidebar"] { top: var(--topbar-h); }' in css
+    assert "padding-top: var(--topbar-h)" in css
 
 
-def test_pinned_toolbar_holds_only_the_controls() -> None:
-    """Khối bị neo cố định thì KHÔNG được chứa tiêu đề — nó sẽ đè lên nội dung."""
+def test_pinned_header_holds_the_name_nav_and_controls() -> None:
+    """Đúng ba thứ phải luôn với tới được: tên, điều hướng, nút."""
     at = _app_with_result()
-    titles = [item.value for item in at.title]
-    assert titles == ["RFP Proposal Studio"]
+    body = " ".join(item.value for item in at.markdown)
+    assert "#### Proposal Studio" in body
+    assert "RFP Proposal Studio" not in body
     keys = {item.key for item in at.button}
     assert {"undo_button", "redo_button", "chat_open_button"} <= keys
+    assert at.get("button_group")

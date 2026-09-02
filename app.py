@@ -426,6 +426,7 @@ def sidebar_controls() -> tuple[str, bool]:
             "Nộp và sinh hồ sơ",
             type="primary",
             width="stretch",
+            on_click=focus_overview,
         )
     return text, submitted
 
@@ -658,7 +659,7 @@ CHAT_CSS = f"""
    lẫn phần chừa chỗ của trang bằng một phép gán. */
 .st-key-{CHAT_DOCK_KEY} {{
     position: fixed;
-    top: 3.4rem;
+    top: var(--topbar-h);
     right: 0;
     bottom: 0;
     width: var(--chat-dock-w);
@@ -672,7 +673,7 @@ CHAT_CSS = f"""
 /* Tay kéo: dải dọc sát mép trái bảng, đúng chỗ người dùng đưa chuột tới. */
 .chat-dock-handle {{
     position: fixed;
-    top: 3.4rem;
+    top: var(--topbar-h);
     bottom: 0;
     width: 7px;
     right: var(--chat-dock-w);
@@ -712,23 +713,27 @@ CHAT_CSS = f"""
 # hiện thành một cái ô.
 PROPOSAL_CSS = """
 <style>
-/* Cụm nút lùi/tiến + Chat nổi cố định, luôn nằm trong tầm mắt.
-   KHÔNG dùng `position: sticky`: đã thử và không ăn — Streamlit lồng nhiều
-   tầng khối dọc, chỉ cần một tầng có `overflow` là sticky bị vô hiệu, mà
-   không báo lỗi gì. `fixed` neo theo khung nhìn nên không phụ thuộc tổ tiên;
-   đây cũng đúng cơ chế đang chạy được cho bảng chat. */
+/* Header neo cố định: tên sản phẩm, thanh điều hướng, nút lùi/tiến và Chat.
+   KHÔNG dùng `position: sticky` — đã thử và không ăn: Streamlit lồng nhiều
+   tầng khối dọc, chỉ cần một tầng có `overflow` là sticky bị vô hiệu mà không
+   báo lỗi gì. `fixed` neo theo khung nhìn nên không phụ thuộc tổ tiên.
+
+   Header trải hết bề ngang nên phải đẩy sidebar và nội dung xuống đúng bằng
+   chiều cao của nó — một con số, khai báo một lần ở `--topbar-h`. */
+:root { --topbar-h: 8.4rem; }
 .st-key-topbar {
     position: fixed;
-    top: 3.4rem;
-    right: 1.2rem;
-    width: 21rem;
+    top: 2.9rem;
+    left: 0;
+    right: 0;
     z-index: 60;
     background: #12161C;
-    border: 1px solid #2A323C;
-    border-radius: 10px;
-    padding: .3rem .5rem;
+    border-bottom: 1px solid #2A323C;
+    padding: .3rem 1.2rem .4rem;
     box-shadow: 0 2px 12px rgba(0, 0, 0, .45);
 }
+[data-testid="stSidebar"] { top: var(--topbar-h); }
+[data-testid="stMainBlockContainer"] { padding-top: var(--topbar-h); }
 [data-testid="stPopover"] > div > button {
     background: transparent !important;
     border: none !important;
@@ -758,8 +763,6 @@ CHAT_RESERVE_CSS = """
 [data-testid="stMainBlockContainer"] {
     padding-right: calc(var(--chat-dock-w) + 2rem);
 }
-/* Cụm nút nổi phải né bảng chat, nếu không hai cái chồng lên nhau. */
-.st-key-topbar { right: calc(var(--chat-dock-w) + 1.2rem); }
 </style>
 """
 
@@ -3873,17 +3876,10 @@ def render_golden() -> None:
             st.success("Không có ca đủ điều kiện nào FAIL.")
 
 
-def render_empty_tabs(tabs: tuple[Any, ...]) -> None:
-    # Tên biến tránh trùng hàm `label` đã import ở đầu file.
-    hints = (
-        "Dán hoặc tải RFP ở thanh bên rồi bấm **Nộp và sinh hồ sơ** — luồng chạy "
-        "sẽ hiện ngay tại đây.",
-        "Bảng đối chiếu từng yêu cầu của RFP sẽ hiện ở đây.",
-        "Hành trình xử lý từng yêu cầu sẽ hiện ở đây.",
-    )
-    for tab, hint in zip(tabs[:3], hints):
-        with tab:
-            st.info(hint)
+EMPTY_SECTION_HINT = {
+    "Độ đáp ứng": "Bảng đối chiếu từng yêu cầu của RFP sẽ hiện ở đây.",
+    "Truy vết": "Hành trình xử lý từng yêu cầu sẽ hiện ở đây.",
+}
 
 
 def _det_rows(runs: dict[str, Any], name: str) -> list[dict[str, Any]]:
@@ -4199,6 +4195,50 @@ def render_eval() -> None:
         )
 
 
+NAV_SECTIONS = (
+    "Tổng quan",
+    "Độ đáp ứng",
+    "Truy vết",
+    "Sinh bộ test",
+    "Kết quả đánh giá",
+)
+
+
+def focus_overview() -> None:
+    """Bấm sinh hồ sơ thì kéo về mục Tổng quan — đó là chỗ tiến độ hiện ra."""
+    st.session_state["active_section"] = NAV_SECTIONS[0]
+
+
+def render_top_header() -> str:
+    """Header neo cố định. Trả về mục đang mở.
+
+    Tự dựng thanh điều hướng thay vì `st.tabs`: thanh tab của Streamlit và nội
+    dung tab nằm chung một khối, không tách được phần thanh ra để neo riêng.
+    """
+    with st.container(key="topbar"):
+        name_column, history_column, chat_column = st.columns(
+            [5, 1, 1], vertical_alignment="center"
+        )
+        with name_column:
+            st.markdown("#### Proposal Studio")
+            st.caption(
+                "Sinh hồ sơ thầu tiếng Nhật, mỗi câu đều truy được về nguồn"
+            )
+        with history_column:
+            render_history_buttons()
+        with chat_column:
+            render_chat_toggle()
+        picked = st.segmented_control(
+            "Mục đang xem",
+            NAV_SECTIONS,
+            default=NAV_SECTIONS[0],
+            key="active_section",
+            label_visibility="collapsed",
+        )
+    # `segmented_control` cho bỏ chọn hết; khi đó vẫn phải có một mục đang mở.
+    return picked or NAV_SECTIONS[0]
+
+
 def main() -> None:
     st.session_state.setdefault("rfp_input", "")
     st.session_state.setdefault("result_state", None)
@@ -4208,35 +4248,14 @@ def main() -> None:
     st.session_state.setdefault("version_index", 0)
 
     text, submitted = sidebar_controls()
-    # Nút Chat đặt cạnh tiêu đề, không nằm lẫn trong thân hồ sơ: muốn chat thì
-    # bấm được ngay, không phải cuộn đi tìm.
-    # CSS ghim thanh trên nằm trong PROPOSAL_CSS, mà khối đó chỉ được nhả khi
-    # đã có hồ sơ. Nhả thêm ở đây để thanh trên bám ngay từ lúc chưa sinh gì.
+    # CSS neo header nằm trong PROPOSAL_CSS, mà khối đó chỉ được nhả khi đã có
+    # hồ sơ. Nhả thêm ở đây để header bám ngay từ lúc chưa sinh gì.
     st.markdown(PROPOSAL_CSS, unsafe_allow_html=True)
-    st.title("RFP Proposal Studio")
-    st.caption("Sinh hồ sơ thầu tiếng Nhật, mỗi câu đều truy được về nguồn")
-    # Khối này được CSS neo cố định ở góc trên bên phải, nên nó KHÔNG chứa tiêu
-    # đề — chỉ chứa đúng những nút phải luôn với tới được.
-    with st.container(key="topbar"):
-        history_column, chat_column = st.columns([1, 1], vertical_alignment="center")
-        with history_column:
-            render_history_buttons()
-        with chat_column:
-            render_chat_toggle()
-    tabs = st.tabs(
-        [
-            "Tổng quan",
-            "Độ đáp ứng",
-            "Truy vết",
-            "Sinh bộ test",
-            "Kết quả đánh giá",
-        ]
-    )
-    proposal_tab, coverage_tab, trace_tab, golden_tab, eval_tab = tabs
+    active = render_top_header()
 
-    with proposal_tab:
-        flow_area = st.empty()
-        result_area = st.container()
+    overview = active == NAV_SECTIONS[0]
+    flow_area = st.empty()
+    result_area = st.container()
 
     latest = st.session_state.get("result_state")
     failure = st.session_state.get("failure")
@@ -4288,48 +4307,55 @@ def main() -> None:
             push_version(latest, label="v1")
 
     if latest is None:
-        render_empty_tabs(tabs)
+        if overview:
+            st.info(
+                "Dán hoặc tải RFP ở bảng bên trái rồi bấm **Nộp và sinh hồ sơ** "
+                "— luồng chạy sẽ hiện ngay tại đây."
+            )
+        elif active in NAV_SECTIONS[1:3]:
+            st.info(EMPTY_SECTION_HINT[active])
     else:
-        render_flow(latest, flow_area, failure=failure)
+        if overview:
+            render_flow(latest, flow_area, failure=failure)
         if failure is not None:
-            with result_area:
-                if failure["kind"] == "blocked":
-                    st.warning(failure["message"], icon="🛑")
-                else:
-                    st.error(failure["message"], icon="❌")
-            for tab in (coverage_tab,):
-                with tab:
-                    st.info(
-                        "Chưa có kết quả để hiển thị — lượt chạy vừa rồi "
-                        f"{label(RUN_STATUS_VI, latest.get('status'), unknown='không hoàn tất')}."
-                    )
+            if overview:
+                with result_area:
+                    if failure["kind"] == "blocked":
+                        st.warning(failure["message"], icon="🛑")
+                    else:
+                        st.error(failure["message"], icon="❌")
+            elif active == NAV_SECTIONS[1]:
+                st.info(
+                    "Chưa có kết quả để hiển thị — lượt chạy vừa rồi "
+                    f"{label(RUN_STATUS_VI, latest.get('status'), unknown='không hoàn tất')}."
+                )
         elif latest.get("status") == "ask_user":
-            with result_area:
-                st.warning(latest["message"])
-            for tab in (coverage_tab,):
-                with tab:
-                    st.info("Cần bổ sung đầu vào trước khi sinh kết quả.")
+            if overview:
+                with result_area:
+                    st.warning(latest["message"])
+            elif active == NAV_SECTIONS[1]:
+                st.info("Cần bổ sung đầu vào trước khi sinh kết quả.")
         elif latest.get("status") == "completed":
             # Bản đang hiển thị = bản đang chọn trong lịch sử, và đó cũng là bản
             # được export. Chưa có lịch sử (state nạp lại từ phiên cũ) thì dùng
             # thẳng kết quả pipeline.
             shown = displayed_state() or latest
-            with result_area:
-                render_proposal(shown)
-            with coverage_tab:
+            if overview:
+                with result_area:
+                    render_proposal(shown)
+            elif active == NAV_SECTIONS[1]:
                 render_coverage(shown)
-            with trace_tab:
+            elif active == NAV_SECTIONS[2]:
                 render_requirement_journey(shown)
                 st.divider()
                 render_trace_details(shown)
 
-    with golden_tab:
+    if active == NAV_SECTIONS[3]:
         render_golden()
-        
-    with eval_tab:
+    elif active == NAV_SECTIONS[4]:
         render_eval()
 
-    # Sau cùng và ngoài mọi tab: xem mục "render_chat_dock".
+    # Sau cùng và ngoài mọi mục: xem mục "render_chat_dock".
     render_chat_dock()
 
 
