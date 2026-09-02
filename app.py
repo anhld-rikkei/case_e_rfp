@@ -668,7 +668,14 @@ CHAT_CSS = f"""
     border-left: 1px solid #2A323C;
     padding: .8rem 1.1rem 2rem 1.4rem;
     z-index: 50;
+    /* Xếp dọc và cho khung hội thoại nuốt hết chỗ thừa, nên ô nhập luôn nằm
+       sát đáy bảng thay vì lơ lửng giữa chừng với một mảng trống bên dưới. */
+    display: flex;
+    flex-direction: column;
 }}
+/* `min-height: 0` là bắt buộc: mặc định flex item không co xuống dưới chiều
+   cao nội dung, và khung sẽ tràn ra ngoài thay vì tự cuộn. */
+.st-key-chat_log {{ flex: 1 1 auto; min-height: 0; }}
 /* Tay kéo: dải dọc sát mép trái bảng, đúng chỗ người dùng đưa chuột tới. */
 .chat-dock-handle {{
     position: fixed;
@@ -698,6 +705,10 @@ CHAT_CSS = f"""
 [data-testid="stChatMessage"] p {{ margin-bottom: .3rem; }}
 /* Ô nhập một dòng quá thấp cho một câu chỉ thị. */
 [data-testid="stChatInputTextArea"] {{ min-height: 4.5rem !important; }}
+/* Gợi ý là câu chữ để đọc, không phải nhãn nút ở giữa — căn trái cho khớp
+   dòng chữ của bong bóng ngay trên nó. */
+.st-key-chat_options button {{ justify-content: flex-start !important; }}
+.st-key-chat_options button p {{ text-align: left !important; }}
 [class*="st-key-chatturn_user"] [data-testid="stChatMessage"] {{
     flex-direction: row-reverse;
     background: #1E6F4C;
@@ -1257,6 +1268,11 @@ def render_chat_options(state: dict[str, Any], scope: str | None) -> None:
     Người dùng không phải học trước là chat làm được gì: mỗi bước chỉ hiện đúng
     những nước đi kế tiếp, đánh số như một câu hỏi trong hội thoại.
     """
+    with st.container(key="chat_options"):
+        _render_chat_options(state, scope)
+
+
+def _render_chat_options(state: dict[str, Any], scope: str | None) -> None:
     if st.session_state.get("chat_checklist_open"):
         st.button(
             "← Quay lại",
@@ -4244,7 +4260,7 @@ def main() -> None:
             "Độ đáp ứng",
             "Truy vết",
             "Sinh bộ test",
-            "Kết quả đánh giá",
+            "Báo cáo hệ thống",
         ]
     )
     proposal_tab, coverage_tab, trace_tab, golden_tab, eval_tab = tabs

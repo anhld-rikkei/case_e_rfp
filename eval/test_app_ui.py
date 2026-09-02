@@ -33,7 +33,7 @@ EXPECTED_TABS = [
     "Độ đáp ứng",
     "Truy vết",
     "Sinh bộ test",
-    "Kết quả đánh giá",
+    "Báo cáo hệ thống",
 ]
 
 
@@ -2010,7 +2010,7 @@ def test_zero_call_stage_note_says_guards_are_free() -> None:
     assert "không tốn tiền LLM" in captions
 
 
-# ── Tab Kết quả đánh giá ──────────────────────────────────────────────────
+# ── Mục Báo cáo hệ thống ──────────────────────────────────────────────────
 
 def test_headline_numbers_read_from_results_not_hardcoded() -> None:
     import app
@@ -3828,3 +3828,41 @@ def test_suggestions_sit_inside_the_conversation_not_by_the_input() -> None:
         index for index, (kind, _) in enumerate(flat) if kind == "chat_input"
     )
     assert question < first_option < chat_input
+
+
+def test_chat_log_fills_the_dock_and_the_input_sits_last() -> None:
+    """Khung hội thoại nuốt hết chỗ thừa; ô nhập luôn sát đáy bảng.
+
+    `min-height: 0` là bắt buộc: mặc định flex item không co dưới nội dung, và
+    khung sẽ tràn ra ngoài thay vì tự cuộn.
+    """
+    at = _app_with_result(chat_open=True)
+    css = " ".join(item.value for item in at.markdown)
+    assert "flex-direction: column" in css
+    assert ".st-key-chat_log { flex: 1 1 auto; min-height: 0; }" in css
+
+    flat = _ordered(at)
+    options = [
+        index
+        for index, (kind, label) in enumerate(flat)
+        if kind == "button" and label.startswith("1. Toàn bộ hồ sơ")
+    ]
+    chat_input = next(
+        index for index, (kind, _) in enumerate(flat) if kind == "chat_input"
+    )
+    assert options and max(options) < chat_input
+
+
+def test_chat_options_are_left_aligned() -> None:
+    css = " ".join(item.value for item in _app_with_result(chat_open=True).markdown)
+    assert ".st-key-chat_options button { justify-content: flex-start !important; }" in css
+    assert ".st-key-chat_options button p { text-align: left !important; }" in css
+
+
+def test_report_section_got_its_new_name() -> None:
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.run()
+    assert not at.exception
+    labels = [tab.label for tab in at.tabs]
+    assert "Báo cáo hệ thống" in labels
+    assert "Kết quả đánh giá" not in labels
