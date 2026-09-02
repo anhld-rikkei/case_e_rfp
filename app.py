@@ -442,7 +442,7 @@ def source_label(sentence: dict[str, Any]) -> str:
 
 
 def render_mapping(state: dict[str, Any]) -> None:
-    st.subheader("Mỗi mục hồ sơ lấy từ chương nào của RFP")
+    st.subheader("Nguồn RFP của từng mục")
     chapter_titles = {
         chapter["id"]: chapter["title"] for chapter in state.get("chapters", [])
     }
@@ -1443,34 +1443,59 @@ def render_refine_outcome(result: Any) -> None:
     )
 
 
-def render_version_history() -> None:
-    versions = _versions()
-    if len(versions) <= 1:
-        return
-    st.divider()
-    st.subheader("Lịch sử phiên bản")
-    index = st.session_state.get("version_index", len(versions) - 1)
-    labels = [
+def version_labels(versions: list[dict[str, Any]]) -> list[str]:
+    return [
         f"{item['label']}"
         + (f" · {item.get('target', '')}" if item.get("instruction") else " · bản gốc")
         + (" · 📌 giữ lại câu ghim" if item.get("restored") else "")
         for item in versions
     ]
-    # Dropdown chứ không phải radio trải ngang: mười mấy bản thì hàng radio
-    # đẩy hết nội dung xuống dưới màn hình, cuộn mãi mới tới bản đang đọc.
+
+
+def render_version_picker() -> None:
+    """Ô chọn phiên bản, đặt ngay trên đầu phần Chi tiết.
+
+    Trước đây nó nằm tận cuối trang trong khối "Lịch sử phiên bản"; muốn xem
+    một bản cũ phải cuộn hết hồ sơ xuống rồi cuộn ngược lên đọc.
+    """
+    versions = _versions()
+    if len(versions) <= 1:
+        return
+    index = st.session_state.get("version_index", len(versions) - 1)
+    labels = version_labels(versions)
     picked = st.selectbox(
-        "Bản đang hiển thị (cũng là bản sẽ tải về)",
+        "Lịch sử phiên bản",
         range(len(versions)),
         index=index,
         format_func=lambda i: labels[i],
         key="version_picker",
+        help="Bản đang hiển thị cũng là bản sẽ tải về.",
     )
     if picked != index:
         st.session_state["version_index"] = picked
         st.session_state["translation"] = ""
         st.rerun()
 
-    chosen = versions[picked]
+
+def render_version_history() -> None:
+    """Những gì ĐÃ ĐỔI ở bản đang xem — không in lại toàn văn hồ sơ.
+
+    Bản trước dựng thêm một khối "Bản đầy đủ — vN" với nguyên hồ sơ bên dưới,
+    trong khi phần Chi tiết ngay trên đã hiện đúng bản đang chọn. Hai lần cùng
+    một nội dung trên một trang, và người đọc phải cuộn qua bản thứ hai để tới
+    nút tải.
+    """
+    versions = _versions()
+    if len(versions) <= 1:
+        return
+    index = st.session_state.get("version_index", len(versions) - 1)
+    chosen = versions[index]
+    if not (
+        chosen.get("instruction") or chosen.get("counts") or chosen.get("rejected")
+    ):
+        return
+    st.divider()
+    st.markdown(f"**Thay đổi ở {chosen['label']}**")
     if chosen.get("instruction"):
         st.caption(f"Chỉ thị: “{chosen['instruction']}”")
     if chosen.get("counts"):
@@ -1478,25 +1503,11 @@ def render_version_history() -> None:
     if chosen.get("rejected"):
         st.warning("Thay đổi bị lưới an toàn chặn ở bản này:", icon="🛑")
         _render_rejections(chosen["rejected"])
-    if picked > 0:
+    if index > 0:
         with st.expander("Xem thay đổi so với bản trước", expanded=False):
-            base = chosen.get("parent_index", picked - 1)
+            base = chosen.get("parent_index", index - 1)
             diff = version_diff(versions[base]["state"], chosen["state"])
             st.code(diff or "(không có khác biệt trong phần văn bản)", language="diff")
-
-    # Toàn văn bản đang chọn, ngay tại đây: đổi phiên bản là thấy ngay nội dung
-    # của phiên bản đó, không phải suy từ diff.
-    st.markdown(f"#### Bản đầy đủ — {chosen['label']}")
-    render_mark_legend(
-        [
-            sentence
-            for section in chosen["state"].get("sections", [])
-            for sentence in section["sentences"]
-        ]
-    )
-    render_bilingual_proposal(
-        chosen["state"], key_prefix=f"version_{picked}", allow_unpin=True
-    )
 
 
 def sentence_mark(sentence: dict[str, Any]) -> str:
@@ -1838,17 +1849,6 @@ def render_marked_sentences(
                 )
 
 
-def render_full_proposal(state: dict[str, Any], *, allow_unpin: bool = False) -> None:
-    """Toàn văn hồ sơ của một phiên bản, đủ bôi màu."""
-    for index, section in enumerate(state.get("sections", []), start=1):
-        st.markdown(f"**{index}. {section['title_ja']}**")
-        render_marked_sentences(
-            section["sentences"],
-            section_key=section["key"],
-            allow_unpin=allow_unpin,
-        )
-
-
 def split_translated_sections(translated: str) -> list[list[str]]:
     """Cắt bản dịch thành từng mục, dùng dòng tiêu đề `N. …` làm mốc.
 
@@ -1996,9 +1996,13 @@ def render_bilingual_proposal(
     không tốn thêm lệnh gọi.
     """
     sections = state.get("sections", [])
-    heading_column, toggle_column = st.columns([3, 2], vertical_alignment="center")
+    heading_column, version_column, toggle_column = st.columns(
+        [2, 2, 2], vertical_alignment="center"
+    )
     with heading_column:
         st.subheader("Chi tiết")
+    with version_column:
+        render_version_picker()
     with toggle_column:
         show = st.toggle(
             "Hiện bản dịch tiếng Việt",

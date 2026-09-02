@@ -836,23 +836,39 @@ def test_unpin_button_appears_only_where_allowed() -> None:
     assert not any("Bỏ ghim" in b.label for b in without.button)
 
 
-def test_full_proposal_renders_every_section_with_marks() -> None:
-    """Bản đầy đủ của phiên bản đang chọn phải hiện, không chỉ diff."""
+def test_the_selected_version_is_rendered_once_not_twice() -> None:
+    """Phần Chi tiết đã hiện đúng bản đang chọn — không in lại toàn văn lần nữa.
 
-    def body(root, state):
-        import sys as _s
+    Bản trước dựng thêm khối "Bản đầy đủ — vN" bên dưới, nên một trang có hai
+    lần cùng một hồ sơ và phải cuộn qua bản thứ hai mới tới nút tải.
+    """
+    import app
 
-        _s.path[:0] = [root + "/src", root]
-        import app
+    assert not hasattr(app, "render_full_proposal")
 
-        app.render_full_proposal(state)
-
-    at = _render(body, _pinned_state())
-    assert not at.exception
-    text = " ".join(item.value for item in at.markdown)
-    assert "技術要件への対応" in text  # tiêu đề mục
-    blocks = " ".join(item.value for item in at.info)
-    assert "BIツールとPL-300資格で対応します。" in blocks  # vùng xanh: người thêm
+    at = _app_with_result(
+        versions=[
+            {"label": "v1", "state": _state()},
+            {
+                "label": "v2",
+                "state": _state(),
+                "instruction": "viết ngắn hơn",
+                "target": "Toàn bộ hồ sơ",
+                "counts": {"changed": 1, "dropped": 0, "kept": 1, "blocked": 0},
+                "rejected": [],
+                "restored": 0,
+            },
+        ],
+        version_index=1,
+    )
+    body = " ".join(item.value for item in at.markdown)
+    assert "Bản đầy đủ" not in body
+    # Tiêu đề mục chỉ xuất hiện MỘT lần
+    assert sum("技術要件への対応" in item.value for item in at.markdown) == 1
+    # Nhưng phần "đã đổi gì ở bản này" thì vẫn còn
+    assert "Thay đổi ở v2" in body
+    captions = " ".join(item.value for item in at.caption)
+    assert "viết ngắn hơn" in captions
 
 
 def test_version_label_marks_lineage_when_branching() -> None:
@@ -3740,3 +3756,44 @@ def test_pinned_header_holds_the_name_nav_and_controls() -> None:
     keys = {item.key for item in at.button}
     assert {"undo_button", "redo_button", "chat_open_button"} <= keys
     assert at.get("button_group")
+
+
+def test_version_picker_sits_in_the_detail_header_row() -> None:
+    """Ô chọn phiên bản đứng cạnh công tắc dịch, không nằm tận cuối trang."""
+    at = _app_with_result(
+        versions=[
+            {"label": "v1", "state": _state()},
+            {"label": "v2", "state": _state(), "instruction": "x", "target": "y"},
+        ],
+        version_index=1,
+    )
+    picker = next(item for item in at.selectbox if item.key == "version_picker")
+    assert picker.label == "Lịch sử phiên bản"
+
+    flat = _ordered(at)
+    detail = next(
+        index for index, (_, label) in enumerate(flat) if label == "Chi tiết"
+    )
+    toggle = next(
+        index
+        for index, (kind, label) in enumerate(flat)
+        if kind == "toggle" and "bản dịch" in label
+    )
+    picker_at = next(
+        index
+        for index, (kind, label) in enumerate(flat)
+        if kind == "selectbox" and label == "Lịch sử phiên bản"
+    )
+    assert detail < picker_at < toggle
+
+
+def test_version_picker_hidden_when_there_is_only_one_version() -> None:
+    at = _app_with_result()
+    assert not [item for item in at.selectbox if item.key == "version_picker"]
+
+
+def test_mapping_table_has_a_shorter_name() -> None:
+    at = _app_with_result()
+    headings = [item.value for item in at.subheader]
+    assert "Nguồn RFP của từng mục" in headings
+    assert "Mỗi mục hồ sơ lấy từ chương nào của RFP" not in headings
