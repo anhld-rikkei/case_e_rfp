@@ -3133,8 +3133,10 @@ def test_a_requirement_with_no_sentence_is_shown_not_hidden() -> None:
     at = _render(body, state)
     assert not at.exception
     shown = " ".join(item.value for item in list(at.markdown) + list(at.caption))
-    assert "`3.1`" in shown and "`3.2`" in shown
+    assert "Yêu cầu 3.1" in shown and "Yêu cầu 3.2" in shown
     assert "Chưa có câu nào đáp yêu cầu này" in shown
+    # Màn hình chính KHÔNG trích nguyên văn RFP — đây là chỗ đọc hồ sơ.
+    assert "24時間監視に対応できること。" not in shown
 
 
 def test_grouping_keeps_the_original_index_for_translation_alignment() -> None:
@@ -3222,3 +3224,38 @@ def test_related_sources_hidden_when_everything_scores_zero() -> None:
     assert not at.exception
     assert not at.dataframe
     assert not at.get("expander")
+
+
+def test_lookup_quotes_the_whole_requirement_text() -> None:
+    """Lúc người đọc hỏi "câu này đáp cái gì" thì câu hỏi phải hiện đủ chữ."""
+    state = _state()
+    text = state["sections"][0]["sentences"][0]["text"]
+
+    def body(root, state, text):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app as _app
+
+        _app.render_source_lookup(state, text, key="k")
+
+    at = _render(body, state, text)
+    assert not at.exception
+    shown = " ".join(item.value for item in at.markdown)
+    assert "Đáp ứng yêu cầu" in shown
+    assert "`3.1` 基幹システム構築に対応できること。" in shown
+
+
+def test_sentence_styling_is_loaded_even_when_chat_is_closed() -> None:
+    """Lỗi thật: CSS câu-là-nút nằm trong CHAT_CSS, chỉ nhả khi mở chat.
+
+    Chat đóng thì câu hiện thành ô có viền, và sửa CSS bao nhiêu lần cũng không
+    thấy đổi vì nó chưa từng được nạp.
+    """
+    at = _app_with_result()
+    # `at.session_state` không có `.get` — proxy của AppTest chỉ hỗ trợ `in`.
+    assert "chat_open" not in at.session_state
+    css = " ".join(item.value for item in at.markdown)
+    assert "stPopover" in css
+    for rule in ("border: none", "text-align: left", "background: transparent"):
+        assert rule in css, rule

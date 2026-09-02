@@ -680,20 +680,6 @@ CHAT_CSS = f"""
 }}
 .chat-dock-handle:hover, .chat-dock-handle.dragging {{ background: #2F8F63; }}
 
-/* Câu văn là nút bấm để tra nguồn — nên nó phải TRÔNG như câu văn. Hỏng CSS
-   thì tệ nhất là nó giống một cái nút, vẫn bấm được, vẫn ra nguồn. */
-[data-testid="stPopoverButton"] {{
-    background: transparent !important;
-    border: none !important;
-    padding: .15rem 0 !important;
-    text-align: left !important;
-    font-weight: 400 !important;
-    justify-content: flex-start !important;
-}}
-[data-testid="stPopoverButton"]:hover {{
-    background: #1B2129 !important;
-    text-decoration: underline dotted;
-}}
 [data-testid="stChatMessage"] {{
     padding: .7rem .9rem;
     margin-bottom: .5rem;
@@ -702,21 +688,7 @@ CHAT_CSS = f"""
     border: 1px solid #2A323C;
 }}
 [data-testid="stChatMessage"] p {{ margin-bottom: .3rem; }}
-[class*="st-key-chatturn_user"] /* Câu văn là nút bấm để tra nguồn — nên nó phải TRÔNG như câu văn. Hỏng CSS
-   thì tệ nhất là nó giống một cái nút, vẫn bấm được, vẫn ra nguồn. */
-[data-testid="stPopoverButton"] {{
-    background: transparent !important;
-    border: none !important;
-    padding: .15rem 0 !important;
-    text-align: left !important;
-    font-weight: 400 !important;
-    justify-content: flex-start !important;
-}}
-[data-testid="stPopoverButton"]:hover {{
-    background: #1B2129 !important;
-    text-decoration: underline dotted;
-}}
-[data-testid="stChatMessage"] {{
+[class*="st-key-chatturn_user"] [data-testid="stChatMessage"] {{
     flex-direction: row-reverse;
     background: #1E6F4C;
     border-color: #2F8F63;
@@ -726,6 +698,40 @@ CHAT_CSS = f"""
 }}
 </style>
 """
+
+# CSS của khối hồ sơ — nhả ở `render_proposal`, KHÔNG gói chung với CHAT_CSS.
+# CHAT_CSS chỉ được nhả khi mở chat, nên mọi quy tắc để trong đó sẽ không tồn
+# tại lúc chat đóng.
+#
+# Câu văn là nút bấm để tra nguồn, nên nó phải TRÔNG như câu văn: không viền,
+# không nền, không mũi tên, căn trái. Nhắm `[data-testid="stPopover"] button`
+# thay vì test-id của riêng nút — nút thật nằm bên trong, nhắm hụt thì câu vẫn
+# hiện thành một cái ô.
+PROPOSAL_CSS = """
+<style>
+[data-testid="stPopover"] > div > button {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: .1rem 0 !important;
+    min-height: 0 !important;
+    justify-content: flex-start !important;
+    text-align: left !important;
+    font-weight: 400 !important;
+}
+[data-testid="stPopover"] button p {
+    text-align: left !important;
+    font-weight: 400 !important;
+}
+/* Mũi tên ⌄ của popover làm câu văn trông như ô chọn. */
+[data-testid="stPopover"] button svg { display: none !important; }
+[data-testid="stPopover"] > div > button:hover {
+    background: transparent !important;
+    text-decoration: underline dotted #6B7684 !important;
+}
+</style>
+"""
+
 
 CHAT_RESERVE_CSS = """
 <style>
@@ -1485,7 +1491,23 @@ def render_source_lookup(
         st.markdown(f"**Kiểm chứng:** {row['Kiểm chứng']}")
         st.markdown(f"**Cách lấy nguồn:** {row['Cách lấy nguồn']}")
         if row["_req_ids"]:
-            st.markdown(f"**Đáp ứng yêu cầu:** {' · '.join(row['_req_ids'])}")
+            # Nguyên văn yêu cầu nằm ở ĐÂY chứ không ở màn hình chính: đây là
+            # lúc người đọc đang hỏi "câu này đáp cái gì", nên câu hỏi phải
+            # hiện ra đủ chữ.
+            labels = all_requirement_labels(state)
+            st.markdown("**Đáp ứng yêu cầu:**")
+            for req_id in row["_req_ids"]:
+                text = labels.get(req_id, "")
+                st.markdown(f"- `{req_id}` {text}" if text else f"- `{req_id}`")
+
+
+def all_requirement_labels(state: dict[str, Any]) -> dict[str, str]:
+    """Mã yêu cầu -> nguyên văn, gộp mọi chương của RFP."""
+    return {
+        requirement["req_id"]: requirement.get("text", "")
+        for chapter in state.get("chapters", [])
+        for requirement in chapter.get("requirements", [])
+    }
 
 
 def requirement_labels(state: dict[str, Any], section: dict[str, Any]) -> dict[str, str]:
@@ -1674,11 +1696,17 @@ def render_marked_block(
 
 
 def render_requirement_heading(group: dict[str, Any]) -> None:
-    """Nhãn yêu cầu đứng trên cụm câu đáp nó."""
+    """Nhãn yêu cầu đứng trên cụm câu đáp nó.
+
+    Chỉ in MÃ yêu cầu. Màn hình này để đọc hồ sơ, không phải để đọc lại RFP —
+    trích nguyên văn yêu cầu ở đây thì mỗi mục dài gấp đôi mà chữ thêm vào
+    không phải sản phẩm. Nguyên văn nằm trong ô tra nguồn của từng câu, và
+    trong hộp cảnh báo khi mục thiếu căn cứ.
+    """
     if group["req_id"] is None:
         st.caption("Câu chung của mục — không gắn yêu cầu cụ thể")
         return
-    st.markdown(f"`{group['req_id']}` **{group['text']}**")
+    st.caption(f"Yêu cầu {group['req_id']}")
 
 
 def render_bilingual_proposal(
@@ -1806,6 +1834,7 @@ def render_mark_legend(sentences: list[dict[str, Any]]) -> None:
 
 
 def render_proposal(state: dict[str, Any]) -> None:
+    st.markdown(PROPOSAL_CSS, unsafe_allow_html=True)
     render_proposal_body(state)
 
 
