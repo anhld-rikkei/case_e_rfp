@@ -2341,6 +2341,10 @@ def _app_with_result(**session: Any) -> AppTest:
     for key, value in session.items():
         at.session_state[key] = value
     at.run()
+    # Streamlit vẫn dựng xong phần trước chỗ lỗi, nên kiểm phần tử KHÔNG bắt
+    # được ngoại lệ. Đã sập bẫy này một lần: `st.iframe(height=0)` ném lỗi mà
+    # cả bộ test vẫn xanh.
+    assert not at.exception, at.exception
     return at
 
 
@@ -2352,7 +2356,7 @@ def test_a_single_button_opens_chat_and_the_old_section_is_gone() -> None:
     """
     at = _app_with_result()
     labels = [button.label for button in at.button]
-    assert "💬 Chat review" in labels
+    assert "💬 Chat" in labels
     assert "Gửi chỉ thị" not in labels
     headings = " ".join(item.value for item in at.subheader)
     assert "Review & chỉnh lại" not in headings
@@ -2369,7 +2373,7 @@ def test_chat_opens_on_the_right_and_leaves_the_rfp_panel_alone() -> None:
     assert not at.sidebar.chat_input
     # Chat nằm trong thân trang
     assert at.chat_input
-    assert "Chat review" in [item.value for item in at.subheader]
+    assert "Chat" in [item.value for item in at.subheader]
 
 
 def test_chat_panel_closes_from_its_own_button() -> None:
@@ -2384,27 +2388,31 @@ def _chat_css(at: AppTest) -> str:
     return " ".join(item.value for item in at.markdown)
 
 
-def test_chat_dock_is_a_pinned_panel_the_mouse_can_resize() -> None:
-    """Một bảng riêng neo mép phải, kéo được — không phải một cột trôi theo trang.
+def test_chat_dock_is_pinned_and_has_a_real_drag_handle() -> None:
+    """Bảng riêng neo mép phải, kéo bằng dải dọc ở mép trái.
 
-    `resize` chỉ ăn khi `overflow` khác `visible`. `direction: rtl` đẩy tay kéo
-    sang góc dưới BÊN TRÁI: bảng dính mép phải màn hình, tay kéo bên phải là
-    kéo ra ngoài màn hình.
+    `resize: horizontal` của CSS đặt tay kéo ở GÓC DƯỚI của khối — bảng cao hết
+    màn hình thì góc đó nằm tận đáy, không ai tìm ra. Đó là lý do lần trước kéo
+    không được. Nay dựng dải kéo riêng, đúng chỗ như thanh kéo của sidebar.
     """
-    css = _chat_css(_app_with_result(chat_open=True))
+    at = _app_with_result(chat_open=True)
+    css = _chat_css(at)
     assert ".st-key-chat_dock" in css
-    for rule in (
-        "position: fixed",
-        "resize: horizontal",
-        "overflow: auto",
-        "direction: rtl",
-        "direction: ltr",
-        "min-width",
-        "max-width",
-    ):
-        assert rule in css, rule
-    # Chừa chỗ để bảng không đè lên hồ sơ
+    assert "position: fixed" in css
+    # Bề rộng đi qua một biến CSS để tay kéo đổi được cả bảng lẫn phần chừa chỗ
+    assert "--chat-dock-w" in css
+    assert "var(--chat-dock-w)" in css
+    assert "cursor: col-resize" in css
     assert "stMainBlockContainer" in css and "padding-right" in css
+
+    import app
+
+    # Dải kéo phải bám lại sau mỗi lượt rerun: Streamlit dựng lại DOM, gắn một
+    # lần lúc nạp là lượt sau mất tay kéo.
+    assert "MutationObserver" in app.CHAT_DRAG_JS
+    assert "window.parent" in app.CHAT_DRAG_JS
+    for guard in ("Math.min", "Math.max"):
+        assert guard in app.CHAT_DRAG_JS, guard
 
 
 def test_chat_dock_reserves_no_space_when_it_is_closed() -> None:
@@ -2428,42 +2436,122 @@ def test_chat_styling_never_depends_on_has_or_the_avatar_testid() -> None:
     assert '[class*="st-key-chatturn_user"]' in css
 
 
-def test_chat_panel_offers_suggestions_only_before_the_first_turn() -> None:
+def test_chat_asks_which_part_before_anything_else() -> None:
+    """Bước đầu là một câu hỏi có đánh số, không phải một ô select rời rạc.
+
+    Người dùng không phải học trước chat làm được gì — mỗi bước chỉ hiện đúng
+    những nước đi kế tiếp.
+    """
     at = _app_with_result(chat_open=True)
-    assert [
-        button.key for button in at.button if (button.key or "").startswith("chat_suggest_")
+    labels = [button.label for button in at.button]
+    assert any(label.startswith("1. Toàn bộ hồ sơ") for label in labels)
+    assert any(label.startswith("2. ") for label in labels)
+    # Ô select "Chỉnh phần nào" đã bỏ
+    assert "Chỉnh phần nào" not in [item.label for item in at.selectbox]
+    # Chưa chọn phạm vi thì chưa gợi ý chỉ thị
+    assert not [
+        button.key
+        for button in at.button
+        if (button.key or "").startswith("chat_instruction_")
     ]
 
-    at2 = _app_with_result(
-        chat_open=True,
-        versions=[
-            {"label": "v1", "state": _state()},
-            {
-                "label": "v2",
-                "state": _state(),
-                "instruction": "viết ngắn hơn",
-                "target": "Toàn bộ hồ sơ",
-                "counts": {"changed": 1, "dropped": 0, "kept": 1, "blocked": 0},
-                "rejected": [],
-                "restored": 0,
-            },
-        ],
-        version_index=1,
-    )
-    assert not [
-        button.key for button in at2.button if (button.key or "").startswith("chat_suggest_")
+
+def test_choosing_a_part_switches_to_instruction_suggestions() -> None:
+    at = _app_with_result(chat_open=True)
+    at.button(key="chat_scope___all__").click().run()
+    assert at.session_state["chat_scope"] == "__all__"
+    keys = [
+        button.key
+        for button in at.button
+        if (button.key or "").startswith("chat_instruction_")
     ]
-    assert len(at2.chat_message) >= 3  # lời mở + cặp lượt đã có
+    assert len(keys) == 3
+    assert "← Đổi phần khác" in [button.label for button in at.button]
+    at.button(key="chat_scope_reset").click().run()
+    assert at.session_state["chat_scope"] is None
+
+
+def test_instructions_are_deterministic_and_scoped() -> None:
+    import app
+
+    state = _state()
+    whole = app.instructions_for(state, app.ALL_TARGET)
+    assert whole == app.instructions_for(state, app.ALL_TARGET)
+    section_key = state["sections"][0]["key"]
+    scoped = app.instructions_for(state, section_key)
+    assert scoped != whole
+    title = state["sections"][0]["title_ja"]
+    assert all(title in instruction for instruction in scoped)
+
+
+def test_typing_without_choosing_a_part_means_the_whole_document() -> None:
+    """Hỏi lại một bước nữa chỉ để xác nhận điều hiển nhiên là bắt người dùng chờ."""
+    import app
+    from rfp.refine import RefineResult
+
+    seen = {}
+    original = app.refine_all
+    app.refine_all = lambda state, instruction: (
+        seen.update(instruction=instruction) or RefineResult(state=state, changed=1)
+    )
+    try:
+        def body(root, state):
+            import sys as _s
+
+            _s.path[:0] = [root + "/src", root]
+            import streamlit as st
+
+            import app as _app
+
+            st.session_state.setdefault("versions", [{"label": "v1", "state": state}])
+            if not st.session_state.get("seeded"):
+                st.session_state["seeded"] = True
+                st.session_state["chat_pending"] = {
+                    "instruction": "viết ngắn hơn",
+                    "target_key": _app.ALL_TARGET,
+                }
+            _app.render_chat_panel(state)
+
+        at = _render(body, _state())
+        assert not at.exception
+        assert seen["instruction"] == "viết ngắn hơn"
+        assert at.session_state["versions"][1]["target"] == "Toàn bộ hồ sơ"
+    finally:
+        app.refine_all = original
 
 
 # ── Checklist trong panel chat ───────────────────────────────────────────
 
-def test_panel_checklist_is_the_short_form_of_the_export_one() -> None:
+def _checklist_boxes(at: AppTest) -> list[str]:
+    return [
+        item.label
+        for item in at.checkbox
+        if (item.key or "").startswith("checklist_")
+    ]
+
+
+def test_checklist_lives_inside_the_conversation() -> None:
+    """Checklist là thứ chat đưa ra khi được hỏi, không phải một khối đứng riêng."""
+    at = _app_with_result(chat_open=True)
+    assert "📋 Checklist trước khi nộp" in [button.label for button in at.button]
+    # Chưa hỏi thì chưa hiện. Lọc theo key: tab "Sinh bộ test" cũng có ô tick,
+    # `at.checkbox` gộp cả trang chứ không riêng bảng chat.
+    assert not _checklist_boxes(at)
+
+    at.button(key="chat_checklist_open_button").click().run()
+    from rfp.export import CHECKLIST_ITEMS
+
+    shown = _checklist_boxes(at)
+    assert shown == [short for short, _ in CHECKLIST_ITEMS]
+    assert "← Quay lại" in [button.label for button in at.button]
+
+
+def test_checklist_is_the_short_form_of_the_export_one() -> None:
     """Một nguồn, hai cách hiện — lệch nhau là tick đủ mà bản nộp vẫn thiếu."""
     from rfp.export import CHECKLIST_ITEMS, CHECKLIST_SIGNOFF, REVIEWER_CHECKLIST
 
-    at = _app_with_result(chat_open=True)
-    shown = [item.label for item in at.checkbox]
+    at = _app_with_result(chat_open=True, chat_checklist_open=True)
+    shown = _checklist_boxes(at)
     for short, full in CHECKLIST_ITEMS:
         assert short in shown, short
         assert full in REVIEWER_CHECKLIST, full
@@ -2472,29 +2560,20 @@ def test_panel_checklist_is_the_short_form_of_the_export_one() -> None:
     assert not any("Người rà soát" in label for label in shown)
 
 
-def test_panel_checklist_counts_what_is_ticked() -> None:
-    at = _app_with_result(chat_open=True)
+def test_checklist_counts_and_warns_until_every_box_is_ticked() -> None:
     from rfp.export import CHECKLIST_ITEMS
 
     total = len(CHECKLIST_ITEMS)
-    labels = [item.label for item in at.get("expander")]
-    assert f"Checklist trước khi nộp — 0/{total}" in labels
+    at = _app_with_result(chat_open=True, chat_checklist_open=True)
+    body = " ".join(item.value for item in at.markdown)
+    assert f"**0/{total}**" in body
+    assert "chưa tick đủ" in body
 
-    at2 = _app_with_result(chat_open=True, checklist_0=True, checklist_1=True)
-    labels2 = [item.label for item in at2.get("expander")]
-    assert f"Checklist trước khi nộp — 2/{total}" in labels2
-
-
-def test_panel_checklist_warns_until_every_box_is_ticked() -> None:
-    from rfp.export import CHECKLIST_ITEMS
-
-    ticked = {f"checklist_{index}": True for index in range(len(CHECKLIST_ITEMS))}
-    partial = _app_with_result(chat_open=True)
-    assert any(
-        "Chưa tick đủ" in item.value for item in partial.caption
-    )
-    full = _app_with_result(chat_open=True, **ticked)
-    assert not any("Chưa tick đủ" in item.value for item in full.caption)
+    ticked = {f"checklist_{index}": True for index in range(total)}
+    done = _app_with_result(chat_open=True, chat_checklist_open=True, **ticked)
+    done_body = " ".join(item.value for item in done.markdown)
+    assert f"**{total}/{total}**" in done_body
+    assert "chưa tick đủ" not in done_body
 
 
 def test_a_click_on_a_suggestion_runs_a_turn_and_records_a_version() -> None:

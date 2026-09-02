@@ -620,47 +620,53 @@ ALL_TARGET = "__all__"
 
 # Bảng màu panel chat — cùng hệ với sơ đồ luồng và dark theme của app.
 #
-# KHÔNG dùng `:has()` và KHÔNG dùng <summary> ở đây. Đã tra bundle frontend của
+# KHÔNG dùng `:has()` và KHÔNG dùng <summary>. Đã tra bundle frontend của
 # Streamlit 1.61: expander không dựng bằng <details>/<summary>, và khi truyền
-# `avatar=` thì test-id đổi thành stChatMessageAvatarCustom. Hai selector cũ
-# khớp rỗng — code đổi mà màn hình y nguyên, không có lỗi nào báo ra.
-# Cách chắc chắn: container có `key` được Streamlit gắn class `st-key-<key>`.
+# `avatar=` thì test-id đổi thành stChatMessageAvatarCustom. Hai selector kiểu
+# đó khớp rỗng — code đổi mà màn hình y nguyên, không lỗi nào báo ra.
 CHAT_DOCK_KEY = "chat_dock"
-CHAT_DOCK_WIDTH = "30rem"
 
 CHAT_CSS = f"""
 <style>
+:root {{ --chat-dock-w: 30rem; }}
 /* Bảng chat neo mép phải, cao hết màn hình, cuộn riêng — một bảng độc lập
-   như bảng RFP bên trái, không phải một cột trôi theo trang. */
+   như bảng RFP bên trái. Bề rộng đọc từ biến CSS để tay kéo đổi được cả bảng
+   lẫn phần chừa chỗ của trang bằng một phép gán. */
 .st-key-{CHAT_DOCK_KEY} {{
     position: fixed;
     top: 3.4rem;
     right: 0;
     bottom: 0;
-    width: {CHAT_DOCK_WIDTH};
-    min-width: 20rem;
-    max-width: 70vw;
-    resize: horizontal;
-    overflow: auto;
-    direction: rtl;
+    width: var(--chat-dock-w);
+    overflow-y: auto;
+    overflow-x: hidden;
     background: #12161C;
     border-left: 1px solid #2A323C;
-    padding: 1rem 1.2rem 2rem;
+    padding: .8rem 1.1rem 2rem 1.4rem;
     z-index: 50;
 }}
-/* `direction: rtl` chỉ để đẩy tay kéo sang góc dưới BÊN TRÁI — bảng dính mép
-   phải màn hình, tay kéo bên phải là kéo ra ngoài màn hình. */
-.st-key-{CHAT_DOCK_KEY} > * {{ direction: ltr; }}
+/* Tay kéo: dải dọc sát mép trái bảng, đúng chỗ người dùng đưa chuột tới. */
+.chat-dock-handle {{
+    position: fixed;
+    top: 3.4rem;
+    bottom: 0;
+    width: 7px;
+    right: var(--chat-dock-w);
+    cursor: col-resize;
+    z-index: 51;
+    background: transparent;
+    transition: background .15s;
+}}
+.chat-dock-handle:hover, .chat-dock-handle.dragging {{ background: #2F8F63; }}
 
 [data-testid="stChatMessage"] {{
     padding: .7rem .9rem;
-    margin-bottom: .55rem;
+    margin-bottom: .5rem;
     border-radius: 14px;
     background: #1B2129;
     border: 1px solid #2A323C;
 }}
 [data-testid="stChatMessage"] p {{ margin-bottom: .3rem; }}
-/* Lượt của người dùng: đảo bên, nền màu nhấn. */
 [class*="st-key-chatturn_user"] [data-testid="stChatMessage"] {{
     flex-direction: row-reverse;
     background: #1E6F4C;
@@ -672,14 +678,65 @@ CHAT_CSS = f"""
 </style>
 """
 
-# Chừa chỗ cho bảng chat để nó không đè lên hồ sơ. Kéo rộng hơn mức mặc định
-# thì phần dôi ra sẽ đè — đổi lại được một bảng neo thật, cuộn độc lập.
-CHAT_RESERVE_CSS = f"""
+CHAT_RESERVE_CSS = """
 <style>
-[data-testid="stMainBlockContainer"] {{
-    padding-right: calc({CHAT_DOCK_WIDTH} + 2rem);
-}}
+[data-testid="stMainBlockContainer"] {
+    padding-right: calc(var(--chat-dock-w) + 2rem);
+}
 </style>
+"""
+
+# `resize: horizontal` của CSS đặt tay kéo ở góc dưới của khối — với bảng cao
+# hết màn hình thì góc đó nằm tận đáy, không ai tìm ra. Dựng tay kéo riêng ở
+# mép trái cho giống thanh kéo của sidebar.
+#
+# Chạy trong iframe của st.components nên phải với sang `window.parent`.
+# MutationObserver là bắt buộc: Streamlit dựng lại DOM sau mỗi lần chạy script,
+# gắn một lần lúc nạp thì lượt rerun sau là mất tay kéo.
+CHAT_DRAG_JS = """
+<script>
+(function () {
+  const doc = window.parent.document;
+  const root = doc.documentElement;
+  function attach() {
+    const dock = doc.querySelector('.st-key-chat_dock');
+    if (!dock) return;
+    if (doc.querySelector('.chat-dock-handle')) return;
+    const handle = doc.createElement('div');
+    handle.className = 'chat-dock-handle';
+    doc.body.appendChild(handle);
+    let startX = 0, startW = 0, dragging = false;
+    handle.addEventListener('mousedown', function (event) {
+      dragging = true;
+      startX = event.clientX;
+      startW = dock.getBoundingClientRect().width;
+      handle.classList.add('dragging');
+      doc.body.style.userSelect = 'none';
+      event.preventDefault();
+    });
+    doc.addEventListener('mousemove', function (event) {
+      if (!dragging) return;
+      const limit = window.parent.innerWidth * 0.7;
+      const next = Math.min(Math.max(startW + (startX - event.clientX), 320), limit);
+      root.style.setProperty('--chat-dock-w', next + 'px');
+    });
+    doc.addEventListener('mouseup', function () {
+      dragging = false;
+      handle.classList.remove('dragging');
+      doc.body.style.userSelect = '';
+    });
+  }
+  function cleanup() {
+    if (!doc.querySelector('.st-key-chat_dock')) {
+      const stale = doc.querySelector('.chat-dock-handle');
+      if (stale) stale.remove();
+    }
+  }
+  attach();
+  new MutationObserver(function () { cleanup(); attach(); })
+    .observe(doc.body, { childList: true, subtree: true });
+})();
+</script>
 """
 
 CHIP_STYLE = (
@@ -900,59 +957,139 @@ def chat_is_open() -> bool:
     return bool(st.session_state.get("chat_open"))
 
 
-def render_review_checklist() -> None:
-    """Checklist rút gọn, tick được ngay trong panel.
+def scope_label(state: dict[str, Any], key: str) -> str:
+    return dict(refine_targets(state)).get(key, "Toàn bộ hồ sơ")
 
-    Cùng một danh sách với file tải về, chỉ khác cách hiện: ở đây là nhãn ngắn
-    (câu đầy đủ nằm ở tooltip) vì cột hẹp, và bỏ dòng ký tên — đó là thứ của
-    bản in, một ô tick trên màn hình không thay được nó.
-    """
-    ticked = sum(
-        bool(st.session_state.get(f"checklist_{index}"))
-        for index in range(len(CHECKLIST_ITEMS))
+
+def instructions_for(state: dict[str, Any], scope_key: str) -> list[str]:
+    """Ba câu chỉ thị gợi sẵn cho phạm vi đang chọn. Tất định, 0 lệnh gọi LLM."""
+    if scope_key == ALL_TARGET:
+        return [
+            "Viết lại toàn bộ hồ sơ với văn phong trang trọng hơn",
+            "Rút ngắn những chỗ dài dòng",
+            "Bỏ các câu trùng ý giữa các mục",
+        ]
+    title = next(
+        (
+            section["title_ja"]
+            for section in state.get("sections", [])
+            if section["key"] == scope_key
+        ),
+        scope_key,
     )
-    total = len(CHECKLIST_ITEMS)
-    with st.expander(f"Checklist trước khi nộp — {ticked}/{total}", expanded=False):
-        for index, (short, full) in enumerate(CHECKLIST_ITEMS):
-            st.checkbox(short, key=f"checklist_{index}", help=full)
-        if ticked < total:
-            st.caption("Chưa tick đủ — không nộp và không gửi khách hàng.")
+    return [
+        f"Viết mục 「{title}」 ngắn gọn hơn",
+        f"Gộp các câu trùng ý trong mục 「{title}」",
+        f"Đưa câu có số liệu lên đầu mục 「{title}」",
+    ]
+
+
+def pick_scope(key: str) -> None:
+    st.session_state["chat_scope"] = key
+    st.session_state["chat_checklist_open"] = False
+
+
+def clear_scope() -> None:
+    st.session_state["chat_scope"] = None
+
+
+def toggle_chat_checklist() -> None:
+    st.session_state["chat_checklist_open"] = not st.session_state.get(
+        "chat_checklist_open"
+    )
 
 
 def render_chat_toggle() -> None:
-    """Một nút, không phải một khối.
-
-    Bản trước để cả một mục "Review & chỉnh lại" ở cuối tab chỉ để chứa một
-    nút — người đọc phải cuộn hết hồ sơ mới thấy chỗ mở chat.
-    """
+    """Một nút, không phải một khối."""
     if chat_is_open():
         return
     st.button(
-        "💬 Chat review",
+        "💬 Chat",
         key="chat_open_button",
         on_click=open_chat_panel,
         help="Chỉnh lại hồ sơ bằng chỉ thị, kèm checklist trước khi nộp",
     )
 
 
-def render_chat_panel(state: dict[str, Any]) -> None:
-    """Panel chat ở cột PHẢI, dính lại khi cuộn.
+def render_checklist_bubble() -> None:
+    """Checklist nằm TRONG hội thoại, như một câu trả lời tham khảo.
 
-    Không dùng sidebar: bảng trái đã là ô nhập RFP và người dùng cần giữ nó để
-    còn đối chiếu. Streamlit chỉ có một sidebar, nên panel thứ hai phải là một
-    cột trong trang.
+    Trước đây nó là một khối expander đứng riêng trên đầu bảng — một mục lạc
+    lõng giữa khung chat. Ở đây nó là thứ chat đưa ra khi được hỏi.
     """
+    with st.container(key="chatturn_assistant_checklist"):
+        with st.chat_message("assistant"):
+            ticked = sum(
+                bool(st.session_state.get(f"checklist_{index}"))
+                for index in range(len(CHECKLIST_ITEMS))
+            )
+            total = len(CHECKLIST_ITEMS)
+            st.markdown(
+                f"Trước khi nộp, tự kiểm {total} mục này — **{ticked}/{total}**:"
+            )
+            for index, (short, full) in enumerate(CHECKLIST_ITEMS):
+                st.checkbox(short, key=f"checklist_{index}", help=full)
+            if ticked < total:
+                st.markdown(
+                    chip("chưa tick đủ — chưa nộp được", tone="block"),
+                    unsafe_allow_html=True,
+                )
+
+
+def render_chat_options(state: dict[str, Any], scope: str | None) -> None:
+    """Lựa chọn bấm-là-chạy, thay cho ô select và khối gợi ý rời rạc.
+
+    Người dùng không phải học trước là chat làm được gì: mỗi bước chỉ hiện đúng
+    những nước đi kế tiếp, đánh số như một câu hỏi trong hội thoại.
+    """
+    if st.session_state.get("chat_checklist_open"):
+        st.button(
+            "← Quay lại",
+            key="chat_checklist_back",
+            width="stretch",
+            on_click=toggle_chat_checklist,
+        )
+        return
+
+    if scope is None:
+        for index, (key, label) in enumerate(refine_targets(state), start=1):
+            st.button(
+                f"{index}. {label}",
+                key=f"chat_scope_{key}",
+                width="stretch",
+                on_click=pick_scope,
+                args=(key,),
+            )
+    else:
+        for index, instruction in enumerate(instructions_for(state, scope)):
+            st.button(
+                instruction,
+                key=f"chat_instruction_{index}",
+                width="stretch",
+                on_click=queue_instruction,
+                args=(instruction, scope),
+            )
+        st.button(
+            "← Đổi phần khác",
+            key="chat_scope_reset",
+            width="stretch",
+            on_click=clear_scope,
+        )
+    st.button(
+        "📋 Checklist trước khi nộp",
+        key="chat_checklist_open_button",
+        width="stretch",
+        on_click=toggle_chat_checklist,
+    )
+
+
+def render_chat_panel(state: dict[str, Any]) -> None:
+    """Bảng chat neo mép phải. Kéo bề rộng bằng dải dọc ở mép trái bảng."""
     header_left, header_right = st.columns([3, 1])
     with header_left:
-        st.subheader("Chat review")
+        st.subheader("Chat")
     with header_right:
         st.button("✕", key="chat_close", on_click=close_chat_panel, help="Đóng chat")
-    st.caption(
-        "Chỉnh **cách viết trên căn cứ sẵn có** — không thêm được nội dung chưa "
-        "có bằng chứng, không đổi được số liệu.  \n"
-        "Kéo mép trái của bảng để đổi bề rộng."
-    )
-    render_review_checklist()
 
     if state_is_stale(state):
         st.warning(
@@ -963,8 +1100,9 @@ def render_chat_panel(state: dict[str, Any]) -> None:
         )
         return
 
+    scope = st.session_state.get("chat_scope")
     turns = chat_turns(_versions(), last=st.session_state.get("chat_last"))
-    with st.container(height=340, autoscroll=True, key="chat_log", border=False):
+    with st.container(height=420, autoscroll=True, key="chat_log", border=False):
         with st.container(key="chatturn_assistant_open"):
             with st.chat_message("assistant"):
                 st.markdown(f"Hồ sơ đã sinh xong. {sentence_breakdown(state)}")
@@ -990,31 +1128,28 @@ def render_chat_panel(state: dict[str, Any]) -> None:
                             "".join(chip(text, tone=tone) for text, tone in chips),
                             unsafe_allow_html=True,
                         )
+        if st.session_state.get("chat_checklist_open"):
+            render_checklist_bubble()
+        elif scope is None:
+            with st.container(key="chatturn_assistant_ask"):
+                with st.chat_message("assistant"):
+                    st.markdown("Bạn muốn chỉnh phần nào?")
+        else:
+            with st.container(key="chatturn_assistant_scope"):
+                with st.chat_message("assistant"):
+                    st.markdown(
+                        f"Đang chỉnh **{scope_label(state, scope)}**. "
+                        "Chọn một gợi ý hoặc tự gõ chỉ thị."
+                    )
 
-    targets = refine_targets(state)
-    labels = {key: label for key, label in targets}
-    picked_key = st.selectbox(
-        "Chỉnh phần nào",
-        [key for key, _ in targets],
-        format_func=lambda key: labels[key],
-        key="refine_target",
-    )
+    render_chat_options(state, scope)
 
-    if not turns:
-        st.caption("💡 Gợi ý chỉ thị")
-        for index, item in enumerate(instruction_suggestions(state)):
-            st.button(
-                item["instruction"],
-                key=f"chat_suggest_{index}",
-                width="stretch",
-                on_click=queue_instruction,
-                args=(item["instruction"], item["target"]),
-            )
-
-    typed = st.chat_input("Nhập chỉ thị…", key="chat_input")
+    typed = st.chat_input("Nhập tin nhắn…", key="chat_input")
     pending = st.session_state.pop("chat_pending", None)
     if typed:
-        pending = {"instruction": typed, "target_key": picked_key}
+        # Gõ thẳng mà chưa chọn phạm vi thì hiểu là cả hồ sơ — hỏi lại một
+        # bước nữa chỉ để xác nhận điều hiển nhiên là bắt người dùng chờ.
+        pending = {"instruction": typed, "target_key": scope or ALL_TARGET}
     if not pending:
         return
 
@@ -1023,7 +1158,7 @@ def render_chat_panel(state: dict[str, Any]) -> None:
         submit_instruction(
             state,
             target_key=target_key,
-            target_label=labels.get(target_key, "Toàn bộ hồ sơ"),
+            target_label=scope_label(state, target_key),
             instruction=pending["instruction"],
         )
     st.rerun()
@@ -1448,6 +1583,10 @@ def render_proposal(state: dict[str, Any]) -> None:
         st.markdown(CHAT_RESERVE_CSS, unsafe_allow_html=True)
         with st.container(key=CHAT_DOCK_KEY):
             render_chat_panel(state)
+        # `st.iframe` chứ không phải `st.components.v1.html`: bản này đã báo
+        # khai tử API cũ (hạn 2026-06-01, đã qua).
+        # height tối thiểu là 1: `st.iframe` từ chối 0.
+        st.iframe(CHAT_DRAG_JS, height=1)
     render_proposal_body(state)
 
 
