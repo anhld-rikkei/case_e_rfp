@@ -1424,11 +1424,41 @@ def unpin_sentence(section_key: str, text: str) -> None:
                 sentence["pinned"] = False
 
 
+def sentence_source(state: dict[str, Any], text: str) -> dict[str, str] | None:
+    """Tra thông tin nguồn của một câu trong hồ sơ đang hiển thị."""
+    for row in sentence_rows(state):
+        if row["Câu (tiếng Nhật)"] == text:
+            return row
+    return None
+
+
+def render_source_lookup(
+    state: dict[str, Any] | None, text: str, *, key: str
+) -> None:
+    """Kính lúp: bấm là hiện đúng nguồn của CÂU ĐÓ, ngay cạnh nó.
+
+    Trước đây muốn đối chiếu phải sang tab khác rồi tự dò lại câu trong bảng —
+    đọc tới câu nào cũng phải rời trang một lần.
+    """
+    if state is None:
+        return
+    row = sentence_source(state, text)
+    if row is None:
+        return
+    with st.popover("🔍", help="Xem nguồn của câu này"):
+        st.markdown(f"**Câu:** {row['Câu (tiếng Nhật)']}")
+        st.markdown(f"**Nguồn:** {row['Nguồn']}")
+        st.markdown(f"**Mã nguồn:** `{row['Mã nguồn']}`")
+        st.markdown(f"**Kiểm chứng:** {row['Kiểm chứng']}")
+        st.markdown(f"**Cách lấy nguồn:** {row['Cách lấy nguồn']}")
+
+
 def render_marked_sentences(
     sentences: list[dict[str, Any]],
     *,
     section_key: str = "",
     allow_unpin: bool = False,
+    state: dict[str, Any] | None = None,
 ) -> None:
     for group_index, (mark, group) in enumerate(group_by_mark(sentences)):
         body = "  \n".join(item.get("text", "") for item in group)
@@ -1455,8 +1485,17 @@ def render_marked_sentences(
                 f"> {body}\n>\n> *{EDITED_LABEL}*"
             )
         else:
-            for item in group:
-                st.write(item.get("text", ""))
+            for item_index, item in enumerate(group):
+                text = item.get("text", "")
+                body_column, lookup_column = st.columns([20, 1])
+                with body_column:
+                    st.write(text)
+                with lookup_column:
+                    render_source_lookup(
+                        state,
+                        text,
+                        key=f"look_{section_key}_{group_index}_{item_index}",
+                    )
 
 
 def render_full_proposal(state: dict[str, Any], *, allow_unpin: bool = False) -> None:
@@ -1577,13 +1616,7 @@ def render_bilingual_proposal(
         help="Dịch bản đang hiển thị để đối chiếu. Bản nộp vẫn là bản tiếng Nhật.",
     )
     translated_sections: list[list[str]] = []
-    stacked = False
     if show:
-        stacked = st.checkbox(
-            "Xếp dọc (màn hình hẹp)",
-            key=f"{key_prefix}_stacked",
-            help="Hai cột quá chật thì xếp tiếng Nhật trước, tiếng Việt sau.",
-        )
         with st.spinner("Đang dịch bản đang hiển thị…"):
             try:
                 translated_sections = split_translated_sections(
@@ -1600,31 +1633,35 @@ def render_bilingual_proposal(
         sentences = section.get("sentences", [])
         status = section.get("status")
         vi_lines = translated_sections[index] if index < len(translated_sections) else []
-
-        # Phần chỉ có MỘT bên (tiêu đề, trạng thái, cảnh báo thiếu căn cứ) nằm
-        # NGOÀI cặp cột và chiếm hết bề ngang. Để chúng trong cột trái sẽ đẩy
-        # thân văn bản bên trái tụt xuống, và cả mục lệch nhau từ dòng đầu.
-        # Tiêu đề là tiếng Nhật kèm một chấm màu trạng thái — nội dung hồ sơ
-        # là tiếng Nhật, tên mục cũng vậy. Bản dịch tên mục chỉ hiện khi người
-        # dùng bật dịch, cùng lúc với phần thân được dịch.
-        # Trạng thái để nguyên dạng chấm màu: bảng "Kết quả" ngay trên đã ghi
-        # rõ bằng chữ từng mục, viết lại ở đây là nói hai lần.
-        st.markdown(
+        title = (
             f"**{index + 1}. {section['title_ja']}** "
-            f"{SECTION_STATUS_ICON.get(status, '')}",
-            help=label(SECTION_STATUS_VI, status),
+            f"{SECTION_STATUS_ICON.get(status, '')}"
         )
+        status_help = label(SECTION_STATUS_VI, status)
+
         if show:
-            st.caption(vi_lines[0] if vi_lines else section["title_vi"])
+            # Tên mục tiếng Việt nằm ở CỘT PHẢI, thẳng hàng với tên tiếng Nhật
+            # bên trái — cùng quy ước với phần thân, nên nhìn một cái là biết
+            # bên nào là bản dịch.
+            title_left, title_right = st.columns(2)
+            with title_left:
+                st.markdown(title, help=status_help)
+            with title_right:
+                st.markdown(f"**{vi_lines[0] if vi_lines else section['title_vi']}**")
+        else:
+            st.markdown(title, help=status_help)
+
+        # Ghi chú và cảnh báo thiếu căn cứ nói về CẢ MỤC, không thuộc bên nào,
+        # nên chiếm hết bề ngang thay vì nằm trong một cột.
         render_section_note(state, section)
 
-        if not (show and not stacked):
-            # Một cột: giữ nguyên thứ tự đọc Nhật -> Việt trong từng mục.
+        if not show:
             render_marked_sentences(
-                sentences, section_key=section["key"], allow_unpin=allow_unpin
+                sentences,
+                section_key=section["key"],
+                allow_unpin=allow_unpin,
+                state=state,
             )
-            if show:
-                render_marked_block("plain", vi_lines[1:])
             continue
 
         # Hai cột: chia theo TỪNG NHÓM đánh dấu, nên vùng vàng "người dùng bổ
@@ -1641,17 +1678,12 @@ def render_bilingual_proposal(
             position += len(group)
             left, right = st.columns(2)
             with left:
-                render_marked_block(mark, [item.get("text", "") for item in group])
-                if mark == "user" and allow_unpin:
-                    for item_index, item in enumerate(
-                        [item for item in group if item.get("pinned")]
-                    ):
-                        st.button(
-                            f"📌 Bỏ ghim: {item['text'][:30]}…",
-                            key=f"unpin_{key_prefix}_{section['key']}_{group_index}_{item_index}",
-                            on_click=unpin_sentence,
-                            args=(section["key"], item["text"]),
-                        )
+                render_marked_sentences(
+                    group,
+                    section_key=section["key"],
+                    allow_unpin=allow_unpin and mark == "user",
+                    state=state,
+                )
             with right:
                 render_marked_block(mark, vi_chunk)
         st.divider()
@@ -1679,11 +1711,7 @@ def render_proposal_body(state: dict[str, Any]) -> None:
     render_mapping(state)
     st.divider()
 
-    st.subheader("Chi tiết hồ sơ")
-    st.caption(
-        "Nội dung hồ sơ giữ nguyên tiếng Nhật — đó là sản phẩm giao cho khách. "
-        "Chỉ nhãn giao diện được dịch."
-    )
+    st.subheader("Chi tiết")
     render_mark_legend(
         [
             sentence
@@ -1993,52 +2021,6 @@ def sentence_rows(state: dict[str, Any]) -> list[dict[str, str]]:
         for section in state.get("sections", [])
         for sentence in section["sentences"]
     ]
-
-
-def render_sources(state: dict[str, Any]) -> None:
-    rows = sentence_rows(state)
-    origins = list(dict.fromkeys(row["_origin"] for row in rows))
-    verdicts = list(dict.fromkeys(row["_verdict"] for row in rows))
-    filter_origin, filter_verdict = st.columns(2)
-    with filter_origin:
-        picked_origins = st.multiselect(
-            "Lọc theo nguồn",
-            [label(ORIGIN_VI, value) for value in origins],
-            default=[label(ORIGIN_VI, value) for value in origins],
-            key="source_origin_filter",
-        )
-    with filter_verdict:
-        picked_verdicts = st.multiselect(
-            "Lọc theo kết quả kiểm chứng",
-            [label(VERDICT_VI, value) for value in verdicts],
-            default=[label(VERDICT_VI, value) for value in verdicts],
-            key="source_verdict_filter",
-        )
-    # Map NGƯỢC về giá trị gốc trước khi lọc — nhãn tiếng Việt chỉ là lớp áo.
-    selected_origins = to_raw(ORIGIN_VI, picked_origins)
-    selected_verdicts = to_raw(VERDICT_VI, picked_verdicts)
-    filtered = [
-        row
-        for row in rows
-        if row["_origin"] in selected_origins and row["_verdict"] in selected_verdicts
-    ]
-    st.dataframe(
-        [
-            {key: value for key, value in row.items() if not key.startswith("_")}
-            for row in filtered
-        ],
-        width="stretch",
-        hide_index=True,
-        height=600,
-    )
-    st.caption(f"Hiển thị {len(filtered)}/{len(rows)} câu.")
-    with st.expander("Các nhãn này nghĩa là gì?"):
-        st.markdown("**Nguồn của câu**")
-        for key, text in ORIGIN_VI.items():
-            st.markdown(f"- **{text}** — {ORIGIN_HINT[key]}")
-        st.markdown("**Kết quả kiểm chứng**")
-        for key, text in VERDICT_VI.items():
-            st.markdown(f"- {VERDICT_ICON[key]} **{text}** — {VERDICT_HINT[key]}")
 
 
 TRANSLATION_BLOCK_TITLE = {
@@ -3387,7 +3369,7 @@ def render_empty_tabs(tabs: tuple[Any, ...]) -> None:
         "Dán hoặc tải RFP ở thanh bên rồi bấm **Nộp và sinh hồ sơ** — luồng chạy "
         "sẽ hiện ngay tại đây.",
         "Bảng đối chiếu từng yêu cầu của RFP sẽ hiện ở đây.",
-        "Nguồn của từng câu sẽ hiện ở đây.",
+        "Hành trình xử lý từng yêu cầu sẽ hiện ở đây.",
     )
     for tab, hint in zip(tabs[:3], hints):
         with tab:
@@ -3728,13 +3710,12 @@ def main() -> None:
         [
             "Tổng quan",
             "Độ đáp ứng",
-            "Nguồn từng câu",
             "Truy vết",
             "Sinh bộ test",
             "Kết quả đánh giá",
         ]
     )
-    proposal_tab, coverage_tab, sources_tab, trace_tab, golden_tab, eval_tab = tabs
+    proposal_tab, coverage_tab, trace_tab, golden_tab, eval_tab = tabs
 
     with proposal_tab:
         flow_area = st.empty()
@@ -3799,7 +3780,7 @@ def main() -> None:
                     st.warning(failure["message"], icon="🛑")
                 else:
                     st.error(failure["message"], icon="❌")
-            for tab in (coverage_tab, sources_tab):
+            for tab in (coverage_tab,):
                 with tab:
                     st.info(
                         "Chưa có kết quả để hiển thị — lượt chạy vừa rồi "
@@ -3808,7 +3789,7 @@ def main() -> None:
         elif latest.get("status") == "ask_user":
             with result_area:
                 st.warning(latest["message"])
-            for tab in (coverage_tab, sources_tab):
+            for tab in (coverage_tab,):
                 with tab:
                     st.info("Cần bổ sung đầu vào trước khi sinh kết quả.")
         elif latest.get("status") == "completed":
@@ -3820,8 +3801,6 @@ def main() -> None:
                 render_proposal(shown)
             with coverage_tab:
                 render_coverage(shown)
-            with sources_tab:
-                render_sources(shown)
             with trace_tab:
                 render_requirement_journey(shown)
                 st.divider()

@@ -31,7 +31,6 @@ APP_PATH = str(PROJECT_ROOT / "app.py")
 EXPECTED_TABS = [
     "Tổng quan",
     "Độ đáp ứng",
-    "Nguồn từng câu",
     "Truy vết",
     "Sinh bộ test",
     "Kết quả đánh giá",
@@ -162,41 +161,47 @@ def test_result_tables_use_vietnamese_headers() -> None:
 
         app.render_proposal(state)
         app.render_coverage(state)
-        app.render_sources(state)
         app.render_trace_details(state)
 
     at = _render(body, state)
     assert not at.exception
     columns = _columns_of(at)
     assert ["Mã yêu cầu", "Nội dung yêu cầu", "Tình trạng", "Căn cứ đáp ứng"] in columns
-    assert [
+    # Không cột nào còn tên enum thô
+    flat = {name for group in columns for name in group}
+    assert not {"origin", "verdict", "source_id", "req_id"} & flat
+
+
+def test_internal_keys_never_reach_the_source_lookup() -> None:
+    """`_origin`/`_verdict` là khoá nội bộ, không được lộ ra chỗ người đọc."""
+    import app
+
+    state = _state()
+    row = app.sentence_source(state, state["sections"][0]["sentences"][0]["text"])
+    assert row is not None
+    shown = {
         "Mục",
         "Cách lấy nguồn",
         "Câu (tiếng Nhật)",
         "Nguồn",
         "Mã nguồn",
         "Kiểm chứng",
-    ] in columns
-    # Không cột nào còn tên enum thô
-    flat = {name for group in columns for name in group}
-    assert not {"origin", "verdict", "source_id", "req_id"} & flat
+    }
+    assert shown <= set(row)
+    assert {key for key in row if key.startswith("_")} == {"_origin", "_verdict"}
 
-
-def test_internal_filter_columns_are_hidden_from_table() -> None:
-    """`_origin`/`_verdict` chỉ để lọc, không được lộ ra bảng."""
-    state = _state()
-
-    def body(root, state):
+    def body(root, state, text):
         import sys as _s
 
         _s.path[:0] = [root + "/src", root]
-        import app
+        import app as _app
 
-        app.render_sources(state)
+        _app.render_source_lookup(state, text, key="k")
 
-    at = _render(body, state)
-    flat = {name for group in _columns_of(at) for name in group}
-    assert not any(name.startswith("_") for name in flat)
+    at = _render(body, state, state["sections"][0]["sentences"][0]["text"])
+    assert not at.exception
+    body_text = " ".join(item.value for item in at.markdown)
+    assert "_origin" not in body_text and "_verdict" not in body_text
 
 
 def test_sentence_rows_keep_raw_values_for_filtering() -> None:
@@ -934,7 +939,7 @@ def test_overview_puts_result_block_before_detail() -> None:
     at = _render(body, state)
     assert not at.exception
     headers = [item.value for item in at.subheader]
-    assert headers.index("Kết quả") < headers.index("Chi tiết hồ sơ")
+    assert headers.index("Kết quả") < headers.index("Chi tiết")
     # Bảng ánh xạ mục ← chương nằm trong khối Kết quả
     assert any(
         "Mục hồ sơ" in list(frame.value.columns) for frame in at.dataframe
@@ -1361,7 +1366,7 @@ def test_no_user_facing_coverage_jargon_left() -> None:
 def test_the_jargon_scan_still_covers_the_proposal_screens() -> None:
     """Chốt chặn cho chính bài trên: bỏ sót màn hồ sơ thì bài kia thành vô nghĩa."""
     source = _app_source_outside_golden_screen()
-    for kept in ("def render_confidence", "def render_proposal", "def render_sources"):
+    for kept in ("def render_confidence", "def render_proposal", "def render_mapping"):
         assert kept in source, kept
     assert "def render_golden_coverage" not in source
 
@@ -2809,7 +2814,7 @@ def test_download_button_sits_at_the_very_bottom_of_the_tab() -> None:
     for kind, label in order[at_index + 1 :]:
         assert kind not in {"subheader", "dataframe", "toggle"}, (kind, label)
     detail = next(
-        index for index, (_, label) in enumerate(order) if label == "Chi tiết hồ sơ"
+        index for index, (_, label) in enumerate(order) if label == "Chi tiết"
     )
     assert at_index > detail
 
@@ -2945,12 +2950,16 @@ def test_section_title_translation_appears_only_with_the_toggle() -> None:
     off = _render(body, state, False)
     assert not off.exception
     assert not any(
-        "Đáp ứng yêu cầu kỹ thuật" in item.value for item in off.caption
+        "Đáp ứng yêu cầu kỹ thuật" in item.value for item in off.markdown
     )
 
     on = _render(body, state, True)
     assert not on.exception
-    assert any("Đáp ứng yêu cầu kỹ thuật" in item.value for item in on.caption)
+    # Tên mục tiếng Việt in đậm như tên tiếng Nhật, ở cột phải
+    assert any(
+        item.value.strip() == "**1. Đáp ứng yêu cầu kỹ thuật**"
+        for item in on.markdown
+    )
 
 
 def test_the_tab_ends_with_one_small_download_button() -> None:
@@ -2997,3 +3006,80 @@ def test_sidebar_upload_still_fills_the_rfp_box() -> None:
     assert not at.exception
     uploads = [item for item in at.sidebar.file_uploader]
     assert len(uploads) == 1
+
+
+# ── Tra nguồn ngay tại câu ────────────────────────────────────────────────
+
+def test_every_sentence_gets_a_magnifier_to_its_source() -> None:
+    """Đọc tới câu nào tra được ngay câu đó, không phải rời trang.
+
+    Trước đây muốn đối chiếu phải sang tab "Nguồn từng câu" rồi tự dò lại câu
+    trong bảng — đọc tới câu nào cũng phải rời trang một lần.
+    """
+    state = _state()
+
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_bilingual_proposal(state, key_prefix="look")
+
+    at = _render(body, state)
+    assert not at.exception
+    # Mỗi câu máy sinh một kính lúp
+    plain = [
+        sentence
+        for section in state["sections"]
+        for sentence in section["sentences"]
+    ]
+    assert len(at.get("popover")) == len(plain)
+    shown = " ".join(item.value for item in at.markdown)
+    for sentence in plain:
+        assert f"**Câu:** {sentence['text']}" in shown
+
+
+def test_the_lookup_shows_the_same_fields_the_old_tab_did() -> None:
+    import app
+
+    state = _state()
+    text = state["sections"][0]["sentences"][0]["text"]
+
+    def body(root, state, text):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app as _app
+
+        _app.render_source_lookup(state, text, key="k")
+
+    at = _render(body, state, text)
+    shown = " ".join(item.value for item in at.markdown)
+    row = app.sentence_source(state, text)
+    for field in ("Nguồn", "Mã nguồn", "Kiểm chứng", "Cách lấy nguồn"):
+        assert field in shown, field
+        assert row[field] in shown, field
+
+
+def test_lookup_is_silent_for_a_sentence_it_cannot_place() -> None:
+    """Câu lạ thì không vẽ kính lúp — thà không có nút còn hơn nút rỗng."""
+    def body(root, state):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app as _app
+
+        _app.render_source_lookup(state, "câu không có trong hồ sơ", key="k")
+        _app.render_source_lookup(None, "bất kỳ", key="k2")
+
+    at = _render(body, _state())
+    assert not at.exception
+    assert not at.get("popover")
+
+
+def test_source_tab_is_gone() -> None:
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.run()
+    assert not at.exception
+    assert "Nguồn từng câu" not in [tab.label for tab in at.tabs]

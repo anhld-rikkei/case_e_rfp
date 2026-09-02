@@ -43,7 +43,19 @@
       "Bash(python -m pytest eval/test_app_ui.py eval/test_golden_coverage.py -q)",
       "Bash(python -m pytest eval/test_app_ui.py -q -k \"japanese_proposal_text_is_not_translated or sidebar_explains\")",
       "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_polish_tests.py\")",
-      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_sidebar.py\")"
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_sidebar.py\")",
+      "Bash(sed -n '/^def render_marked_sentences/,/^def render_bilingual/p' app.py)",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_detail.py\")",
+      "Bash(awk 'NR>=2026 && NR<=2090' app.py)",
+      "Bash(awk 'NR>2026 && /^def /{print NR\": \"$0; exit}' app.py)",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"translation_heading_detection\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/fix_regex.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"translation_heading\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"overview_puts_result_block or section_title_translation\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"result_tables_use_vietnamese or download_button_sits\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_detail_tests.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"magnifier or section_title_translation\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/fix_two_tests.py\")"
     ]
   }
 }
