@@ -1299,11 +1299,48 @@ def test_confidence_table_uses_coverage_vocabulary_of_the_other_tab() -> None:
     assert "trong y yêu cầu RFP giao cho mục này, x đã có căn cứ thật" in captions
 
 
-def test_no_user_facing_coverage_jargon_left() -> None:
-    """Thuật ngữ 'phủ/coverage' giữ trong eval kỹ thuật, không lên giao diện."""
+# Màn "Sinh bộ test" có người đọc khác: người sửa code, không phải người làm
+# hồ sơ thầu. Ở đó "độ phủ" là tên đúng của thứ đang đo, không phải thuật ngữ
+# rò rỉ ra ngoài. Lệnh cấm dưới đây vẫn giữ nguyên cho mọi màn còn lại.
+GOLDEN_SCREEN_FUNCTIONS = {
+    "render_golden",
+    "render_golden_coverage",
+    "render_golden_picker",
+    "load_golden_into_input",
+    "_golden_management_rows",
+}
+
+
+def _app_source_outside_golden_screen() -> str:
+    import ast
+
     source = (PROJECT_ROOT / "app.py").read_text(encoding="utf-8")
+    lines = source.splitlines(keepends=True)
+    skipped: set[int] = set()
+    for node in ast.parse(source).body:
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name in GOLDEN_SCREEN_FUNCTIONS
+        ):
+            skipped.update(range(node.lineno - 1, node.end_lineno))
+    return "".join(
+        line for index, line in enumerate(lines) if index not in skipped
+    )
+
+
+def test_no_user_facing_coverage_jargon_left() -> None:
+    """Thuật ngữ 'phủ/coverage' giữ trong eval kỹ thuật, không lên màn hồ sơ."""
+    source = _app_source_outside_golden_screen()
     for marker in ('"Yêu cầu đã phủ"', "đã phủ", "chưa phủ", "độ phủ"):
         assert marker not in source, marker
+
+
+def test_the_jargon_scan_still_covers_the_proposal_screens() -> None:
+    """Chốt chặn cho chính bài trên: bỏ sót màn hồ sơ thì bài kia thành vô nghĩa."""
+    source = _app_source_outside_golden_screen()
+    for kept in ("def render_confidence", "def render_proposal", "def render_sources"):
+        assert kept in source, kept
+    assert "def render_golden_coverage" not in source
 
 
 def test_confidence_block_shows_tier_and_score() -> None:
@@ -2009,3 +2046,112 @@ def test_stages_after_failure_are_not_left_running() -> None:
     assert statuses["review"] == "pending"
     assert statuses["assemble"] == "pending"
     assert "running" not in statuses.values()
+
+
+# ── Màn "Sinh bộ test": bảng độ phủ + sinh theo tiêu chí ──────────────────
+
+def test_golden_coverage_table_names_every_gap() -> None:
+    """Bộ rỗng thì bảng phải gọi tên đích danh từng thứ còn thiếu."""
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+
+        app.render_golden_coverage([])
+
+    at = _render(body)
+    frame = at.dataframe[0].value
+    assert list(frame.columns) == ["tầng", "trục", "phủ", "đạt", "còn thiếu"]
+    assert set(frame["đạt"]) == {"⚠"}
+    # Ba tầng của đề bài đều có mặt
+    assert set(frame["tầng"]) == {"phổ biến", "biên", "cấm-sai"}
+    text = " ".join(frame["còn thiếu"])
+    from eval.golden.coverage import leaked_client_names, out_scope_terms
+
+    for term in (*out_scope_terms(), *leaked_client_names()):
+        assert term in text, term
+    assert at.warning
+
+
+def test_golden_coverage_table_shows_what_a_batch_would_fix() -> None:
+    """Cột 'sau khi thêm' — thấy tác dụng TRƯỚC khi lưu file."""
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+        from eval.golden.generator import generate_for_coverage
+
+        app.render_golden_coverage([], added=generate_for_coverage(existing=[]))
+
+    at = _render(body)
+    frame = at.dataframe[0].value
+    assert "sau khi thêm" in frame.columns
+    assert all(value.endswith("✅") for value in frame["sau khi thêm"])
+    # Bảng bên trái vẫn là hiện trạng: chưa lưu thì vẫn còn hở.
+    assert set(frame["đạt"]) == {"⚠"}
+
+
+def test_golden_coverage_table_is_all_green_when_nothing_is_missing() -> None:
+    def body(root):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app
+        from eval.golden.generator import generate_for_coverage
+
+        app.render_golden_coverage(generate_for_coverage(existing=[]))
+
+    at = _render(body)
+    assert not at.warning
+    assert at.success
+    assert set(at.dataframe[0].value["đạt"]) == {"✅"}
+
+
+def test_golden_tab_defaults_to_the_criteria_driven_mode() -> None:
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.run()
+    modes = [option for option in at.radio[0].options]
+    assert modes[0] == "Theo tiêu chí phủ · 0 LLM"
+    assert at.radio[0].value == "Theo tiêu chí phủ · 0 LLM"
+    # Mỗi trục một ô tick, bật sẵn
+    labels = [box.label for box in at.checkbox]
+    assert any("Tên khách hàng cũ" in label for label in labels)
+    assert any("6 chương RFP" in label for label in labels)
+
+
+def test_generating_by_criteria_only_makes_what_is_missing() -> None:
+    """Bấm sinh ở chế độ tiêu chí: ra đúng lô vá chỗ hở, không sinh bừa."""
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.run()
+    at.button(key="golden_generate_preview").click().run()
+    cases = at.session_state["golden_preview_cases"]
+    assert cases
+    # Bộ golden thật hiện chỉ hở trục rò rỉ khách hàng
+    assert {case.metadata["axis"] for case in cases} == {"client_leak"}
+    assert all(case.source == "coverage" for case in cases)
+    assert not at.exception
+
+
+def test_sidebar_can_load_a_golden_case_into_the_rfp_box() -> None:
+    """Chạy một ca golden qua đúng luồng sản phẩm, không chỉ qua runner."""
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.run()
+    assert "Nạp vào ô RFP" in [button.label for button in at.sidebar.button]
+    at.button(key="golden_picker_load").click().run()
+
+    from eval.golden.runner import DEFAULT_GOLDEN_DIR, discover_case_files
+    from eval.golden.schema import load_case
+
+    picked = at.session_state["golden_picker"]
+    expected = load_case(
+        next(
+            path
+            for path in discover_case_files(DEFAULT_GOLDEN_DIR)
+            if load_case(path).case_id == picked
+        )
+    )
+    assert at.session_state["rfp_input"] == expected.rfp_text
+    # Nạp RFP mới thì kết quả cũ phải bị xoá, nếu không màn hình trộn hai lượt
+    assert at.session_state["result_state"] is None

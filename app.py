@@ -29,10 +29,17 @@ from config.settings import (
     COST_PER_1M_INPUT,
     COST_PER_1M_OUTPUT,
 )
+from eval.golden.coverage import (
+    coverage_report,
+    report_rows as coverage_rows,
+    summary_line as coverage_summary,
+)
 from eval.golden.generator import (
     CHAPTER_TITLES,
+    COVERAGE_AXES,
     DEFAULT_OUTPUT_DIR as GOLDEN_OUTPUT_DIR,
     generate_combinatorial,
+    generate_for_coverage,
     generate_mutations,
     generate_paraphrases,
     load_base_case,
@@ -282,6 +289,43 @@ def render_source_status() -> None:
                 )
 
 
+def render_golden_picker() -> None:
+    """Chạy một ca golden qua ĐÚNG luồng sản phẩm.
+
+    Tab "Sinh bộ test" chạy ca bằng runner và chỉ in PASS/FAIL. Muốn xem hồ sơ
+    thật sự ra cái gì cho một ca biên thì phải nạp nó vào đây và bấm sinh như
+    một RFP bình thường.
+    """
+    with st.expander("Ca golden test", expanded=False):
+        cases = [load_case(path) for path in discover_case_files(DEFAULT_GOLDEN_DIR)]
+        if not cases:
+            st.caption("Chưa có ca nào trong golden set.")
+            return
+        by_id = {case.case_id: case for case in cases}
+        picked = st.selectbox(
+            "Chọn ca",
+            list(by_id),
+            key="golden_picker",
+            format_func=lambda case_id: (
+                f"{case_id} · {by_id[case_id].metadata.get('tier', by_id[case_id].source)}"
+            ),
+        )
+        case = by_id[picked]
+        st.caption(
+            f"{len(case.assertions)} điều kiện · "
+            + " · ".join(
+                sorted({assertion.kind for assertion in case.assertions})
+            )
+        )
+        st.button(
+            "Nạp vào ô RFP",
+            key="golden_picker_load",
+            on_click=load_golden_into_input,
+            args=(case,),
+            width="stretch",
+        )
+
+
 def sidebar_controls() -> tuple[str, bool]:
     with st.sidebar:
         st.title("RFP đầu vào")
@@ -321,6 +365,7 @@ def sidebar_controls() -> tuple[str, bool]:
                 args=(sample_text,),
                 width="stretch",
             )
+        render_golden_picker()
         submitted = st.button(
             "Nộp và sinh hồ sơ",
             type="primary",
@@ -2312,12 +2357,58 @@ def _golden_management_rows() -> tuple[list[Path], list[GoldenCase], list[dict[s
     return paths, cases, rows
 
 
+def render_golden_coverage(
+    cases: list[GoldenCase], *, added: list[GoldenCase] | None = None
+) -> None:
+    """Bảng độ phủ. Cột "còn thiếu" gọi tên đích danh, không chỉ nói còn mấy cái.
+
+    Có `added` thì so hai bảng: cột "sau khi thêm" cho thấy lô sắp sinh vá được
+    trục nào — người test thấy tác dụng TRƯỚC khi lưu file.
+    """
+    axes = coverage_report(cases)
+    rows = coverage_rows(axes)
+    if added:
+        after = {axis.key: axis for axis in coverage_report([*cases, *added])}
+        for row, axis in zip(rows, axes):
+            target = after[axis.key]
+            row["sau khi thêm"] = (
+                f"{target.hit}/{target.total}" + (" ✅" if target.is_full else "")
+            )
+    st.dataframe(rows, width="stretch", hide_index=True)
+    gaps = [axis for axis in axes if not axis.is_full]
+    if gaps:
+        st.warning(
+            f"{coverage_summary(axes)} — còn hở: "
+            + " · ".join(axis.label for axis in gaps),
+            icon="⚠️",
+        )
+    else:
+        st.success(coverage_summary(axes), icon="✅")
+
+
+def load_golden_into_input(case: GoldenCase) -> None:
+    """Nạp RFP của một ca golden vào ô nhập, để chạy nó qua đúng luồng sản phẩm."""
+    select_sample(case.rfp_text)
+    st.session_state["loaded_golden_case"] = case.case_id
+
+
 def render_golden() -> None:
     st.header("Sinh golden test")
     st.caption("Bộ test = RFP + điều kiện máy tự kiểm được; không lưu hồ sơ mẫu.")
 
+    saved_cases = [load_case(path) for path in discover_case_files(DEFAULT_GOLDEN_DIR)]
+    st.subheader("0. Độ phủ của bộ test hiện tại")
+    st.caption(
+        "Đếm số ca không nói lên điều gì — 39 ca đều đánh vào một góc thì vẫn là "
+        "một góc. Bảng dưới đếm theo trục: mỗi thứ đề bài bắt hệ thống làm đúng "
+        "có ít nhất một ca canh nó không."
+    )
+    render_golden_coverage(saved_cases)
+
+    st.divider()
     st.subheader("1. Cấu hình")
     mode_labels = {
+        "Theo tiêu chí phủ · 0 LLM": "coverage",
         "Tổ hợp · 0 LLM": "combinatorial",
         "Mutation · 0 LLM": "mutation",
         "Paraphrase · LLM": "paraphrase",
@@ -2329,12 +2420,14 @@ def render_golden() -> None:
         industry = st.selectbox(
             "業種",
             ["製造業", "金融", "流通・小売", "公共", "医療"],
+            disabled=mode == "coverage",
         )
     with config_middle:
         chapters = st.multiselect(
             "Chương",
             list(CHAPTER_TITLES),
             default=list(CHAPTER_TITLES),
+            disabled=mode == "coverage",
         )
         out_scope_count = st.slider(
             "Số requirement ngoài năng lực",
@@ -2350,6 +2443,7 @@ def render_golden() -> None:
             max_value=30,
             value=1,
             step=1,
+            disabled=mode == "coverage",
         )
         base_paths = discover_case_files(DEFAULT_GOLDEN_DIR)
         base_path = st.selectbox(
@@ -2359,8 +2453,44 @@ def render_golden() -> None:
             disabled=mode == "combinatorial",
         ) if base_paths else None
 
-    if st.button("Sinh preview", type="primary", key="golden_generate_preview"):
-        if mode == "combinatorial":
+    selected_axes = list(COVERAGE_AXES)
+    if mode == "coverage":
+        st.markdown("**Tiêu chí cần phủ** — chỉ sinh đúng phần còn thiếu")
+        selected_axes = []
+        axis_columns = st.columns(2)
+        # Đi theo thứ tự của bảng độ phủ phía trên, không theo thứ tự nội bộ của
+        # bộ sinh: hai danh sách cạnh nhau mà xếp khác nhau thì người test phải
+        # dò từng dòng để biết ô tick nào ứng với dòng nào.
+        for index, axis in enumerate(coverage_report(saved_cases)):
+            with axis_columns[index % 2]:
+                mark = "" if axis.is_full else "  ⚠"
+                if st.checkbox(
+                    f"{axis.label}{mark}  ·  _{axis.tier}_",
+                    value=True,
+                    key=f"golden_axis_{axis.key}",
+                ):
+                    selected_axes.append(axis.key)
+        if not selected_axes:
+            st.info("Chọn ít nhất một tiêu chí.")
+
+    if st.button(
+        "Sinh preview",
+        type="primary",
+        key="golden_generate_preview",
+        disabled=mode == "coverage" and not selected_axes,
+    ):
+        if mode == "coverage":
+            preview_cases = generate_for_coverage(
+                selected_axes,
+                existing=saved_cases,
+            )
+            if not preview_cases:
+                st.success(
+                    "Bộ test hiện tại đã phủ đủ các tiêu chí được chọn — "
+                    "không cần sinh thêm ca nào.",
+                    icon="✅",
+                )
+        elif mode == "combinatorial":
             preview_cases = generate_combinatorial(
                 int(case_count),
                 industries=[industry],
@@ -2377,10 +2507,11 @@ def render_golden() -> None:
                 load_base_case(base_path),
                 int(case_count),
             )
-        st.session_state["golden_preview_cases"] = preview_cases
-        st.session_state["golden_preview_index"] = 0
-        st.session_state["golden_rfp_editor"] = preview_cases[0].rfp_text
-        st.session_state["golden_trial_result"] = None
+        if preview_cases:
+            st.session_state["golden_preview_cases"] = preview_cases
+            st.session_state["golden_preview_index"] = 0
+            st.session_state["golden_rfp_editor"] = preview_cases[0].rfp_text
+            st.session_state["golden_trial_result"] = None
 
     preview_cases: list[GoldenCase] = st.session_state.get("golden_preview_cases", [])
     if preview_cases:
@@ -2394,6 +2525,22 @@ def render_golden() -> None:
         selected_case = preview_cases[selected_index]
         if selected_case.needs_review:
             st.warning("🟠 Cần rà — ca paraphrase chưa được tính vào bảng §11.3.")
+        tier = selected_case.metadata.get("tier")
+        axis = selected_case.metadata.get("axis")
+        if tier:
+            st.caption(f"Tầng **{tier}** · sinh cho tiêu chí `{axis}`")
+        if any(case.metadata.get("axis") for case in preview_cases):
+            with st.expander(
+                f"Lô này vá được gì — {len(preview_cases)} ca", expanded=True
+            ):
+                render_golden_coverage(saved_cases, added=preview_cases)
+                if st.button(
+                    "Lưu cả lô", key="golden_save_batch", type="primary"
+                ):
+                    for case in preview_cases:
+                        save_case(case, GOLDEN_OUTPUT_DIR / f"{case.case_id}.json")
+                    st.success(f"Đã lưu {len(preview_cases)} ca.")
+                    st.rerun()
 
         st.subheader("2. Preview")
         preview_left, preview_right = st.columns(2)
