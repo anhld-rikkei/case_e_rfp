@@ -3830,16 +3830,22 @@ def test_suggestions_sit_inside_the_conversation_not_by_the_input() -> None:
     assert question < first_option < chat_input
 
 
-def test_chat_log_fills_the_dock_and_the_input_sits_last() -> None:
-    """Khung hội thoại nuốt hết chỗ thừa; ô nhập luôn sát đáy bảng.
+def test_chat_input_is_pinned_to_the_bottom_of_the_dock() -> None:
+    """Vung tin nhan cao het bang, o nhap neo day.
 
-    `min-height: 0` là bắt buộc: mặc định flex item không co dưới nội dung, và
-    khung sẽ tràn ra ngoài thay vì tự cuộn.
+    Cach cu long mot khung cuon con roi ep `flex: 1` — khong an, vi Streamlit
+    boc moi con trong mot lop div trung gian nen lop boc khong gian ra. Vung
+    tin nhan ngan tun con nua duoi bang bo trong. Nay chinh bang cuon, o nhap
+    neo day bang bang `position: fixed`.
     """
     at = _app_with_result(chat_open=True)
     css = " ".join(item.value for item in at.markdown)
-    assert "flex-direction: column" in css
-    assert ".st-key-chat_log { flex: 1 1 auto; min-height: 0; }" in css
+    assert ".st-key-chat_input_box" in css
+    assert "position: fixed" in css
+    # Bang phai chua cho, khong thi o nhap che mat dong cuoi
+    assert "padding-bottom: 9rem" in css
+    # Khong con khung cuon con
+    assert "st-key-chat_log" not in css
 
     flat = _ordered(at)
     options = [
@@ -3855,8 +3861,11 @@ def test_chat_log_fills_the_dock_and_the_input_sits_last() -> None:
 
 def test_chat_options_are_left_aligned() -> None:
     css = " ".join(item.value for item in _app_with_result(chat_open=True).markdown)
-    assert ".st-key-chat_options button { justify-content: flex-start !important; }" in css
-    assert ".st-key-chat_options button p { text-align: left !important; }" in css
+    assert ".st-key-chat_options button," in css
+    assert "justify-content: flex-start !important;" in css
+    assert "text-align: left !important;" in css
+    # Nham ca test-id nut cua Streamlit, khong chi the <button> tran
+    assert '[data-testid^="stBaseButton-"]' in css
 
 
 def test_report_section_got_its_new_name() -> None:

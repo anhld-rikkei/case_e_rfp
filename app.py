@@ -669,14 +669,23 @@ CHAT_CSS = f"""
     border-left: 1px solid #2A323C;
     padding: .8rem 1.1rem 2rem 1.4rem;
     z-index: 50;
-    /* Xếp dọc và cho khung hội thoại nuốt hết chỗ thừa, nên ô nhập luôn nằm
-       sát đáy bảng thay vì lơ lửng giữa chừng với một mảng trống bên dưới. */
-    display: flex;
-    flex-direction: column;
+    /* Chừa chỗ cho ô nhập neo ở đáy, nếu không dòng cuối bị nó che. */
+    padding-bottom: 9rem;
 }}
-/* `min-height: 0` là bắt buộc: mặc định flex item không co xuống dưới chiều
-   cao nội dung, và khung sẽ tràn ra ngoài thay vì tự cuộn. */
-.st-key-chat_log {{ flex: 1 1 auto; min-height: 0; }}
+/* Ô nhập neo đáy bảng, rộng đúng bằng bảng. Không lồng thêm một khung cuộn
+   con rồi ép flex: Streamlit bọc mỗi con trong một lớp div trung gian, nên
+   `flex: 1` đặt trên khối có `key` không làm lớp bọc giãn ra — vùng tin nhắn
+   ngắn tũn còn nửa dưới bảng bỏ trống. Chính bảng cuộn là đủ. */
+.st-key-chat_input_box {{
+    position: fixed;
+    bottom: 0;
+    right: 0;
+    width: var(--chat-dock-w);
+    z-index: 52;
+    background: #12161C;
+    border-top: 1px solid #2A323C;
+    padding: .6rem 1.1rem .8rem 1.4rem;
+}}
 /* Tay kéo: dải dọc sát mép trái bảng, đúng chỗ người dùng đưa chuột tới. */
 .chat-dock-handle {{
     position: fixed;
@@ -708,8 +717,16 @@ CHAT_CSS = f"""
 [data-testid="stChatInputTextArea"] {{ min-height: 4.5rem !important; }}
 /* Gợi ý là câu chữ để đọc, không phải nhãn nút ở giữa — căn trái cho khớp
    dòng chữ của bong bóng ngay trên nó. */
-.st-key-chat_options button {{ justify-content: flex-start !important; }}
-.st-key-chat_options button p {{ text-align: left !important; }}
+.st-key-chat_options button,
+.st-key-chat_options [data-testid^="stBaseButton-"] {{
+    justify-content: flex-start !important;
+    text-align: left !important;
+}}
+.st-key-chat_options button p,
+.st-key-chat_options [data-testid^="stBaseButton-"] p {{
+    text-align: left !important;
+    width: 100%;
+}}
 [class*="st-key-chatturn_user"] [data-testid="stChatMessage"] {{
     flex-direction: row-reverse;
     background: #1E6F4C;
@@ -1393,7 +1410,8 @@ def render_chat_panel(state: dict[str, Any]) -> None:
 
     scope = st.session_state.get("chat_scope")
     turns = chat_turns(_versions(), last=st.session_state.get("chat_last"))
-    with st.container(height=420, autoscroll=True, key="chat_log", border=False):
+    # Không lồng khung cuộn con: chính bảng chat đã cuộn được.
+    if True:
         with st.container(key="chatturn_assistant_open"):
             with st.chat_message("assistant"):
                 st.markdown(f"Hồ sơ đã sinh xong. {sentence_breakdown(state)}")
@@ -1437,7 +1455,8 @@ def render_chat_panel(state: dict[str, Any]) -> None:
         # phải câu trả lời cho câu hỏi ngay trên.
         render_chat_options(state, scope)
 
-    typed = st.chat_input("Nhập tin nhắn…", key="chat_input")
+    with st.container(key="chat_input_box"):
+        typed = st.chat_input("Nhập tin nhắn…", key="chat_input")
     pending = st.session_state.pop("chat_pending", None)
     if typed:
         # Gõ thẳng mà chưa chọn phạm vi thì hiểu là cả hồ sơ — hỏi lại một
