@@ -1487,6 +1487,11 @@ def render_source_lookup(
         return
     with st.popover(text, width="stretch"):
         st.markdown(f"**Nguồn:** {row['Nguồn']}")
+        if row["_origin"] == "bridge":
+            # Câu hỏi thật của người dùng: "không kiểm chứng được thì sinh ra
+            # từ đâu, LLM viết à?". Không — đây là câu mẫu cố định trong
+            # `merge.py`, chèn để nối khối năng lực với khối hồ sơ cũ.
+            st.info(BRIDGE_EXPLAIN, icon="ℹ️")
         st.markdown(f"**Mã nguồn:** `{row['Mã nguồn']}`")
         st.markdown(f"**Kiểm chứng:** {row['Kiểm chứng']}")
         st.markdown(f"**Cách lấy nguồn:** {row['Cách lấy nguồn']}")
@@ -1695,18 +1700,42 @@ def render_marked_block(
                 st.write(line)
 
 
-def render_requirement_heading(group: dict[str, Any]) -> None:
-    """Nhãn yêu cầu đứng trên cụm câu đáp nó.
+BRIDGE_EXPLAIN = (
+    "Câu nối là **câu mẫu cố định viết sẵn trong code**, không do mô hình sinh "
+    "ra và không lấy từ nguồn nào. Nó chỉ bắc cầu giữa phần năng lực và phần "
+    "hồ sơ quá khứ, nên **không có gì để kiểm chứng** — hệ thống ghi đúng như "
+    "vậy thay vì gắn cho nó một nguồn giả."
+)
 
-    Chỉ in MÃ yêu cầu. Màn hình này để đọc hồ sơ, không phải để đọc lại RFP —
-    trích nguyên văn yêu cầu ở đây thì mỗi mục dài gấp đôi mà chữ thêm vào
-    không phải sản phẩm. Nguyên văn nằm trong ô tra nguồn của từng câu, và
-    trong hộp cảnh báo khi mục thiếu căn cứ.
+NO_DATA_FOR_REQUIREMENT = "⛔ Chưa có dữ liệu đáp ứng yêu cầu"
+
+
+def group_origins(group: dict[str, Any]) -> str:
+    """Câu trong nhóm này lấy từ đâu — gộp thành một cụm ngắn."""
+    origins = list(
+        dict.fromkeys(sentence.get("origin") for _, sentence in group["items"])
+    )
+    return " + ".join(label(ORIGIN_VI, origin) for origin in origins)
+
+
+def render_requirement_heading(group: dict[str, Any]) -> None:
+    """Nhãn yêu cầu: MỘT dòng, kèm luôn nguồn lấy câu.
+
+    Tách "Yêu cầu 2.2" và "chưa có dữ liệu" thành hai dòng thì mỗi yêu cầu
+    trống chiếm hai dòng mà không thêm chữ nào — đọc một mục toàn chỗ thiếu là
+    một cột dài lê thê.
+
+    Chỉ in MÃ yêu cầu, không trích nguyên văn RFP: màn hình này để đọc hồ sơ.
+    Nguyên văn nằm trong ô tra nguồn của từng câu, và trong hộp cảnh báo khi
+    mục thiếu căn cứ.
     """
     if group["req_id"] is None:
-        st.caption("Câu chung của mục — không gắn yêu cầu cụ thể")
+        st.caption(f"Câu chung của mục · lấy từ {group_origins(group)}")
         return
-    st.caption(f"Yêu cầu {group['req_id']}")
+    if not group["items"]:
+        st.caption(f"Yêu cầu {group['req_id']} · {NO_DATA_FOR_REQUIREMENT}")
+        return
+    st.caption(f"Yêu cầu {group['req_id']} · lấy từ {group_origins(group)}")
 
 
 def render_bilingual_proposal(
@@ -1785,7 +1814,6 @@ def render_bilingual_proposal(
         for group in requirement_groups(state, section):
             render_requirement_heading(group)
             if not group["items"]:
-                st.caption("⛔ Chưa có câu nào đáp yêu cầu này.")
                 continue
             group_sentences = [sentence for _, sentence in group["items"]]
             if not show:

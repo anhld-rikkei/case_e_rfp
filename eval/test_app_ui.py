@@ -3132,10 +3132,19 @@ def test_a_requirement_with_no_sentence_is_shown_not_hidden() -> None:
 
     at = _render(body, state)
     assert not at.exception
-    shown = " ".join(item.value for item in list(at.markdown) + list(at.caption))
-    assert "Yêu cầu 3.1" in shown and "Yêu cầu 3.2" in shown
-    assert "Chưa có câu nào đáp yêu cầu này" in shown
+    captions = [item.value for item in at.caption]
+    # Yêu cầu trống và lý do nằm CÙNG một dòng — tách ra là mỗi chỗ thiếu
+    # chiếm hai dòng mà không thêm chữ nào.
+    assert any(
+        line.startswith("Yêu cầu 3.2") and "Chưa có dữ liệu đáp ứng yêu cầu" in line
+        for line in captions
+    )
+    # Yêu cầu có câu đáp thì nói luôn lấy từ đâu
+    assert any(
+        line.startswith("Yêu cầu 3.1") and "lấy từ" in line for line in captions
+    )
     # Màn hình chính KHÔNG trích nguyên văn RFP — đây là chỗ đọc hồ sơ.
+    shown = " ".join([item.value for item in at.markdown] + captions)
     assert "24時間監視に対応できること。" not in shown
 
 
@@ -3259,3 +3268,63 @@ def test_sentence_styling_is_loaded_even_when_chat_is_closed() -> None:
     assert "stPopover" in css
     for rule in ("border: none", "text-align: left", "background: transparent"):
         assert rule in css, rule
+
+
+def test_requirement_line_names_where_the_answer_came_from() -> None:
+    import app
+
+    state = _state()
+    groups = app.requirement_groups(state, state["sections"][0])
+    covered = next(group for group in groups if group["items"])
+    assert app.group_origins(covered) == "Năng lực công ty"
+    loose = next(group for group in groups if group["req_id"] is None)
+    assert app.group_origins(loose) == "Câu nối"
+
+
+def test_bridge_sentence_explains_it_is_not_model_written() -> None:
+    """Câu hỏi thật của người dùng: "không kiểm chứng được thì sinh ra từ đâu?"
+
+    Câu nối là chuỗi cố định trong `merge.py`, không do mô hình sinh và không
+    có nguồn — nên ô tra nguồn phải nói thẳng, đừng để người đọc tự suy.
+    """
+    state = _state()
+    bridge = next(
+        sentence
+        for section in state["sections"]
+        for sentence in section["sentences"]
+        if sentence["origin"] == "bridge"
+    )
+
+    def body(root, state, text):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app as _app
+
+        _app.render_source_lookup(state, text, key="k")
+
+    at = _render(body, state, bridge["text"])
+    assert not at.exception
+    notes = " ".join(item.value for item in at.info)
+    assert "câu mẫu cố định" in notes
+    assert "không do mô hình sinh ra" in notes
+    assert "không có gì để kiểm chứng" in notes
+
+
+def test_bridge_text_really_is_a_fixed_template() -> None:
+    """Chốt lời giải thích trên bằng chính code: đổi cách sinh thì bài này gãy."""
+    from rfp.generate.merge import BRIDGE_TEXTS
+
+    assert BRIDGE_TEXTS
+    assert all(isinstance(text, str) and text for text in BRIDGE_TEXTS.values())
+
+
+def test_section_notes_read_as_a_short_chain() -> None:
+    """Tách ý, xuống dòng, mũi tên — không phải một khối chữ liền."""
+    from config.display_vi import SECTION_NOTE_VI
+
+    for note in SECTION_NOTE_VI.values():
+        assert "→" in note
+        lines = [line for line in note.split("\n") if line.strip()]
+        assert len(lines) >= 2
+        assert all(len(line) < 120 for line in lines), note

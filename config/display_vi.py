@@ -276,23 +276,24 @@ RETRIEVAL_STAGE_VI = {
 # người đọc không rút ra được phải làm gì tiếp.
 SECTION_NOTE_VI = {
     "RFPに対応する原章がないため、能力表のみで構成しました。": (
-        "RFP không có chương nào ứng với mục này, nên mục được dựng hoàn toàn "
-        "từ bảng năng lực công ty. **Không có yêu cầu cụ thể nào để đối chiếu** "
-        "— cần người đọc lại xem nội dung có hợp với gói thầu này không."
+        "RFP không có chương nào ứng với mục này  \n"
+        "→ mục dựng hoàn toàn từ bảng năng lực công ty  \n"
+        "→ **không có yêu cầu cụ thể để đối chiếu**, cần người đọc lại xem có "
+        "hợp gói thầu không."
     ),
     "属性の完全一致により検索を省略し、能力表のみで回答しました。": (
-        "Mọi yêu cầu của mục này trùng đúng một năng lực công ty đang có, nên "
-        "hệ thống trả lời thẳng từ bảng năng lực và **không đi tìm trong hồ sơ "
-        "quá khứ** (tìm cũng không cho câu đúng hơn). Hệ quả: câu trả lời là "
-        "năng lực chung, **chưa có ví dụ dự án thật kèm số liệu** — muốn "
-        "thuyết phục hơn thì người viết bổ sung một dự án cụ thể."
+        "Mọi yêu cầu của mục trùng đúng năng lực công ty đang có  \n"
+        "→ trả lời thẳng từ bảng năng lực, **bỏ qua bước tìm hồ sơ quá khứ**  \n"
+        "→ câu trả lời là năng lực chung, **chưa có ví dụ dự án thật**  \n"
+        "→ muốn thuyết phục hơn: bổ sung một dự án cụ thể."
     ),
     "参照可能な先行事例がないため、能力表のみで回答しました。": (
-        "Đã tìm trong hồ sơ quá khứ nhưng **không câu nào đủ sát** để dùng, nên "
-        "mục chỉ trả lời bằng bảng năng lực công ty. Hệ quả: chưa có ví dụ dự "
-        "án thật kèm số liệu."
+        "Đã tìm trong hồ sơ quá khứ nhưng **không câu nào đủ sát**  \n"
+        "→ mục chỉ trả lời bằng bảng năng lực công ty  \n"
+        "→ chưa có ví dụ dự án thật kèm số liệu."
     ),
 }
+
 
 # Lý do một yêu cầu không có căn cứ — bản dịch của
 # 「対応する能力・先行事例の根拠がありません」.
