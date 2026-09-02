@@ -4001,3 +4001,45 @@ def test_approved_sentence_still_says_the_system_did_not_verify_it() -> None:
 def test_review_button_is_in_the_pinned_controls() -> None:
     at = _app_with_result()
     assert "✅ Duyệt lại" in [item.label for item in at.button]
+
+
+def test_added_user_sentence_carries_the_missing_requirements() -> None:
+    """Không gắn mã yêu cầu thì duyệt xong điểm vẫn không nhúc nhích.
+
+    Lỗi thật: câu người dùng thêm qua chat mang `req_ids=[]`, nên dù đã ký nó
+    vẫn không phủ được yêu cầu nào — người viết điền xong, bấm duyệt, mà mục
+    vẫn báo thiếu căn cứ.
+    """
+    from rfp.confidence import missing_requirements
+    from rfp.refine import _apply_plan, RefinePlan
+
+    state = _state()
+    section = state["sections"][0]
+    gaps = missing_requirements(state, section)
+    assert gaps, "fixture phải có yêu cầu đang thiếu thì bài này mới có nghĩa"
+
+    plan = RefinePlan(edits=[], added=["người viết điền cho mục này"])
+    updated, *_ = _apply_plan(section["sentences"], plan, missing_req_ids=gaps)
+    fresh = next(item for item in updated if item.get("origin") == "user")
+    assert fresh["req_ids"] == gaps
+
+
+def test_review_says_what_it_could_not_do() -> None:
+    """Duyệt không tạo ra căn cứ — phải nói ra, không thì bảng điểm im lặng."""
+    import app
+    from rfp.confidence import annotate
+
+    state = annotate(_state())
+    note = app.review_summary(state, approved=0)
+    assert "Không có câu nào của người để duyệt" in note
+    assert "chưa có câu nào đáp" in note
+    assert "duyệt không tạo ra căn cứ" in note
+
+
+def test_review_note_is_short_when_nothing_is_missing() -> None:
+    import app
+
+    state = {"sections": [{"confidence": {"missing_requirements": []}}]}
+    note = app.review_summary(state, approved=2)
+    assert "Đã duyệt 2 câu" in note
+    assert "chưa có câu nào đáp" not in note

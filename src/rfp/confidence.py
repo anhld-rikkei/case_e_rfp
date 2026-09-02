@@ -155,6 +155,18 @@ def section_confidence(
     }
 
 
+def missing_requirements(
+    state: dict[str, Any], section: dict[str, Any]
+) -> list[str]:
+    """Yêu cầu của mục chưa có câu nào dẫn.
+
+    Công khai vì `refine` cũng cần đúng con số này: chỗ đó quyết câu người dùng
+    vừa thêm gắn mã yêu cầu gì, chỗ này quyết mục còn thiếu hay đủ. Hai phép
+    đếm riêng thì có ngày người viết điền xong mà mục vẫn báo thiếu.
+    """
+    return _coverage(state, section)[2]
+
+
 def _coverage(
     state: dict[str, Any], section: dict[str, Any]
 ) -> tuple[int, int, list[str]]:

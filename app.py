@@ -1205,10 +1205,32 @@ def review_and_approve() -> None:
         parent_index=parent_index,
     )
     st.session_state["translation"] = ""
-    st.session_state["review_note"] = (
-        f"Đã duyệt {len(pending)} câu do người viết đưa vào và chấm lại cả hồ sơ."
-        if pending
+    st.session_state["review_note"] = review_summary(state, len(pending))
+
+
+def review_summary(state: dict[str, Any], approved: int) -> str:
+    """Nói cả phần LÀM ĐƯỢC lẫn phần KHÔNG.
+
+    Chỉ báo "đã duyệt xong" thì người dùng nhìn bảng điểm không đổi và không
+    hiểu vì sao — duyệt không tạo ra căn cứ, yêu cầu chưa có câu nào đáp thì
+    vẫn thiếu cho tới khi có người viết cho nó một câu.
+    """
+    still_missing = [
+        req_id
+        for section in state.get("sections", [])
+        for req_id in (section.get("confidence") or {}).get("missing_requirements", [])
+    ]
+    head = (
+        f"Đã duyệt {approved} câu do người viết đưa vào và chấm lại cả hồ sơ."
+        if approved
         else "Không có câu nào của người để duyệt — đã chấm lại cả hồ sơ."
+    )
+    if not still_missing:
+        return head
+    return (
+        f"{head} Còn **{len(still_missing)} yêu cầu chưa có câu nào đáp** "
+        f"({' · '.join(still_missing)}) — duyệt không tạo ra căn cứ, hãy viết "
+        "cho chúng một câu rồi duyệt lại."
     )
 
 

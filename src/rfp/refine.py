@@ -75,6 +75,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel
 
+from .confidence import missing_requirements
 from .generate.capability import render_fact
 from .generate.claim_check import check_claims
 from .generate.precedent import (
@@ -292,6 +293,7 @@ def _apply_plan(
     plan: RefinePlan,
     *,
     protected: set[int] | None = None,
+    missing_req_ids: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, int, int, int, int]:
     edits = {edit.index: edit for edit in plan.edits}
     protected = protected or set()
@@ -359,7 +361,15 @@ def _apply_plan(
         if problem:
             rejected.append({"index": None, "reason": REASON_VI[problem], "text": text})
             continue
-        updated.append(user_sentence(_strip_decoration(text)))
+        # Gắn những yêu cầu mục này ĐANG THIẾU vào câu người dùng vừa thêm.
+        # Không gắn thì câu đó mãi mang `req_ids=[]`: người viết điền xong, bấm
+        # duyệt, mà mục vẫn báo thiếu căn cứ vì chẳng có yêu cầu nào được phủ.
+        # Đây là suy đoán — người dùng đang viết cho mục này thì nhiều khả năng
+        # là để lấp đúng chỗ trống của nó — nên câu vẫn là `origin="user"` và
+        # chỉ được tính sau khi chính người đó bấm duyệt.
+        updated.append(
+            user_sentence(_strip_decoration(text), req_ids=missing_req_ids)
+        )
         added += 1
 
     return updated, rejected, changed, dropped, kept, added, restored
@@ -412,7 +422,10 @@ def refine_section(
     llm_calls = 1
 
     updated, rejected, changed, dropped, kept, added, restored = _apply_plan(
-        target["sentences"], plan, protected=protected
+        target["sentences"],
+        plan,
+        protected=protected,
+        missing_req_ids=missing_requirements(state, target),
     )
     if not (changed or dropped or added):
         return RefineResult(
