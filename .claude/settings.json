@@ -34,7 +34,11 @@
       "Bash(python -m pytest eval/test_app_ui.py -q -k \"bilingual_puts_one_sided\")",
       "Bash(python -m pytest eval/test_app_ui.py -q -k \"flow_lists_every_stage\")",
       "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_flow2.py\")",
-      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_flow_tests.py\")"
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_flow_tests.py\")",
+      "PowerShell($c = Get-NetTCPConnection -LocalPort 8642 -State Listen -ErrorAction SilentlyContinue; if \\($c\\) { $c | ForEach-Object { $p = Get-Process -Id $_.OwningProcess; \"PID $\\($p.Id\\) - $\\($p.ProcessName\\) dang giu cong 8642\" } } else { \"cong 8642 dang trong\" })",
+      "Bash(ps -W)",
+      "PowerShell(Start-Sleep -Milliseconds 800; $c = Get-NetTCPConnection -LocalPort 8642 -State Listen -ErrorAction SilentlyContinue; if \\($c\\) { $c | ForEach-Object { $p = Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue; \"van con PID $\\($_.OwningProcess\\) - $\\($p.ProcessName\\)\"; Stop-Process -Id $_.OwningProcess -Force }; Start-Sleep -Milliseconds 800 } ; if \\(Get-NetTCPConnection -LocalPort 8642 -State Listen -ErrorAction SilentlyContinue\\) { \"VAN BI CHIEM\" } else { \"cong 8642 da trong\" })",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_chat_always.py\")"
     ]
   }
 }

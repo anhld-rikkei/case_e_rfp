@@ -2850,12 +2850,38 @@ def test_chat_button_sits_next_to_the_page_title() -> None:
     assert not any(label == "💬 Chat" for _, label in order)
 
 
-def test_chat_button_is_disabled_until_there_is_a_proposal() -> None:
+def test_chat_button_is_never_disabled() -> None:
+    """Bấm chat được bất cứ lúc nào.
+
+    Lỗi thật đã gặp: nút có `disabled=` theo `displayed_state()`, mà nút vẽ ở
+    ĐẦU `main()` còn `result_state` mãi cuối hàm mới gán — nên đúng lượt sinh
+    xong hồ sơ, nút vẫn mờ. Bấm không lên và không báo gì.
+    """
     at = AppTest.from_file(APP_PATH, default_timeout=180)
     at.run()
     assert not at.exception
     chat = next(item for item in at.button if item.key == "chat_open_button")
-    assert chat.disabled
+    assert not chat.disabled
+
+
+def test_chat_opens_without_a_proposal_and_says_what_is_missing() -> None:
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.session_state["chat_open"] = True
+    at.run()
+    assert not at.exception
+    body = " ".join(item.value for item in at.markdown)
+    assert "Chưa có hồ sơ nào để chỉnh" in body
+    assert "Nộp và sinh hồ sơ" in body
+    # Checklist vẫn tham khảo được trước khi bắt tay vào làm
+    assert "📋 Checklist trước khi nộp" in [item.label for item in at.button]
+
+
+def test_chat_dock_lives_outside_the_tabs() -> None:
+    """Mở từ tab nào cũng thấy chat, không riêng tab Tổng quan."""
+    at = _app_with_result(chat_open=True)
+    overview = _tab_slice(at, "Tổng quan")
+    assert not any(kind == "chat_input" for kind, _ in overview)
+    assert at.chat_input
 
 
 def test_attribute_only_label_says_what_it_rests_on() -> None:

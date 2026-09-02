@@ -1000,12 +1000,13 @@ def toggle_chat_checklist() -> None:
 
 
 def render_chat_toggle() -> None:
-    """Nút mở chat, đặt cạnh tiêu đề trang.
+    """Nút mở chat, cạnh tiêu đề trang.
 
-    Vô hiệu khi chưa có hồ sơ: chat chỉ viết lại trên căn cứ sẵn có, chưa sinh
-    gì thì không có gì để chỉnh.
+    KHÔNG vô hiệu hoá theo trạng thái hồ sơ. Bản trước có `disabled=` và nó
+    luôn bật nhầm ở đúng lượt quan trọng nhất: nút vẽ ở đầu `main()`, còn
+    `result_state` mãi cuối hàm mới được gán — nên ngay lượt sinh xong hồ sơ,
+    nút vẫn đang mờ. Bấm không lên, không báo gì.
     """
-    ready = displayed_state() is not None
     if chat_is_open():
         st.button(
             "✕ Đóng chat",
@@ -1019,14 +1020,66 @@ def render_chat_toggle() -> None:
         key="chat_open_button",
         type="primary",
         width="stretch",
-        disabled=not ready,
         on_click=open_chat_panel,
-        help=(
-            "Chỉnh lại hồ sơ bằng chỉ thị, kèm checklist trước khi nộp"
-            if ready
-            else "Sinh hồ sơ xong mới chat được"
-        ),
+        help="Chỉnh lại hồ sơ bằng chỉ thị, kèm checklist trước khi nộp",
     )
+
+
+def render_chat_placeholder() -> None:
+    """Chat mở khi chưa có hồ sơ: nói rõ còn thiếu bước nào, đừng im lặng."""
+    with st.container(key="chatturn_assistant_empty"):
+        with st.chat_message("assistant"):
+            st.markdown(
+                "Chưa có hồ sơ nào để chỉnh. Dán RFP ở bảng bên trái rồi bấm "
+                "**Nộp và sinh hồ sơ** — xong tôi sẽ chỉnh giúp từng mục."
+            )
+    if st.session_state.get("chat_checklist_open"):
+        render_checklist_bubble()
+        st.button(
+            "← Quay lại",
+            key="chat_checklist_back",
+            width="stretch",
+            on_click=toggle_chat_checklist,
+        )
+        return
+    # Checklist vẫn xem được: nó là thứ tham khảo trước khi bắt tay vào làm,
+    # không phải phần thưởng sau khi sinh xong hồ sơ.
+    st.button(
+        "📋 Checklist trước khi nộp",
+        key="chat_checklist_open_button",
+        width="stretch",
+        on_click=toggle_chat_checklist,
+    )
+
+
+def render_chat_dock() -> None:
+    """Bảng chat neo mép phải — dựng ở NGOÀI tab và ở CUỐI `main()`.
+
+    Ngoài tab: chat bấm được từ bất cứ tab nào, không riêng tab Tổng quan.
+    Cuối `main()`: đọc `displayed_state()` sau khi cả lượt chạy đã xong, nên
+    ngay lượt sinh hồ sơ nó đã thấy bản mới. Bảng `position: fixed` nên vị trí
+    trong DOM không ảnh hưởng chỗ nó hiện.
+    """
+    if not chat_is_open():
+        return
+    st.markdown(CHAT_CSS, unsafe_allow_html=True)
+    st.markdown(CHAT_RESERVE_CSS, unsafe_allow_html=True)
+    with st.container(key=CHAT_DOCK_KEY):
+        header_left, header_right = st.columns([3, 1])
+        with header_left:
+            st.subheader("Chat")
+        with header_right:
+            st.button(
+                "✕", key="chat_close", on_click=close_chat_panel, help="Đóng chat"
+            )
+        state = displayed_state()
+        if state is None:
+            render_chat_placeholder()
+        else:
+            render_chat_panel(state)
+    # `st.iframe` chứ không phải `st.components.v1.html`: bản này đã báo khai tử
+    # API cũ (hạn 2026-06-01, đã qua). height tối thiểu là 1, nó từ chối 0.
+    st.iframe(CHAT_DRAG_JS, height=1)
 
 
 def render_checklist_bubble() -> None:
@@ -1102,13 +1155,7 @@ def render_chat_options(state: dict[str, Any], scope: str | None) -> None:
 
 
 def render_chat_panel(state: dict[str, Any]) -> None:
-    """Bảng chat neo mép phải. Kéo bề rộng bằng dải dọc ở mép trái bảng."""
-    header_left, header_right = st.columns([3, 1])
-    with header_left:
-        st.subheader("Chat")
-    with header_right:
-        st.button("✕", key="chat_close", on_click=close_chat_panel, help="Đóng chat")
-
+    """Ruột bảng chat. Phần khung và tiêu đề do `render_chat_dock` dựng."""
     if state_is_stale(state):
         st.warning(
             "Dữ liệu nguồn đã đổi sau khi hồ sơ này được sinh. Chạy lại hồ sơ "
@@ -1600,16 +1647,6 @@ def render_mark_legend(sentences: list[dict[str, Any]]) -> None:
 
 
 def render_proposal(state: dict[str, Any]) -> None:
-    """Hồ sơ ở giữa, chat ở cột phải khi được mở."""
-    st.markdown(CHAT_CSS, unsafe_allow_html=True)
-    if chat_is_open():
-        st.markdown(CHAT_RESERVE_CSS, unsafe_allow_html=True)
-        with st.container(key=CHAT_DOCK_KEY):
-            render_chat_panel(state)
-        # `st.iframe` chứ không phải `st.components.v1.html`: bản này đã báo
-        # khai tử API cũ (hạn 2026-06-01, đã qua).
-        # height tối thiểu là 1: `st.iframe` từ chối 0.
-        st.iframe(CHAT_DRAG_JS, height=1)
     render_proposal_body(state)
 
 
@@ -3778,6 +3815,9 @@ def main() -> None:
         
     with eval_tab:
         render_eval()
+
+    # Sau cùng và ngoài mọi tab: xem mục "render_chat_dock".
+    render_chat_dock()
 
 
 if __name__ == "__main__":
