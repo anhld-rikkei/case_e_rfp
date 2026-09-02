@@ -3418,3 +3418,232 @@ def test_llm_map_covers_every_stage_in_the_flow() -> None:
     import app
 
     assert set(app.STAGE_USES_LLM) >= set(app.FLOW_STAGES)
+
+
+# ── Lùi / tiến như Ctrl+Z, Ctrl+Y ────────────────────────────────────────
+
+def _versioned_app(count: int = 3) -> AppTest:
+    at = AppTest.from_file(APP_PATH, default_timeout=180)
+    at.session_state["result_state"] = _state()
+    at.session_state["versions"] = [
+        {"label": f"v{index + 1}", "state": _state()} for index in range(count)
+    ]
+    at.session_state["version_index"] = count - 1
+    at.run()
+    assert not at.exception, at.exception
+    return at
+
+
+def test_undo_and_redo_walk_the_version_history() -> None:
+    """Đi trên chính `versions` chứ không nuôi một ngăn xếp undo riêng.
+
+    Mọi thay đổi trong studio (chat, thay câu) đều đã đẩy một bản mới vào đó;
+    hai kho song song chỉ để lệch nhau.
+    """
+    at = _versioned_app()
+    assert at.session_state["version_index"] == 2
+
+    at.button(key="undo_button").click().run()
+    assert at.session_state["version_index"] == 1
+    at.button(key="undo_button").click().run()
+    assert at.session_state["version_index"] == 0
+
+    at.button(key="redo_button").click().run()
+    assert at.session_state["version_index"] == 1
+
+
+def test_undo_is_disabled_at_the_first_version_redo_at_the_last() -> None:
+    at = _versioned_app()
+    buttons = {item.key: item for item in at.button}
+    assert buttons["redo_button"].disabled      # đang ở bản cuối
+    assert not buttons["undo_button"].disabled
+
+    # Đi tới bản đầu bằng đúng đường người dùng đi. Đặt thẳng `version_index`
+    # thì radio "Bản đang hiển thị" ghi đè lại ngay ở lượt sau — chính cái bẫy
+    # mà `step_version` phải xử lý.
+    at.button(key="undo_button").click().run()
+    at.button(key="undo_button").click().run()
+    assert at.session_state["version_index"] == 0
+    buttons = {item.key: item for item in at.button}
+    assert buttons["undo_button"].disabled      # đang ở bản đầu
+    assert not buttons["redo_button"].disabled
+
+
+def test_stepping_out_of_range_changes_nothing() -> None:
+    import app
+
+    at = _versioned_app(count=1)
+    assert at.session_state["version_index"] == 0
+    buttons = {item.key: item for item in at.button}
+    assert buttons["undo_button"].disabled and buttons["redo_button"].disabled
+
+
+def test_switching_version_drops_the_stale_translation() -> None:
+    """Bản dịch thuộc về NỘI DUNG — giữ lại là hai ngôn ngữ nói hai chuyện."""
+    at = _versioned_app()
+    at.session_state["translation"] = "bản dịch cũ"
+    at.run()
+    at.button(key="undo_button").click().run()
+    assert at.session_state["translation"] == ""
+
+
+# ── Bảng điểm nguồn ở tab Tổng quan ──────────────────────────────────────
+
+def test_source_scores_are_available_next_to_the_verdict() -> None:
+    """Bảng chấm điểm nguồn nằm ngay dưới bảng Kết quả, không ở tab khác."""
+    at = _app_with_result()
+    labels = [item.label for item in at.get("expander")]
+    assert "Điểm của từng câu nguồn đã lấy" in labels
+
+
+# ── Thay câu bằng lựa chọn khác ──────────────────────────────────────────
+
+def _state_with_alternatives() -> dict[str, Any]:
+    state = _state()
+    state["chapters"][0]["retrieval"] = {
+        "selected": [],
+        "candidates": [
+            {"sent_id": "ALT-1", "text": "câu thay thế một", "scores": {"rerank": 0.6}},
+            {"sent_id": "ALT-0", "text": "câu không liên quan", "scores": {"rerank": 0.0}},
+        ],
+    }
+    return state
+
+
+def test_alternatives_drop_the_zero_score_candidates() -> None:
+    import app
+
+    state = _state_with_alternatives()
+    options = app.alternative_sources(state, state["sections"][0])
+    assert [item["sent_id"] for item in options] == ["ALT-1"]
+
+
+def test_popover_offers_a_replacement_button() -> None:
+    state = _state_with_alternatives()
+    text = state["sections"][0]["sentences"][0]["text"]
+
+    def body(root, state, text):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import app as _app
+
+        _app.render_source_lookup(state, text, key="k")
+
+    at = _render(body, state, text)
+    assert not at.exception
+    shown = " ".join(item.value for item in at.markdown)
+    assert "Thay bằng câu nguồn khác" in shown
+    assert "câu thay thế một" in shown
+    assert "Thay câu này vào" in [item.label for item in at.button]
+
+
+def test_replacing_creates_a_new_version_and_relabels_the_sentence() -> None:
+    """Ghi thành BẢN MỚI: sửa tại chỗ thì nút lùi không lùi lại được.
+
+    Câu thay vào chưa qua bước kiểm lại nên không được gắn VERIFIED — điểm tin
+    cậy tụt theo, và đó là sự thật.
+    """
+    import app
+
+    state = _state_with_alternatives()
+    old_text = state["sections"][0]["sentences"][0]["text"]
+    candidate = app.alternative_sources(state, state["sections"][0])[0]
+
+    def body(root, state, old_text, candidate):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import streamlit as st
+
+        import app as _app
+
+        st.session_state["versions"] = [{"label": "v1", "state": state}]
+        st.session_state["version_index"] = 0
+        _app.replace_sentence(old_text, candidate)
+
+    at = _render(body, state, old_text, candidate)
+    assert not at.exception
+    versions = at.session_state["versions"]
+    assert len(versions) == 2
+    new_state = versions[1]["state"]
+    replaced = new_state["sections"][0]["sentences"][0]
+    assert replaced["text"] == "câu thay thế một"
+    assert replaced["source_id"] == "ALT-1"
+    assert replaced["origin"] == "precedent"
+    assert replaced["verdict"] == "UNVERIFIABLE"
+    assert replaced["replaced_by_user"] is True
+    # Bản cũ KHÔNG bị sửa theo — nếu không thì lùi lại cũng ra bản mới
+    assert versions[0]["state"]["sections"][0]["sentences"][0]["text"] == old_text
+
+
+def test_replaced_sentence_is_still_traceable_and_scored() -> None:
+    """Thay xong vẫn phải tra được nguồn và có điểm, như mọi câu khác."""
+    import app
+
+    state = _state_with_alternatives()
+    old_text = state["sections"][0]["sentences"][0]["text"]
+    candidate = app.alternative_sources(state, state["sections"][0])[0]
+
+    def body(root, state, old_text, candidate):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import streamlit as st
+
+        import app as _app
+
+        st.session_state["versions"] = [{"label": "v1", "state": state}]
+        st.session_state["version_index"] = 0
+        _app.replace_sentence(old_text, candidate)
+        new_state = st.session_state["versions"][1]["state"]
+        _app.render_source_lookup(new_state, "câu thay thế một", key="k2")
+
+    at = _render(body, state, old_text, candidate)
+    assert not at.exception
+    shown = " ".join(item.value for item in at.markdown)
+    assert "ALT-1" in shown
+    assert "Nguồn:" in shown and "Kiểm chứng:" in shown
+    # Mục vẫn được chấm điểm lại sau khi thay
+    new_state = at.session_state["versions"][1]["state"]
+    assert new_state["sections"][0].get("confidence")
+
+
+def test_replacement_is_blocked_when_it_names_a_certificate_we_lack() -> None:
+    """BB-2: blocklist kiểm bằng regex, kể cả với câu người dùng tự chọn."""
+    import app
+
+    state = _state_with_alternatives()
+    old_text = state["sections"][0]["sentences"][0]["text"]
+    bad = {"sent_id": "BAD-1", "text": "ISO/IEC 27017認証を取得しています。",
+           "scores": {"rerank": 0.9}}
+
+    def body(root, state, old_text, bad):
+        import sys as _s
+
+        _s.path[:0] = [root + "/src", root]
+        import streamlit as st
+
+        import app as _app
+
+        st.session_state["versions"] = [{"label": "v1", "state": state}]
+        st.session_state["version_index"] = 0
+        _app.replace_sentence(old_text, bad)
+
+    at = _render(body, state, old_text, bad)
+    assert not at.exception
+    assert len(at.session_state["versions"]) == 1  # không sinh bản mới
+    assert "lưới an toàn chặn" in at.session_state["replace_error"]
+
+
+def test_undo_keeps_the_version_picker_in_step() -> None:
+    """Radio "Bản đang hiển thị" và nút lùi phải nói cùng một con số.
+
+    Radio có `key="version_picker"`; giá trị widget đó thắng tham số `index` ở
+    lượt chạy sau, nên không đồng bộ thì bấm lùi xong màn hình nhảy về chỗ cũ
+    mà không báo gì.
+    """
+    at = _versioned_app()
+    at.button(key="undo_button").click().run()
+    assert at.session_state["version_index"] == 1
+    assert at.session_state["version_picker"] == 1

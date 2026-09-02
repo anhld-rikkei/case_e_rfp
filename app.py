@@ -1056,6 +1056,64 @@ def toggle_chat_checklist() -> None:
     )
 
 
+def can_undo() -> bool:
+    return st.session_state.get("version_index", 0) > 0
+
+
+def can_redo() -> bool:
+    return st.session_state.get("version_index", 0) < len(_versions()) - 1
+
+
+def step_version(delta: int) -> None:
+    """Lùi/tiến một bản trong lịch sử.
+
+    Đi trên chính `versions` đã có chứ không nuôi một ngăn xếp undo riêng:
+    mọi thay đổi trong studio (chat, thay câu) đều đã đẩy một bản mới vào đó,
+    nên hai kho song song chỉ để lệch nhau.
+    """
+    versions = _versions()
+    if not versions:
+        return
+    target = st.session_state.get("version_index", len(versions) - 1) + delta
+    if not 0 <= target < len(versions):
+        return
+    st.session_state["version_index"] = target
+    # Radio "Bản đang hiển thị" có `key="version_picker"`, và giá trị widget đó
+    # THẮNG tham số `index` ở lượt chạy sau. Không đồng bộ thì nó ghi đè lại
+    # ngay: bấm lùi xong màn hình nhảy về chỗ cũ, không báo gì. Một trạng thái
+    # thì chỉ được một chỗ sở hữu — ở đây là `version_index`, còn widget phải
+    # được kéo theo.
+    st.session_state["version_picker"] = target
+    # Bản dịch thuộc về NỘI DUNG, không thuộc về phiên làm việc — đổi bản mà
+    # giữ bản dịch cũ là hai ngôn ngữ nói hai chuyện khác nhau.
+    st.session_state["translation"] = ""
+
+
+def render_history_buttons() -> None:
+    """Hai nút lùi/tiến, đặt cạnh nút Chat."""
+    undo_column, redo_column = st.columns(2)
+    with undo_column:
+        st.button(
+            "↶",
+            key="undo_button",
+            width="stretch",
+            disabled=not can_undo(),
+            on_click=step_version,
+            args=(-1,),
+            help="Lùi lại bản trước (Ctrl+Z)",
+        )
+    with redo_column:
+        st.button(
+            "↷",
+            key="redo_button",
+            width="stretch",
+            disabled=not can_redo(),
+            on_click=step_version,
+            args=(1,),
+            help="Tiến tới bản sau (Ctrl+Y)",
+        )
+
+
 def render_chat_toggle() -> None:
     """Nút mở chat, cạnh tiêu đề trang.
 
@@ -1472,6 +1530,136 @@ def sentence_source(state: dict[str, Any], text: str) -> dict[str, str] | None:
     return None
 
 
+def alternative_sources(
+    state: dict[str, Any], section: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Câu nguồn KHÔNG được chọn cho mục này — ứng viên để thay thế.
+
+    Lấy từ chính kho đã qua lọc lúc nạp dữ liệu, nên không thể chứa câu bịa
+    hay tên khách hàng cũ. Điểm 0 bị loại: không liên quan thì không phải lựa
+    chọn.
+    """
+    chapters = {chapter["id"]: chapter for chapter in state.get("chapters", [])}
+    items: list[dict[str, Any]] = []
+    for chapter_id in section.get("source_chapters", []):
+        chapter = chapters.get(chapter_id)
+        if not chapter:
+            continue
+        for item in related_sources(chapter.get("retrieval", {})):
+            if float((item.get("scores") or {}).get("rerank", 0.0)) <= 0:
+                continue
+            items.append({**item, "_chapter": chapter_id})
+    items.sort(key=lambda item: -float((item.get("scores") or {}).get("rerank", 0.0)))
+    return items[:RELATED_SOURCES_TOP_N]
+
+
+def section_of_sentence(
+    state: dict[str, Any], text: str
+) -> dict[str, Any] | None:
+    for section in state.get("sections", []):
+        if any(item.get("text") == text for item in section.get("sentences", [])):
+            return section
+    return None
+
+
+def replace_sentence(old_text: str, candidate: dict[str, Any]) -> None:
+    """Thay một câu bằng câu nguồn khác, ghi thành một BẢN MỚI.
+
+    Ghi thành bản mới chứ không sửa tại chỗ: nút lùi/tiến đi trên lịch sử phiên
+    bản, sửa tại chỗ thì không lùi lại được.
+
+    Câu thay vào chưa qua claim-check nên KHÔNG được gắn VERIFIED — nó vào với
+    `UNVERIFIABLE`, và điểm tin cậy tụt theo. Đó là sự thật: người chọn tay thì
+    hệ thống chưa đối chiếu gì cả. Blocklist vẫn kiểm bằng regex trước khi cho
+    vào (BB-2), dù nguồn đã qua lọc lúc nạp.
+    """
+    import copy
+
+    from rfp.sanitize.blocklist import CapabilityBlocklist
+
+    version = current_version()
+    if not version:
+        return
+    text = str(candidate.get("text", ""))
+    if CapabilityBlocklist().contradicts(text):
+        st.session_state["replace_error"] = (
+            "Câu này nhắc tới năng lực hoặc chứng chỉ công ty không có — "
+            "lưới an toàn chặn."
+        )
+        return
+
+    state = copy.deepcopy(version["state"])
+    replaced = False
+    for section in state.get("sections", []):
+        for index, sentence in enumerate(section.get("sentences", [])):
+            if sentence.get("text") != old_text:
+                continue
+            section["sentences"][index] = {
+                **sentence,
+                "text": text,
+                "origin": "precedent",
+                "source_id": candidate.get("sent_id"),
+                "verdict": "UNVERIFIABLE",
+                "replaced_by_user": True,
+            }
+            replaced = True
+            break
+        if replaced:
+            break
+    if not replaced:
+        return
+
+    from rfp.confidence import annotate
+
+    state = annotate(state)
+    parent_index = st.session_state.get("version_index", len(_versions()) - 1)
+    push_version(
+        state,
+        label=version_label(_versions(), parent_index),
+        instruction=f"Thay câu bằng nguồn {candidate.get('sent_id')}",
+        target="Chi tiết",
+        rejected=[],
+        counts={"changed": 1, "dropped": 0, "kept": 0, "added": 0, "blocked": 0},
+        restored=0,
+        parent_index=parent_index,
+    )
+    st.session_state["translation"] = ""
+    st.session_state.pop("replace_error", None)
+
+
+def render_replacements(
+    state: dict[str, Any], text: str, *, key: str
+) -> None:
+    """Vài câu nguồn khác cho cùng mục, kèm nút thay thẳng tại chỗ."""
+    section = section_of_sentence(state, text)
+    if not section:
+        return
+    options = alternative_sources(state, section)
+    if not options:
+        return
+    error = st.session_state.get("replace_error")
+    if error:
+        st.error(error)
+    st.divider()
+    st.markdown("**Thay bằng câu nguồn khác**")
+    st.caption(
+        "Các câu này đã bị loại ở bước chọn nguồn. Thay vào thì câu mới vẫn tra "
+        "được nguồn và chấm điểm như mọi câu khác, nhưng **chưa qua bước kiểm "
+        "lại** nên điểm tin cậy sẽ thấp hơn."
+    )
+    for index, candidate in enumerate(options):
+        score = float((candidate.get("scores") or {}).get("rerank", 0.0))
+        st.markdown(f"`{candidate.get('sent_id')}` · điểm {score:.3f}")
+        st.markdown(candidate.get("text", ""))
+        st.button(
+            "Thay câu này vào",
+            key=f"replace_{key}_{index}",
+            width="stretch",
+            on_click=replace_sentence,
+            args=(text, candidate),
+        )
+
+
 def render_source_lookup(
     state: dict[str, Any] | None, text: str, *, key: str
 ) -> None:
@@ -1504,8 +1692,13 @@ def render_source_lookup(
             labels = all_requirement_labels(state)
             st.markdown("**Đáp ứng yêu cầu:**")
             for req_id in row["_req_ids"]:
-                text = labels.get(req_id, "")
-                st.markdown(f"- `{req_id}` {text}" if text else f"- `{req_id}`")
+                requirement_text = labels.get(req_id, "")
+                st.markdown(
+                    f"- `{req_id}` {requirement_text}"
+                    if requirement_text
+                    else f"- `{req_id}`"
+                )
+        render_replacements(state, text, key=key)
 
 
 def all_requirement_labels(state: dict[str, Any]) -> dict[str, str]:
@@ -1876,6 +2069,15 @@ def render_proposal_body(state: dict[str, Any]) -> None:
     st.subheader("Kết quả")
     st.markdown(f"**{section_summary(state)}**")
     render_confidence(state)
+    # Bảng chấm điểm nguồn đặt CẠNH phần đánh giá, không ở tab khác: đây chính
+    # là dữ liệu mà điểm tin cậy dựa vào. Để ngoài `render_confidence` vì hàm
+    # đó thoát sớm khi chưa có điểm, mà bảng nguồn thì lúc nào cũng có nghĩa.
+    with st.expander("Điểm của từng câu nguồn đã lấy", expanded=False):
+        st.caption(
+            "Cùng dữ liệu đã dùng để chấm điểm ở trên. Điểm nguồn càng cao thì "
+            "độ tin cậy của câu dựa vào nó càng cao."
+        )
+        render_retrieval(state)
     render_mapping(state)
     st.divider()
 
@@ -3965,10 +4167,14 @@ def main() -> None:
     text, submitted = sidebar_controls()
     # Nút Chat đặt cạnh tiêu đề, không nằm lẫn trong thân hồ sơ: muốn chat thì
     # bấm được ngay, không phải cuộn đi tìm.
-    title_left, title_right = st.columns([4, 1], vertical_alignment="center")
+    title_left, title_history, title_right = st.columns(
+        [4, 1, 1], vertical_alignment="center"
+    )
     with title_left:
         st.title("RFP Proposal Studio")
         st.caption("Sinh hồ sơ thầu tiếng Nhật, mỗi câu đều truy được về nguồn")
+    with title_history:
+        render_history_buttons()
     with title_right:
         render_chat_toggle()
     tabs = st.tabs(

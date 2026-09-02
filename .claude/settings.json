@@ -81,7 +81,13 @@
       "Bash(python -m pytest eval/test_app_ui.py -q -k \"one_row_per_requirement or sorts_red_first or summary_percentages or highlighted_path or highlight_marks\")",
       "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_fixture2.py\")",
       "Bash(python -m pytest eval/test_app_ui.py -q -k \"one_row_per_requirement or sorts_red_first or summary_percentages\")",
-      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_hover.py\")"
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_hover.py\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_undo.py\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_replace.py\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_replace_tests.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"undo_and_redo_walk or source_scores_are_available or still_traceable\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/fix_three.py\")",
+      "Bash(python -m pytest eval/test_app_ui.py -q -k \"undo_and_redo_walk or undo_is_disabled\")"
     ]
   }
 }
