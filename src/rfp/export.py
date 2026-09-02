@@ -36,23 +36,55 @@ DRAFT_BANNER = (
     "> không dùng làm bản cuối khi checklist bên dưới chưa được tick đủ.\n"
 )
 
+# Một nguồn, hai cách hiện: file tải về in đủ câu dài, panel chat tick bằng
+# nhãn ngắn (câu đủ nằm ở tooltip). Chép thành hai danh sách rồi để chúng lệch
+# nhau là lúc người rà soát tick đủ trên màn hình mà bản nộp vẫn thiếu một mục.
+CHECKLIST_ITEMS: tuple[tuple[str, str], ...] = (
+    (
+        "Chứng chỉ khớp bảng năng lực",
+        "Mọi chứng chỉ được nhắc tới đều đối chiếu đúng `capability_sheet.json`",
+    ),
+    (
+        "Số liệu truy được về nguồn",
+        "Mọi số liệu (%, số người, số năm, SLA) truy được về câu nguồn ghi ở "
+        'bảng "Nguồn từng câu"',
+    ),
+    (
+        "Không còn tên khách hàng cũ",
+        "Không còn tên khách hàng cũ nào trong bản nộp",
+    ),
+    (
+        "Requirement THIẾU đã xử lý",
+        "Các requirement ghi THIẾU ở bảng đối chiếu đã được bổ sung bằng tay "
+        "hoặc đã có quyết định chấp nhận không đáp ứng",
+    ),
+    (
+        "Mục thiếu căn cứ đã viết lại",
+        "Mục bị đánh dấu **Thiếu căn cứ** đã được viết lại bằng thông tin thật",
+    ),
+    (
+        f"Câu {USER_MARK} đã rà lại",
+        f"Mọi câu đánh dấu {USER_MARK} (**Người dùng bổ sung**) đã được rà lại: "
+        "chúng do người dùng yêu cầu qua chat và **hệ thống không kiểm chứng**",
+    ),
+    (
+        "Giọng văn khớp mẫu công ty",
+        "Giọng văn và định dạng khớp mẫu hồ sơ của công ty",
+    ),
+)
+
+# Chỉ có trong file tải về: dòng ký tên là thứ của bản in, một ô tick trên màn
+# hình không thay được nó.
+CHECKLIST_SIGNOFF = "Người rà soát: ________________  Ngày: ____________"
+
 REVIEWER_CHECKLIST = (
     "## Checklist bắt buộc trước khi nộp\n"
     "\n"
     "Người phụ trách hồ sơ phải tự kiểm từng mục, không tin vào việc hệ thống\n"
     "đã có guard tự động:\n"
     "\n"
-    "- [ ] Mọi chứng chỉ được nhắc tới đều đối chiếu đúng `capability_sheet.json`\n"
-    "- [ ] Mọi số liệu (%, số người, số năm, SLA) truy được về câu nguồn ghi ở\n"
-    "      bảng \"Nguồn từng câu\"\n"
-    "- [ ] Không còn tên khách hàng cũ nào trong bản nộp\n"
-    "- [ ] Các requirement ghi THIẾU ở bảng đối chiếu đã được bổ sung bằng tay\n"
-    "      hoặc đã có quyết định chấp nhận không đáp ứng\n"
-    "- [ ] Mục bị đánh dấu **Thiếu căn cứ** đã được viết lại bằng thông tin thật\n"
-    f"- [ ] Mọi câu đánh dấu {USER_MARK} (**Người dùng bổ sung**) đã được rà lại:\n"
-    "      chúng do người dùng yêu cầu qua chat và **hệ thống không kiểm chứng**\n"
-    "- [ ] Giọng văn và định dạng khớp mẫu hồ sơ của công ty\n"
-    "- [ ] Người rà soát: ________________  Ngày: ____________\n"
+    + "".join(f"- [ ] {full}\n" for _, full in CHECKLIST_ITEMS)
+    + f"- [ ] {CHECKLIST_SIGNOFF}\n"
 )
 
 

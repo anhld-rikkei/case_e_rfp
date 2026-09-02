@@ -2328,50 +2328,62 @@ def _app_with_result(**session: Any) -> AppTest:
     return at
 
 
-def test_review_button_replaces_the_old_instruction_form() -> None:
+def test_a_single_button_opens_chat_and_the_old_section_is_gone() -> None:
+    """Một nút, không phải cả một mục ở cuối tab.
+
+    Bản trước để nguyên mục "Review & chỉnh lại" chỉ để chứa một nút — phải
+    cuộn hết hồ sơ mới thấy chỗ mở chat.
+    """
     at = _app_with_result()
     labels = [button.label for button in at.button]
-    assert "💬 Review — chỉnh lại bằng chat" in labels
+    assert "💬 Chat review" in labels
     assert "Gửi chỉ thị" not in labels
-    # Ô nhập RFP vẫn là bảng trái khi chưa mở chat
-    assert "RFP đầu vào" in [item.value for item in at.sidebar.title]
+    headings = " ".join(item.value for item in at.subheader)
+    assert "Review & chỉnh lại" not in headings
 
 
-def test_opening_review_swaps_the_left_panel_to_chat() -> None:
+def test_chat_opens_on_the_right_and_leaves_the_rfp_panel_alone() -> None:
+    """Bảng trái vẫn là ô nhập RFP — người dùng cần giữ nó để đối chiếu."""
     at = _app_with_result()
-    at.button(key="chat_open").click().run()
-    assert at.session_state["side_panel"] == "chat"
-    assert [item.value for item in at.sidebar.title] == ["Chat review"]
-    # Ô dán RFP nhường chỗ, không chen chung một cột hẹp
-    assert "Dán RFP" not in [item.label for item in at.sidebar.text_area]
-    assert at.sidebar.chat_input
-
-
-def test_chat_panel_can_be_closed_from_either_side() -> None:
-    at = _app_with_result(side_panel="chat")
-    at.sidebar.button(key="chat_back").click().run()
-    assert at.session_state["side_panel"] == "rfp"
-    assert "RFP đầu vào" in [item.value for item in at.sidebar.title]
-
-
-def test_chat_panel_stays_shut_without_a_finished_proposal() -> None:
-    """Chưa có hồ sơ thì không có gì để chỉnh — bảng trái phải là ô nhập RFP."""
-    at = AppTest.from_file(APP_PATH, default_timeout=180)
-    at.session_state["side_panel"] = "chat"
-    at.run()
-    assert "RFP đầu vào" in [item.value for item in at.sidebar.title]
+    at.button(key="chat_open_button").click().run()
+    assert at.session_state["chat_open"] is True
+    # Sidebar không bị chiếm
+    assert [item.value for item in at.sidebar.title] == ["RFP đầu vào"]
+    assert "Dán RFP" in [item.label for item in at.sidebar.text_area]
     assert not at.sidebar.chat_input
+    # Chat nằm trong thân trang
+    assert at.chat_input
+    assert "Chat review" in [item.value for item in at.subheader]
+
+
+def test_chat_panel_closes_from_its_own_button() -> None:
+    at = _app_with_result(chat_open=True)
+    assert at.chat_input
+    at.button(key="chat_close").click().run()
+    assert at.session_state["chat_open"] is False
+    assert not at.chat_input
+
+
+def test_chat_width_presets_keep_the_document_column_wider() -> None:
+    """Cột trong trang không kéo được như sidebar, nên đổi rộng bằng nút.
+
+    Mức nào cũng phải để cột hồ sơ >= cột chat: hồ sơ mới là thứ đang đọc.
+    """
+    import app
+
+    assert set(app.CHAT_WIDTHS) == {"Hẹp", "Vừa", "Rộng"}
+    for name, (body, chat) in app.CHAT_WIDTHS.items():
+        assert body >= chat, name
 
 
 def test_chat_panel_offers_suggestions_only_before_the_first_turn() -> None:
-    at = _app_with_result(side_panel="chat")
-    suggestion_keys = [
-        button.key for button in at.sidebar.button if button.key.startswith("chat_suggest_")
+    at = _app_with_result(chat_open=True)
+    assert [
+        button.key for button in at.button if (button.key or "").startswith("chat_suggest_")
     ]
-    assert suggestion_keys
 
     at2 = _app_with_result(
-        side_panel="chat",
+        chat_open=True,
         versions=[
             {"label": "v1", "state": _state()},
             {
@@ -2387,11 +2399,50 @@ def test_chat_panel_offers_suggestions_only_before_the_first_turn() -> None:
         version_index=1,
     )
     assert not [
-        button.key
-        for button in at2.sidebar.button
-        if button.key.startswith("chat_suggest_")
+        button.key for button in at2.button if (button.key or "").startswith("chat_suggest_")
     ]
     assert len(at2.chat_message) >= 3  # lời mở + cặp lượt đã có
+
+
+# ── Checklist trong panel chat ───────────────────────────────────────────
+
+def test_panel_checklist_is_the_short_form_of_the_export_one() -> None:
+    """Một nguồn, hai cách hiện — lệch nhau là tick đủ mà bản nộp vẫn thiếu."""
+    from rfp.export import CHECKLIST_ITEMS, CHECKLIST_SIGNOFF, REVIEWER_CHECKLIST
+
+    at = _app_with_result(chat_open=True)
+    shown = [item.label for item in at.checkbox]
+    for short, full in CHECKLIST_ITEMS:
+        assert short in shown, short
+        assert full in REVIEWER_CHECKLIST, full
+    # Dòng ký tên là thứ của bản in, không phải ô tick trên màn hình
+    assert CHECKLIST_SIGNOFF in REVIEWER_CHECKLIST
+    assert not any("Người rà soát" in label for label in shown)
+
+
+def test_panel_checklist_counts_what_is_ticked() -> None:
+    at = _app_with_result(chat_open=True)
+    from rfp.export import CHECKLIST_ITEMS
+
+    total = len(CHECKLIST_ITEMS)
+    labels = [item.label for item in at.get("expander")]
+    assert f"Checklist trước khi nộp — 0/{total}" in labels
+
+    at2 = _app_with_result(chat_open=True, checklist_0=True, checklist_1=True)
+    labels2 = [item.label for item in at2.get("expander")]
+    assert f"Checklist trước khi nộp — 2/{total}" in labels2
+
+
+def test_panel_checklist_warns_until_every_box_is_ticked() -> None:
+    from rfp.export import CHECKLIST_ITEMS
+
+    ticked = {f"checklist_{index}": True for index in range(len(CHECKLIST_ITEMS))}
+    partial = _app_with_result(chat_open=True)
+    assert any(
+        "Chưa tick đủ" in item.value for item in partial.caption
+    )
+    full = _app_with_result(chat_open=True, **ticked)
+    assert not any("Chưa tick đủ" in item.value for item in full.caption)
 
 
 def test_a_click_on_a_suggestion_runs_a_turn_and_records_a_version() -> None:
@@ -2429,8 +2480,7 @@ def test_a_click_on_a_suggestion_runs_a_turn_and_records_a_version() -> None:
                     "instruction": "viết ngắn hơn",
                     "target_key": _app.ALL_TARGET,
                 }
-            with st.sidebar:
-                _app.render_chat_panel(state)
+            _app.render_chat_panel(state)
 
         at = _render(body, _state())
         assert not at.exception
@@ -2472,8 +2522,7 @@ def test_a_blocked_turn_leaves_no_new_version_but_still_answers() -> None:
                     "instruction": "thêm ISO/IEC 27017",
                     "target_key": _app.ALL_TARGET,
                 }
-            with st.sidebar:
-                _app.render_chat_panel(state)
+            _app.render_chat_panel(state)
 
         at = _render(body, _state())
         assert not at.exception

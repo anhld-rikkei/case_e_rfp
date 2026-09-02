@@ -58,7 +58,7 @@ from eval.golden.runner import (
 from eval.golden.schema import GoldenCase, load_case, save_case
 from rfp.export import (
     DRAFT_BANNER_TITLE,
-    REVIEWER_CHECKLIST,
+    CHECKLIST_ITEMS,
     export_filename,
     to_markdown,
 )
@@ -345,17 +345,6 @@ def render_golden_picker() -> None:
 
 
 def sidebar_controls() -> tuple[str, bool]:
-    """Bảng trái: hoặc ô nhập RFP, hoặc chat review — không bao giờ cả hai.
-
-    Nhồi cả hai vào một cột hẹp thì ô chat bị đẩy xuống dưới ba khối nhập liệu,
-    đúng lúc cần nó nhất thì phải cuộn đi tìm.
-    """
-    chat_state = displayed_state()
-    if st.session_state.get("side_panel") == "chat" and chat_state is not None:
-        with st.sidebar:
-            render_chat_panel(chat_state)
-        return st.session_state.get("rfp_input", ""), False
-
     with st.sidebar:
         st.title("RFP đầu vào")
         with st.expander("Dữ liệu nguồn", expanded=False):
@@ -439,11 +428,11 @@ def render_mapping(state: dict[str, Any]) -> None:
 
 
 def render_draft_banner(state: dict[str, Any]) -> None:
-    """Banner nháp + checklist + nút tải. Nhãn nháp đi theo cả file xuất ra."""
+    """Banner nháp + nút tải. Nhãn nháp đi theo cả file xuất ra."""
     st.error(
         f"**{DRAFT_BANNER_TITLE}**  \n"
         "Chưa có người thật rà soát. Không nộp và không gửi khách hàng khi "
-        "checklist bên dưới chưa tick đủ."
+        "checklist trong **💬 Chat review** chưa tick đủ."
     )
     stale = state_is_stale(state)
     if stale:
@@ -453,8 +442,9 @@ def render_draft_banner(state: dict[str, Any]) -> None:
             "trước khi dùng. Cảnh báo này cũng nằm trong file tải về.",
             icon="⚠️",
         )
-    with st.expander("Checklist bắt buộc trước khi nộp", expanded=False):
-        st.markdown(REVIEWER_CHECKLIST)
+    # Checklist chỉ hiện MỘT chỗ — trong panel chat, nơi tick được. Bày thêm
+    # một bản chỉ-đọc ở đây thì người rà soát tick bản này tưởng xong, mà bản
+    # kia vẫn trắng. Bản đầy đủ (kèm dòng ký tên) nằm trong file tải về.
     try:
         markdown = to_markdown(state, stale=stale)
     except GuardViolation as violation:
@@ -602,27 +592,47 @@ def version_diff(older: dict[str, Any], newer: dict[str, Any]) -> str:
 ALL_TARGET = "__all__"
 
 # Bảng màu panel chat — cùng hệ với sơ đồ luồng và dark theme của app.
+# Bong bóng để ở mức toàn trang chứ không bọc trong `:has()`: chat chỉ xuất
+# hiện đúng một chỗ, mà `:has()` không chạy thì mất luôn cả kiểu bong bóng.
 CHAT_CSS = """
 <style>
-[data-testid="stSidebar"] [data-testid="stChatMessage"] {
+[data-testid="stChatMessage"] {
     padding: .5rem .7rem;
     margin-bottom: .35rem;
     border-radius: 12px;
     background: #1B2129;
     border: 1px solid #2A323C;
 }
+[data-testid="stChatMessage"] p { margin-bottom: .25rem; }
 /* Lượt của người dùng: đảo bên, đổi nền — nhìn một cái là biết ai nói.
    `:has()` không chạy thì chỉ mất phần đảo bên, bong bóng vẫn đọc được. */
-[data-testid="stSidebar"] [data-testid="stChatMessage"]:has(
-    [data-testid="stChatMessageAvatarUser"]
-) {
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
     flex-direction: row-reverse;
     background: #17322A;
     border-color: #2F6B52;
 }
-[data-testid="stSidebar"] [data-testid="stChatMessage"] p { margin-bottom: .25rem; }
+/* Cột chat dính lại khi cuộn: đọc hồ sơ ở cột trái mà ô chat trôi mất khỏi
+   màn hình thì phải cuộn ngược lên mỗi lần muốn ra chỉ thị. */
+[data-testid="stColumn"]:has(#chat-panel) {
+    position: sticky;
+    top: 3.2rem;
+    align-self: flex-start;
+    max-height: 90vh;
+    overflow-y: auto;
+    border-left: 1px solid #2A323C;
+    padding-left: 1rem;
+}
 </style>
 """
+
+# Ba mức rộng cho cột chat. Cột trong trang không kéo được như sidebar của
+# Streamlit, nên đổi bằng nút bấm — chọn sẵn mấy mức thay vì một thanh trượt
+# vô nghĩa tới từng pixel.
+CHAT_WIDTHS = {
+    "Hẹp": (4, 1.6),
+    "Vừa": (3, 2),
+    "Rộng": (2, 2),
+}
 
 CHIP_STYLE = (
     "display:inline-block;margin:.15rem .2rem 0 0;padding:.1rem .45rem;"
@@ -831,70 +841,92 @@ def queue_instruction(instruction: str, target_key: str) -> None:
 
 
 def open_chat_panel() -> None:
-    st.session_state["side_panel"] = "chat"
+    st.session_state["chat_open"] = True
 
 
 def close_chat_panel() -> None:
-    st.session_state["side_panel"] = "rfp"
+    st.session_state["chat_open"] = False
 
 
-def render_review_bar(state: dict[str, Any]) -> None:
-    """Nút mở chat review. Bản thân việc chat diễn ra ở panel trái."""
-    st.subheader("Review & chỉnh lại")
-    st.caption(
-        "Chat chỉnh **cách viết trên căn cứ sẵn có** — không thêm được nội dung "
-        "chưa có bằng chứng, và không đổi được số liệu."
+def chat_is_open() -> bool:
+    return bool(st.session_state.get("chat_open"))
+
+
+def render_review_checklist() -> None:
+    """Checklist rút gọn, tick được ngay trong panel.
+
+    Cùng một danh sách với file tải về, chỉ khác cách hiện: ở đây là nhãn ngắn
+    (câu đầy đủ nằm ở tooltip) vì cột hẹp, và bỏ dòng ký tên — đó là thứ của
+    bản in, một ô tick trên màn hình không thay được nó.
+    """
+    ticked = sum(
+        bool(st.session_state.get(f"checklist_{index}"))
+        for index in range(len(CHECKLIST_ITEMS))
     )
-    if state_is_stale(state):
-        st.warning(
-            "Dữ liệu nguồn đã thay đổi sau khi hồ sơ này được sinh. Chạy lại hồ "
-            "sơ trước khi chỉnh tiếp — chỉnh trên bản cũ là trộn hai thế hệ dữ "
-            "liệu vào cùng một tài liệu.",
-            icon="⚠️",
-        )
-        return
-    if st.session_state.get("side_panel") == "chat":
-        st.info(
-            "Chat đang mở ở bảng bên trái. Kéo mép phải của bảng để nới rộng.",
-            icon="💬",
-        )
-        st.button("Đóng chat review", key="chat_close_main", on_click=close_chat_panel)
+    total = len(CHECKLIST_ITEMS)
+    with st.expander(f"Checklist trước khi nộp — {ticked}/{total}", expanded=False):
+        for index, (short, full) in enumerate(CHECKLIST_ITEMS):
+            st.checkbox(short, key=f"checklist_{index}", help=full)
+        if ticked < total:
+            st.caption("Chưa tick đủ — không nộp và không gửi khách hàng.")
+
+
+def render_chat_toggle() -> None:
+    """Một nút, không phải một khối.
+
+    Bản trước để cả một mục "Review & chỉnh lại" ở cuối tab chỉ để chứa một
+    nút — người đọc phải cuộn hết hồ sơ mới thấy chỗ mở chat.
+    """
+    if chat_is_open():
         return
     st.button(
-        "💬 Review — chỉnh lại bằng chat",
-        type="primary",
-        key="chat_open",
+        "💬 Chat review",
+        key="chat_open_button",
         on_click=open_chat_panel,
+        help="Chỉnh lại hồ sơ bằng chỉ thị, kèm checklist trước khi nộp",
     )
 
 
 def render_chat_panel(state: dict[str, Any]) -> None:
-    """Panel chat bên trái. Kéo mép phải để nới rộng (sidebar Streamlit).
+    """Panel chat ở cột PHẢI, dính lại khi cuộn.
 
-    Đặt trong sidebar chứ không phải một cột giữa trang: người dùng cần vừa
-    đọc hồ sơ vừa ra chỉ thị, mà cột trong trang thì cuộn cùng nội dung nên
-    trôi mất khỏi tầm mắt.
+    Không dùng sidebar: bảng trái đã là ô nhập RFP và người dùng cần giữ nó để
+    còn đối chiếu. Streamlit chỉ có một sidebar, nên panel thứ hai phải là một
+    cột trong trang.
     """
-    st.markdown(CHAT_CSS, unsafe_allow_html=True)
-    header_left, header_right = st.columns([3, 2])
+    st.markdown('<div id="chat-panel"></div>', unsafe_allow_html=True)
+    header_left, header_right = st.columns([3, 1])
     with header_left:
-        st.title("Chat review")
+        st.subheader("Chat review")
     with header_right:
-        st.button(
-            "← RFP đầu vào",
-            key="chat_back",
-            on_click=close_chat_panel,
-            width="stretch",
+        st.button("✕", key="chat_close", on_click=close_chat_panel, help="Đóng chat")
+    st.segmented_control(
+        "Độ rộng",
+        list(CHAT_WIDTHS),
+        key="chat_width",
+        label_visibility="collapsed",
+    )
+    st.caption(
+        "Chỉnh **cách viết trên căn cứ sẵn có** — không thêm được nội dung chưa "
+        "có bằng chứng, không đổi được số liệu."
+    )
+    render_review_checklist()
+
+    if state_is_stale(state):
+        st.warning(
+            "Dữ liệu nguồn đã đổi sau khi hồ sơ này được sinh. Chạy lại hồ sơ "
+            "trước khi chỉnh — chỉnh trên bản cũ là trộn hai thế hệ dữ liệu vào "
+            "cùng một tài liệu.",
+            icon="⚠️",
         )
-    st.caption("Kéo mép phải của bảng này để nới rộng.")
+        return
 
     turns = chat_turns(_versions(), last=st.session_state.get("chat_last"))
-    with st.container(height=320, autoscroll=True, key="chat_log"):
+    with st.container(height=300, autoscroll=True, key="chat_log"):
         with st.chat_message("assistant"):
             st.markdown(f"Hồ sơ đã sinh xong. {sentence_breakdown(state)}")
             st.markdown(
-                chip("chỉ viết lại trên căn cứ sẵn có")
-                + chip("không đổi số liệu"),
+                chip("chỉ viết lại trên căn cứ sẵn có") + chip("không đổi số liệu"),
                 unsafe_allow_html=True,
             )
         for turn in turns:
@@ -1363,6 +1395,21 @@ def render_mark_legend(sentences: list[dict[str, Any]]) -> None:
 
 
 def render_proposal(state: dict[str, Any]) -> None:
+    """Hồ sơ ở giữa, chat ở cột phải khi được mở."""
+    st.markdown(CHAT_CSS, unsafe_allow_html=True)
+    if not chat_is_open():
+        render_proposal_body(state)
+        return
+    width = st.session_state.get("chat_width") or "Vừa"
+    body_column, chat_column = st.columns(CHAT_WIDTHS[width], gap="medium")
+    with chat_column:
+        render_chat_panel(state)
+    with body_column:
+        render_proposal_body(state)
+
+
+def render_proposal_body(state: dict[str, Any]) -> None:
+    render_chat_toggle()
     render_draft_banner(state)
     st.success(sentence_breakdown(state))
     # KẾT QUẢ trước, CHI TIẾT sau: người mở tab cần thấy ngay bức tranh tổng —
@@ -1387,7 +1434,6 @@ def render_proposal(state: dict[str, Any]) -> None:
     )
     render_bilingual_proposal(state, key_prefix="detail")
     st.divider()
-    render_review_bar(state)
     render_version_history()
 
 

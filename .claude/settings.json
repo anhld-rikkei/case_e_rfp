@@ -12,7 +12,13 @@
       "Bash(python -m pytest eval/test_app_ui.py -q -k \"suggestion or blocked_turn or click_on\")",
       "Bash(timeout 300 python -m pytest eval/test_app_ui.py -q -k \"blocked_turn or click_on\")",
       "Bash(timeout 200 python -m pytest eval/test_app_ui.py -q -k \"click_on\")",
-      "Bash(timeout 250 python -m pytest eval/test_app_ui.py -q -k \"blocked_turn or click_on\")"
+      "Bash(timeout 250 python -m pytest eval/test_app_ui.py -q -k \"blocked_turn or click_on\")",
+      "Bash(python -c \"import streamlit as st; print\\('segmented_control:', hasattr\\(st,'segmented_control'\\)\\); print\\('pills:', hasattr\\(st,'pills'\\)\\)\")",
+      "Bash(python -m pytest eval/test_export.py -q)",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_checklist.py\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_right.py\")",
+      "Bash(python \"C:/Users/ducan/AppData/Local/Temp/claude/d--AI-case-e-rfp/27823f19-abd9-4364-871f-3f3c4a69e874/scratchpad/patch_right_tests.py\")",
+      "Bash(timeout 200 python -m pytest eval/test_app_ui.py -q -k \"suggestions_only\")"
     ]
   }
 }
