@@ -7,6 +7,16 @@ import random
 import re
 from typing import Any, Iterable
 
+from .coverage import (
+    CHAPTER_TITLES as COVERAGE_CHAPTERS,
+    EDGE_NO_CHAPTER_NUMBER,
+    EDGE_NO_INDUSTRY,
+    EDGE_NO_SECURITY,
+    TIER_COMMON,
+    TIER_EDGE,
+    TIER_FORBIDDEN,
+    coverage_report,
+)
 from .schema import Assertion, GoldenCase, load_case, save_case
 
 
@@ -20,14 +30,9 @@ CHAPTER_HEADER_RE = re.compile(r"^第(?P<number>\d+)章\s+(?P<title>.+?)\s*$")
 REQUIREMENT_ID_RE = re.compile(r"^(?P<chapter>\d+)\.(?P<number>\d+)\s+")
 INDUSTRY_RE = re.compile(r"^発注業種[：:]\s*.*$")
 
-CHAPTER_TITLES = (
-    "調達概要",
-    "業務要件",
-    "技術要件",
-    "セキュリティ要件",
-    "納期・体制",
-    "提案書記載事項",
-)
+# Từ vựng chương định nghĩa ở `coverage.py` và tái xuất ở đây: hai bản sao rồi
+# lệch nhau thì bảng độ phủ báo đủ trong khi bộ sinh bỏ sót một chương.
+CHAPTER_TITLES = COVERAGE_CHAPTERS
 PARAPHRASE_SYSTEM = (
     "あなたは日本語RFPの編集者です。要件の意味、章、requirement ID、業種、"
     "固有の製品名・認証名・数値を一切変えず、文体だけを書き換えてください。"
@@ -65,6 +70,12 @@ def requirement_pools() -> tuple[list[dict[str, str]], list[dict[str, str]]]:
 
 
 def _preferred_chapter(requirement: dict[str, str]) -> str:
+    # Chương chỉ định đích danh thắng suy luận theo loại. Cần cho trục phủ
+    # "6 chương": nếu để mặc định thì certification luôn rơi vào セキュリティ要件
+    # và capability luôn vào 技術要件, bốn chương còn lại không bao giờ có ca.
+    explicit = requirement.get("chapter")
+    if explicit:
+        return explicit
     if "certification" in requirement["category"]:
         return "セキュリティ要件"
     return "技術要件"
@@ -343,48 +354,62 @@ def _apply_mutation(name: str, text: str) -> tuple[str, str | None]:
     raise ValueError(f"Mutation không được hỗ trợ: {name}")
 
 
-def generate_mutations(base: GoldenCase, n: int = 6) -> list[GoldenCase]:
-    mutation_names = (
-        "capabilities_NOT_offered",
-        "certifications_NOT_held",
-        "industry_outside_served",
-        "industry_inside_served",
-        "missing_industry",
-        "parser_fallback",
-    )
-    cases = []
-    for index in range(n):
-        name = mutation_names[index % len(mutation_names)]
-        mutated_text, requirement_id = _apply_mutation(name, base.rfp_text)
-        inherited = [
-            assertion
-            for assertion in base.assertions
-            if not (
-                assertion.kind == "must_route"
-                and (
-                    name == "missing_industry"
-                    or name in {"industry_outside_served", "industry_inside_served"}
-                    and assertion.target.startswith("industry:")
-                )
-            )
-        ]
-        cases.append(
-            GoldenCase(
-                case_id=f"golden-mut-{index + 1:03d}-{name.lower()}",
-                rfp_text=mutated_text,
-                source="mutation",
-                needs_review=False,
-                assertions=[
-                    *inherited,
-                    *_mutation_assertions(name, requirement_id),
-                ],
-                metadata={
-                    "base_case_id": base.case_id,
-                    "mutation": name,
-                },
+MUTATION_NAMES = (
+    "capabilities_NOT_offered",
+    "certifications_NOT_held",
+    "industry_outside_served",
+    "industry_inside_served",
+    "missing_industry",
+    "parser_fallback",
+)
+
+
+def build_mutation(
+    base: GoldenCase,
+    name: str,
+    case_id: str,
+    *,
+    source: str = "mutation",
+    metadata: dict[str, Any] | None = None,
+) -> GoldenCase:
+    """Một ca mutation từ ca nền. Dùng chung cho sinh theo lô và sinh theo trục phủ."""
+    mutated_text, requirement_id = _apply_mutation(name, base.rfp_text)
+    inherited = [
+        assertion
+        for assertion in base.assertions
+        if not (
+            assertion.kind == "must_route"
+            and (
+                name == "missing_industry"
+                or name in {"industry_outside_served", "industry_inside_served"}
+                and assertion.target.startswith("industry:")
             )
         )
-    return cases
+    ]
+    return GoldenCase(
+        case_id=case_id,
+        rfp_text=mutated_text,
+        source=source,
+        needs_review=False,
+        assertions=[*inherited, *_mutation_assertions(name, requirement_id)],
+        metadata={
+            "base_case_id": base.case_id,
+            "mutation": name,
+            **(metadata or {}),
+        },
+    )
+
+
+def generate_mutations(base: GoldenCase, n: int = 6) -> list[GoldenCase]:
+    return [
+        build_mutation(
+            base,
+            MUTATION_NAMES[index % len(MUTATION_NAMES)],
+            f"golden-mut-{index + 1:03d}-"
+            f"{MUTATION_NAMES[index % len(MUTATION_NAMES)].lower()}",
+        )
+        for index in range(n)
+    ]
 
 
 def generate_paraphrases(base: GoldenCase, n: int = 1) -> list[GoldenCase]:
@@ -412,6 +437,265 @@ def generate_paraphrases(base: GoldenCase, n: int = 1) -> list[GoldenCase]:
     return cases
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Sinh THEO TIÊU CHÍ PHỦ
+#
+# Khác hẳn `generate_combinatorial`: chỗ đó bảo "sinh cho tôi 30 ca" rồi hy vọng
+# 30 ca đó chạm hết mọi thứ cần chạm. Ở đây người test chọn TRỤC cần phủ, hàm tự
+# tính còn thiếu gì so với bộ đang có và chỉ sinh đúng phần thiếu.
+# ─────────────────────────────────────────────────────────────────────────────
+
+COVERAGE_AXES = (
+    "out_scope",
+    "blocklist",
+    "in_scope",
+    "chapters",
+    "client_leak",
+    "industries",
+    "edge_cases",
+    "assertion_kinds",
+)
+
+
+def _requirement_of(term: str, *, chapter: str | None = None) -> dict[str, str]:
+    data = capability_data()
+    if term in data["certifications_held"]:
+        category = "certification"
+    elif term in data["capabilities"]:
+        category = "capability"
+    elif term in data["certifications_NOT_held"]:
+        category = "certification_not_held"
+    elif term in data["capabilities_NOT_offered"]:
+        category = "capability_not_offered"
+    else:
+        raise ValueError(f"Từ vựng không có trong capability sheet: {term}")
+    requirement = {"term": term, "category": category}
+    if chapter:
+        requirement["chapter"] = chapter
+    return requirement
+
+
+def _chunk(items: list[Any], size: int) -> list[list[Any]]:
+    return [items[index : index + size] for index in range(0, len(items), size)]
+
+
+def _tag(case: GoldenCase, axis: str, tier: str) -> GoldenCase:
+    case.source = "coverage"
+    case.metadata = {**case.metadata, "axis": axis, "tier": tier}
+    return case
+
+
+def _fill_axis(
+    axis: str,
+    missing: tuple[str, ...],
+    next_id,
+    base: GoldenCase,
+) -> list[GoldenCase]:
+    data = capability_data()
+    any_capability = data["capabilities"][0]
+
+    if axis in {"out_scope", "blocklist"}:
+        # Mỗi ca: 1 yêu cầu trong năng lực + tối đa 2 yêu cầu ngoài năng lực.
+        # Kèm yêu cầu làm được để ca không chỉ kiểm nhánh từ chối.
+        cases = []
+        for group in _chunk(list(missing), 2):
+            case = _render_case(
+                case_id=next_id(),
+                industry=data["industries_served"][0],
+                requirements=[
+                    _requirement_of(any_capability),
+                    *(_requirement_of(term) for term in group),
+                ],
+                chapter_titles=CHAPTER_TITLES,
+            )
+            cases.append(_tag(case, axis, TIER_FORBIDDEN))
+        return cases
+
+    if axis == "in_scope":
+        return [
+            _tag(
+                _render_case(
+                    case_id=next_id(),
+                    industry=data["industries_served"][0],
+                    requirements=[_requirement_of(term) for term in group],
+                    chapter_titles=CHAPTER_TITLES,
+                ),
+                axis,
+                TIER_COMMON,
+            )
+            for group in _chunk(list(missing), 3)
+        ]
+
+    if axis == "chapters":
+        # Một yêu cầu làm được đặt vào ĐÚNG chương còn thiếu.
+        return [
+            _tag(
+                _render_case(
+                    case_id=next_id(),
+                    industry=data["industries_served"][0],
+                    requirements=[
+                        _requirement_of(any_capability, chapter=chapter)
+                        for chapter in group
+                    ],
+                    chapter_titles=CHAPTER_TITLES,
+                ),
+                axis,
+                TIER_COMMON,
+            )
+            for group in _chunk(list(missing), 3)
+        ]
+
+    if axis == "client_leak":
+        # Tên khách hàng cũ không nằm trong RFP — nó nằm trong kho hồ sơ cũ mà
+        # retrieval sẽ lôi ra. Nên đây là điều kiện canh ĐẦU RA, gắn vào một ca
+        # yêu cầu bình thường.
+        cases = []
+        for index, group in enumerate(_chunk(list(missing), 4)):
+            case = _render_case(
+                case_id=next_id(),
+                industry=data["industries_served"][
+                    index % len(data["industries_served"])
+                ],
+                requirements=[_requirement_of(any_capability)],
+                chapter_titles=CHAPTER_TITLES,
+            )
+            case.assertions = [
+                *case.assertions,
+                *(
+                    Assertion(
+                        "must_not_contain",
+                        name,
+                        f"{name} là tên khách hàng trong hồ sơ cũ — "
+                        "không được lộ sang hồ sơ của khách khác.",
+                    )
+                    for name in group
+                ),
+            ]
+            cases.append(_tag(case, axis, TIER_FORBIDDEN))
+        return cases
+
+    if axis == "industries":
+        return [
+            _tag(
+                _render_case(
+                    case_id=next_id(),
+                    industry=industry,
+                    requirements=[_requirement_of(any_capability)],
+                    chapter_titles=CHAPTER_TITLES,
+                ),
+                axis,
+                TIER_COMMON,
+            )
+            for industry in missing
+        ]
+
+    if axis == "edge_cases":
+        cases = []
+        for item in missing:
+            if item == EDGE_NO_SECURITY:
+                case = _render_case(
+                    case_id=next_id(),
+                    industry=data["industries_served"][0],
+                    requirements=[_requirement_of(any_capability)],
+                    chapter_titles=tuple(
+                        chapter
+                        for chapter in CHAPTER_TITLES
+                        if chapter != "セキュリティ要件"
+                    ),
+                )
+                cases.append(_tag(case, axis, TIER_EDGE))
+            elif item == EDGE_NO_INDUSTRY:
+                cases.append(
+                    _tag(
+                        build_mutation(base, "missing_industry", next_id().lower()),
+                        axis,
+                        TIER_EDGE,
+                    )
+                )
+            elif item == EDGE_NO_CHAPTER_NUMBER:
+                cases.append(
+                    _tag(
+                        build_mutation(base, "parser_fallback", next_id().lower()),
+                        axis,
+                        TIER_EDGE,
+                    )
+                )
+        return cases
+
+    if axis == "assertion_kinds":
+        wanted = {
+            "must_ask_user": "missing_industry",
+            "must_route": "industry_inside_served",
+        }
+        cases = [
+            _tag(
+                build_mutation(base, wanted[kind], next_id().lower()),
+                axis,
+                TIER_EDGE,
+            )
+            for kind in missing
+            if kind in wanted
+        ]
+        rest = [kind for kind in missing if kind not in wanted]
+        if rest:
+            # must_cover / must_flag_insufficient / must_not_contain đều ra từ
+            # một ca có cả yêu cầu làm được lẫn yêu cầu ngoài năng lực.
+            case = _render_case(
+                case_id=next_id(),
+                industry=data["industries_served"][0],
+                requirements=[
+                    _requirement_of(any_capability),
+                    _requirement_of(data["capabilities_NOT_offered"][0]),
+                ],
+                chapter_titles=CHAPTER_TITLES,
+            )
+            cases.append(_tag(case, axis, TIER_EDGE))
+        return cases
+
+    raise ValueError(f"Trục phủ không được hỗ trợ: {axis}")
+
+
+def generate_for_coverage(
+    axes: Iterable[str] | None = None,
+    *,
+    existing: Iterable[GoldenCase] = (),
+    base: GoldenCase | None = None,
+) -> list[GoldenCase]:
+    """Sinh đúng phần còn thiếu để các trục được chọn phủ đủ.
+
+    Tất định, 0 lệnh gọi LLM. Bộ đang có phủ rồi thì trả về danh sách rỗng —
+    bấm hai lần không đẻ ra ca trùng.
+    """
+    selected = tuple(axes) if axes is not None else COVERAGE_AXES
+    unknown = [axis for axis in selected if axis not in COVERAGE_AXES]
+    if unknown:
+        raise ValueError(f"Trục phủ không có: {unknown}")
+
+    base_case = base or load_base_case()
+    pool = list(existing)
+    generated: list[GoldenCase] = []
+    counter = iter(range(1, 1000))
+
+    def next_id() -> str:
+        return f"GOLDEN-COV-{next(counter):03d}"
+
+    # Theo thứ tự COVERAGE_AXES: trục phủ rộng đi trước để trục sau khỏi sinh
+    # thừa (ví dụ ca out_scope đã kèm sẵn must_not_contain cho blocklist).
+    for axis_key in COVERAGE_AXES:
+        if axis_key not in selected:
+            continue
+        axis = next(
+            item
+            for item in coverage_report([*pool, *generated])
+            if item.key == axis_key
+        )
+        if axis.is_full:
+            continue
+        fresh = _fill_axis(axis_key, axis.missing, next_id, base_case)
+        generated.extend(fresh)
+    return generated
+
+
 def write_cases(cases: Iterable[GoldenCase], output_dir: Path) -> list[Path]:
     return [save_case(case, output_dir / f"{case.case_id}.json") for case in cases]
 
@@ -432,7 +716,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Generate assertion-based golden cases")
     parser.add_argument(
         "--mode",
-        choices=("combinatorial", "mutation", "paraphrase"),
+        choices=("combinatorial", "mutation", "paraphrase", "coverage"),
         required=True,
     )
     parser.add_argument("--n", type=int, default=1)
@@ -441,9 +725,24 @@ def main() -> None:
     parser.add_argument("--chapters", type=parse_chapters)
     parser.add_argument("--out-scope", type=int, choices=range(4))
     parser.add_argument("--base", type=Path)
+    parser.add_argument(
+        "--axes",
+        type=lambda value: tuple(item.strip() for item in value.split(",") if item.strip()),
+        default=None,
+        help="Danh sách trục phủ, phân tách bằng dấu phẩy. Bỏ trống = tất cả.",
+    )
     args = parser.parse_args()
 
-    if args.mode == "combinatorial":
+    if args.mode == "coverage":
+        from .runner import load_cases
+
+        cases = generate_for_coverage(args.axes, existing=load_cases())
+        if not cases:
+            print("mode=coverage")
+            print("generated=0")
+            print("Bộ golden hiện tại đã phủ đủ các trục được chọn.")
+            return
+    elif args.mode == "combinatorial":
         cases = generate_combinatorial(
             args.n,
             industries=args.industry,

@@ -227,6 +227,60 @@ def test_stale_export_still_blocked_by_guard() -> None:
         to_markdown(state, stale=True)
 
 
+def test_export_marks_user_sentences_with_symbol_and_note() -> None:
+    """Markdown không có nền màu — nhãn phải sống bằng blockquote + ✎."""
+    from rfp.export import USER_MARK, USER_NOTE
+
+    state = _state()
+    state["sections"][0]["sentences"].append(
+        {
+            "text": "người dùng tự thêm câu này",
+            "origin": "user",
+            "source_id": None,
+            "req_ids": [],
+            "verdict": "USER_PROVIDED",
+        }
+    )
+    markdown = to_markdown(state)
+    assert f"> {USER_MARK} người dùng tự thêm câu này" in markdown
+    assert USER_NOTE in markdown
+    # Bảng nguồn cũng phải nói rõ
+    assert "người dùng bổ sung (chưa kiểm chứng)" in markdown
+
+
+def test_export_groups_adjacent_user_sentences() -> None:
+    from rfp.export import USER_NOTE
+
+    state = _state()
+    state["sections"][0]["sentences"] = [
+        {
+            "text": f"câu user {i}",
+            "origin": "user",
+            "source_id": None,
+            "req_ids": [],
+            "verdict": "USER_PROVIDED",
+        }
+        for i in range(3)
+    ]
+    markdown = to_markdown(state)
+    assert markdown.count(USER_NOTE) == 1  # một ghi chú cho cả vùng
+
+
+def test_machine_sentences_are_not_marked_as_user() -> None:
+    from rfp.export import USER_MARK
+
+    markdown = to_markdown(_state())
+    assert f"> {USER_MARK}" not in markdown
+
+
+def test_checklist_reminds_reviewer_about_user_content() -> None:
+    from rfp.export import USER_MARK
+
+    assert USER_MARK in REVIEWER_CHECKLIST
+    assert "Người dùng bổ sung" in REVIEWER_CHECKLIST
+    assert "không kiểm chứng" in REVIEWER_CHECKLIST
+
+
 def test_export_filename_uses_rfp_id() -> None:
     assert export_filename(_state()) == "proposal_draft_RFP-2025-001.md"
 

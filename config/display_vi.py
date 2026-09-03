@@ -25,43 +25,78 @@ UNKNOWN = "—"
 
 
 # ── Nguồn của câu (origin) — canonical: rfp.check.VALID_ORIGINS ────────────
+# `user` KHÔNG nằm trong `check.py:VALID_ORIGINS` — nó là nhãn hậu-pipeline do
+# chat-refine gắn (v1.7), chỉ sống trong session app và file xuất. Pipeline
+# không bao giờ sinh ra nó, và contract checker vẫn fail loud nếu gặp.
+UI_ONLY_ORIGINS = {"user"}
+
 ORIGIN_VI = {
     "capability": "Năng lực công ty",
     "precedent": "Hồ sơ quá khứ",
     "bridge": "Câu nối",
+    "user": "Người dùng bổ sung",
 }
 
 ORIGIN_HINT = {
     "capability": "Lấy từ bảng năng lực đã khai báo của công ty",
     "precedent": "Viết lại từ một câu trong hồ sơ thầu cũ, có mã nguồn",
     "bridge": "Câu chuyển ý, không mang thông tin sự thật nên không có nguồn",
+    "user": (
+        "Người dùng yêu cầu thêm hoặc sửa qua chat — hệ thống chưa kiểm chứng "
+        "được, người nộp hồ sơ chịu trách nhiệm nội dung này"
+    ),
 }
 
 
 # ── Kết luận kiểm chứng (verdict) — canonical: ClaimVerdict ────────────────
+UI_ONLY_VERDICTS = {"USER_PROVIDED"}
+
 VERDICT_VI = {
     "VERIFIED": "Có nguồn xác thực",
     "UNVERIFIABLE": "Không kiểm chứng được",
     "CONTRADICTED": "Mâu thuẫn với năng lực",
+    "USER_PROVIDED": "Người dùng bổ sung — chưa kiểm chứng",
 }
 
 VERDICT_ICON = {
     "VERIFIED": "🟢",
     "UNVERIFIABLE": "🟡",
     "CONTRADICTED": "🔴",
+    "USER_PROVIDED": "✎",
 }
 
 VERDICT_HINT = {
     "VERIFIED": "Đối chiếu được với bằng chứng gốc",
     "UNVERIFIABLE": "Không có bằng chứng để đối chiếu — câu nối luôn thuộc nhóm này",
     "CONTRADICTED": "Trái với bảng năng lực; câu loại này đã bị gỡ khỏi hồ sơ",
+    "USER_PROVIDED": (
+        "Do người dùng yêu cầu qua chat, hệ thống không kiểm chứng — phải rà "
+        "bằng tay trước khi nộp"
+    ),
 }
+
+# Đánh dấu hiển thị theo mức độ can thiệp (v1.7). Hai mức thay vì ba: câu máy
+# sinh nguyên bản không đánh dấu gì cả, nên chỉ cần phân biệt "người dùng đưa
+# vào" với "chat sửa cách viết nhưng giữ nguồn và số liệu".
+USER_BLOCK_LABEL = "✎ Người dùng bổ sung — chưa kiểm chứng"
+EDITED_LABEL = "✎ đã chỉnh cách viết"
+# Duyệt KHÁC kiểm chứng: câu vẫn do người viết, hệ thống vẫn không xác minh
+# được nó. Nhãn phải nói ai chịu trách nhiệm, không được đọc thành "đã kiểm".
+APPROVED_BLOCK_LABEL = "✎ Người viết đã duyệt — hệ thống không kiểm chứng"
+
+REPLACED_BLOCK_LABEL = "Người dùng đổi sang nguồn khác — chưa kiểm chứng"
+
+MARK_LEGEND = (
+    "Nền xanh = do người đưa vào hoặc đổi, hệ thống chưa kiểm chứng · "
+    "viền trái = chat chỉnh cách viết nhưng giữ nguyên nguồn và số liệu · "
+    "không đánh dấu = máy sinh từ căn cứ"
+)
 
 
 # ── Trạng thái mục — canonical: coverage.SectionStatus ─────────────────────
 SECTION_STATUS_VI = {
     "OK": "Đủ căn cứ",
-    "ATTRIBUTE_ONLY": "Chỉ có thông tin công ty",
+    "ATTRIBUTE_ONLY": "Chỉ dựa vào bảng năng lực công ty",
     "INSUFFICIENT_EVIDENCE": "Thiếu căn cứ — cần người bổ sung",
 }
 
@@ -170,6 +205,66 @@ ATTRIBUTE_COVERED_REASON = (
 SKIP_LEGEND = "bỏ qua có chủ đích để tiết kiệm — không phải lỗi"
 
 
+# ── Tin cậy & fallback (v1.8) — canonical: rfp.confidence.TIERS ───────────
+TIER_VI = {
+    "T1": "Tự trả lời được",
+    "T2": "Cần người xem lại",
+    "T3": "Chuyển người xử lý",
+}
+
+TIER_ICON = {"T1": "🟢", "T2": "🟡", "T3": "🟠"}
+
+TIER_HINT = {
+    "T1": "Mọi yêu cầu đã có căn cứ, và có hồ sơ quá khứ chống lưng",
+    "T2": "Đủ căn cứ nhưng chỉ dựa vào bảng năng lực — nên có người đọc lại",
+    "T3": "Còn yêu cầu chưa có căn cứ — người phụ trách phải bổ sung",
+}
+
+# canonical: rfp.graph.source_strategy
+SOURCE_STRATEGY_VI = {
+    "capability-only": "Chỉ bảng năng lực (bỏ qua tìm kiếm)",
+    "hybrid-bm25+dense": "Từ khoá + ngữ nghĩa",
+    "dense-only": "Chỉ ngữ nghĩa",
+    "fallback-listing": "Không chọn được nguồn nào",
+}
+
+# Tầng trả lời theo cách lấy nguồn — từ vựng của slide kiến trúc. KHÁC với
+# TIER_VI (tầng tin cậy T1/T2/T3): cái này nói *lấy nguồn bằng cách nào*, cái
+# kia nói *kết quả đáng tin tới đâu*. Hai thứ trùng tên nhưng không cùng nghĩa,
+# nên để hai bảng riêng thay vì dùng chung một map.
+STRATEGY_TIER_VI = {
+    "capability-only": "Đối chiếu bảng năng lực",
+    "dense-only": "Tìm theo ngữ nghĩa",
+    "hybrid-bm25+dense": "Tìm trong hồ sơ cũ",
+    "fallback-listing": "Chỉ liệt kê nguồn gần đúng",
+}
+
+# Nhánh xử lý của MỘT yêu cầu, màu theo slide.
+REQ_BRANCH_VI = {
+    "auto": "🟢 Dùng được ngay",
+    "warn": "🟡 Phải kiểm lại",
+    "human": "🔴 Người phải bổ sung",
+}
+
+JOURNEY_LEGEND = (
+    "🟢 **Dùng được ngay** — yêu cầu đã có câu dẫn từ hồ sơ thầu cũ, kèm mã "
+    "nguồn cụ thể · "
+    "🟡 **Dùng được, phải kiểm lại** — chỉ dựa vào bảng năng lực công ty, chưa "
+    "có hồ sơ cũ nào chống lưng · "
+    "🔴 **Người phải bổ sung** — chưa tìm được căn cứ nào cho yêu cầu này.  "
+    "Mọi câu không đạt điểm cao đều kèm ghi chú phải đối chiếu tài liệu gốc."
+)
+
+
+# canonical: rfp.metrics.BRANCH_*
+BRANCH_VI = {
+    "auto": "Tự trả lời",
+    "human_review": "Người xem lại",
+    "human_takeover": "Chuyển người xử lý",
+    "failed": "Không ra được hồ sơ",
+}
+
+
 # ── Bước con của khâu truy xuất ────────────────────────────────────────────
 RETRIEVAL_STAGE_VI = {
     "attribute": "Đối chiếu bảng năng lực",
@@ -182,20 +277,29 @@ RETRIEVAL_STAGE_VI = {
 # ── Ghi chú mục (coverage.py sinh ra bằng tiếng Nhật) ─────────────────────
 # Ba câu ATTRIBUTE_ONLY là chuỗi cố định trong `assess_coverage`, khớp nguyên
 # văn được. Ghi chú lạ thì giữ nguyên tiếng Nhật, không đoán.
+# Mỗi ghi chú nói HAI phần: máy đã làm gì, và điều đó nghĩa là gì với hồ sơ.
+# Bản trước chỉ có phần đầu ("bỏ qua bước tìm trong hồ sơ cũ") — đúng nhưng
+# người đọc không rút ra được phải làm gì tiếp.
 SECTION_NOTE_VI = {
     "RFPに対応する原章がないため、能力表のみで構成しました。": (
-        "RFP không có chương tương ứng, nên mục này chỉ dựng từ bảng năng lực "
-        "công ty."
+        "RFP không có chương nào ứng với mục này  \n"
+        "→ mục dựng hoàn toàn từ bảng năng lực công ty  \n"
+        "→ **không có yêu cầu cụ thể để đối chiếu**, cần người đọc lại xem có "
+        "hợp gói thầu không."
     ),
     "属性の完全一致により検索を省略し、能力表のみで回答しました。": (
-        "Mọi yêu cầu khớp thẳng bảng năng lực nên bỏ qua bước tìm trong hồ sơ "
-        "cũ."
+        "Mọi yêu cầu của mục trùng đúng năng lực công ty đang có  \n"
+        "→ trả lời thẳng từ bảng năng lực, **bỏ qua bước tìm hồ sơ quá khứ**  \n"
+        "→ câu trả lời là năng lực chung, **chưa có ví dụ dự án thật**  \n"
+        "→ muốn thuyết phục hơn: bổ sung một dự án cụ thể."
     ),
     "参照可能な先行事例がないため、能力表のみで回答しました。": (
-        "Không có hồ sơ quá khứ nào dùng được, nên chỉ trả lời bằng bảng năng "
-        "lực công ty."
+        "Đã tìm trong hồ sơ quá khứ nhưng **không câu nào đủ sát**  \n"
+        "→ mục chỉ trả lời bằng bảng năng lực công ty  \n"
+        "→ chưa có ví dụ dự án thật kèm số liệu."
     ),
 }
+
 
 # Lý do một yêu cầu không có căn cứ — bản dịch của
 # 「対応する能力・先行事例の根拠がありません」.

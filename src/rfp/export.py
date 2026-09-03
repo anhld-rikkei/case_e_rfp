@@ -25,6 +25,9 @@ from .guard import final_guard
 
 DRAFT_BANNER_TITLE = "⚠ BẢN NHÁP DO HỆ THỐNG SINH — CHƯA ĐƯỢC NỘP"
 
+USER_MARK = "✎"
+USER_NOTE = "Người dùng bổ sung qua chat — hệ thống chưa kiểm chứng"
+
 DRAFT_BANNER = (
     f"> # {DRAFT_BANNER_TITLE}\n"
     ">\n"
@@ -33,21 +36,55 @@ DRAFT_BANNER = (
     "> không dùng làm bản cuối khi checklist bên dưới chưa được tick đủ.\n"
 )
 
+# Một nguồn, hai cách hiện: file tải về in đủ câu dài, panel chat tick bằng
+# nhãn ngắn (câu đủ nằm ở tooltip). Chép thành hai danh sách rồi để chúng lệch
+# nhau là lúc người rà soát tick đủ trên màn hình mà bản nộp vẫn thiếu một mục.
+CHECKLIST_ITEMS: tuple[tuple[str, str], ...] = (
+    (
+        "Chứng chỉ khớp bảng năng lực",
+        "Mọi chứng chỉ được nhắc tới đều đối chiếu đúng `capability_sheet.json`",
+    ),
+    (
+        "Số liệu truy được về nguồn",
+        "Mọi số liệu (%, số người, số năm, SLA) truy được về câu nguồn ghi ở "
+        'bảng "Nguồn từng câu"',
+    ),
+    (
+        "Không còn tên khách hàng cũ",
+        "Không còn tên khách hàng cũ nào trong bản nộp",
+    ),
+    (
+        "Requirement THIẾU đã xử lý",
+        "Các requirement ghi THIẾU ở bảng đối chiếu đã được bổ sung bằng tay "
+        "hoặc đã có quyết định chấp nhận không đáp ứng",
+    ),
+    (
+        "Mục thiếu căn cứ đã viết lại",
+        "Mục bị đánh dấu **Thiếu căn cứ** đã được viết lại bằng thông tin thật",
+    ),
+    (
+        f"Câu {USER_MARK} đã rà lại",
+        f"Mọi câu đánh dấu {USER_MARK} (**Người dùng bổ sung**) đã được rà lại: "
+        "chúng do người dùng yêu cầu qua chat và **hệ thống không kiểm chứng**",
+    ),
+    (
+        "Giọng văn khớp mẫu công ty",
+        "Giọng văn và định dạng khớp mẫu hồ sơ của công ty",
+    ),
+)
+
+# Chỉ có trong file tải về: dòng ký tên là thứ của bản in, một ô tick trên màn
+# hình không thay được nó.
+CHECKLIST_SIGNOFF = "Người rà soát: ________________  Ngày: ____________"
+
 REVIEWER_CHECKLIST = (
     "## Checklist bắt buộc trước khi nộp\n"
     "\n"
     "Người phụ trách hồ sơ phải tự kiểm từng mục, không tin vào việc hệ thống\n"
     "đã có guard tự động:\n"
     "\n"
-    "- [ ] Mọi chứng chỉ được nhắc tới đều đối chiếu đúng `capability_sheet.json`\n"
-    "- [ ] Mọi số liệu (%, số người, số năm, SLA) truy được về câu nguồn ghi ở\n"
-    "      bảng \"Nguồn từng câu\"\n"
-    "- [ ] Không còn tên khách hàng cũ nào trong bản nộp\n"
-    "- [ ] Các requirement ghi THIẾU ở bảng đối chiếu đã được bổ sung bằng tay\n"
-    "      hoặc đã có quyết định chấp nhận không đáp ứng\n"
-    "- [ ] Mục bị đánh dấu **Thiếu căn cứ** đã được viết lại bằng thông tin thật\n"
-    "- [ ] Giọng văn và định dạng khớp mẫu hồ sơ của công ty\n"
-    "- [ ] Người rà soát: ________________  Ngày: ____________\n"
+    + "".join(f"- [ ] {full}\n" for _, full in CHECKLIST_ITEMS)
+    + f"- [ ] {CHECKLIST_SIGNOFF}\n"
 )
 
 
@@ -57,6 +94,8 @@ def _origin_label(sentence: dict[str, Any]) -> str:
         return f"bảng năng lực · {sentence.get('source_id')}"
     if origin == "precedent":
         return f"hồ sơ cũ · {sentence.get('source_id')}"
+    if origin == "user":
+        return f"{USER_MARK} người dùng bổ sung (chưa kiểm chứng)"
     return "câu nối (không có nguồn)"
 
 
@@ -83,10 +122,32 @@ def _sections_markdown(state: dict[str, Any]) -> list[str]:
         sentences = section.get("sentences", [])
         if not sentences:
             lines.append("*(mục này chưa có câu nào)*")
-        for sentence in sentences:
-            lines.append(sentence.get("text", ""))
+        # Markdown không có nền màu, nên vùng người dùng bổ sung được đánh dấu
+        # bằng blockquote + ✎ + ghi chú. Nhãn phải sống sót trong file tải về,
+        # đúng nguyên tắc của banner bản nháp (v1.3).
+        for is_user, group in _group_by_user(sentences):
+            if is_user:
+                for item in group:
+                    lines.append(f"> {USER_MARK} {item.get('text', '')}")
+                lines.append(f">\n> *{USER_NOTE}*")
+            else:
+                for item in group:
+                    lines.append(item.get("text", ""))
         lines.append("")
     return lines
+
+
+def _group_by_user(
+    sentences: list[dict[str, Any]],
+) -> list[tuple[bool, list[dict[str, Any]]]]:
+    groups: list[tuple[bool, list[dict[str, Any]]]] = []
+    for sentence in sentences:
+        is_user = sentence.get("origin") == "user"
+        if groups and groups[-1][0] == is_user:
+            groups[-1][1].append(sentence)
+        else:
+            groups.append((is_user, [sentence]))
+    return groups
 
 
 def _coverage_markdown(state: dict[str, Any]) -> list[str]:
