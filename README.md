@@ -8,7 +8,7 @@ nguyên văn câu nguồn; LLM không được tự sinh.
 
 ## Trạng thái
 
-**v1.7.0** · **266 test pass** (`pytest eval/`) · nhánh phát hành: `main`
+**v1.9.0** · **493 test pass** (`pytest eval/`) · nhánh phát hành: `main`
 
 | Tag | Nội dung chính | Test |
 |---|---|---|
@@ -20,6 +20,8 @@ nguyên văn câu nguồn; LLM không được tự sinh.
 | [v1.5.0](../../releases/tag/v1.5.0) | Đối chiếu dữ liệu nguồn với lần nạp gần nhất (băm nội dung) · nút nạp lại kho đi đúng pipeline ingest · banner "sinh từ dữ liệu cũ" vào cả file xuất · tách corpus đo lường khỏi corpus vận hành | 202 |
 | [v1.6.0](../../releases/tag/v1.6.0) | Chat-refine từng mục trên đúng căn cứ sẵn có · lịch sử phiên bản có diff và quay lại · lưới an toàn không có ngoại lệ cho chat | 226 |
 | [v1.7.0](../../releases/tag/v1.7.0) | **Đổi triết lý chat:** làm theo ý người dùng rồi dán nhãn, thay vì chặn · nội dung người dùng thêm được bôi màu trên UI, ghim khỏi các lượt chat sau, và đánh dấu ✎ trong file xuất | 266 |
+| [v1.8.0](../../releases/tag/v1.8.0) | **Điểm tin cậy 0–1 tất định** (0 lệnh gọi LLM) với ba tầng T1/T2/T3 · `source_strategy` ghi mục nào lấy nguồn bằng cách nào · tầng T3 liệt kê nguồn gần đúng kèm nhãn *không phải câu trả lời* · timeout, nhật ký đo lường, thống kê vận hành · tab truy vết kể theo **hành trình từng yêu cầu RFP** | 367 |
+| [v1.9.0](../../releases/tag/v1.9.0) | **Đo độ phủ bộ test theo 8 trục** và sinh ca test lấp đúng chỗ hở (0 LLM, tất định) · studio sửa được: bấm vào câu là ra nguồn, thay câu bằng nguồn khác, undo/redo, **người viết duyệt** phần mình tự điền · chi tiết hồ sơ bóc tách theo từng yêu cầu RFP | 493 |
 
 Hoãn có chủ đích: **khoá cả một mục**. Phần khoá ở **mức câu** đã làm ở v1.7 (ghim câu người dùng
 thêm qua chat); phần còn lại cần eval riêng. Chat-refine làm được mà **không** phải đụng
@@ -29,7 +31,7 @@ thêm qua chat); phần còn lại cần eval riêng. Chat-refine làm được 
 
 ```powershell
 streamlit run app.py                                  # chạy app (http://localhost:8642)
-.venv\Scripts\python.exe -m pytest eval/ -q           # full test suite — 266 passed
+.venv\Scripts\python.exe -m pytest eval/ -q           # full test suite — 493 passed
 .venv\Scripts\python.exe -m eval.generate_report      # sinh lại eval/results/report.md
 ```
 
@@ -111,9 +113,10 @@ xuất phát từ đâu (`v4 · từ v2`); không bản nào bị ghi đè hay x
 BB-4 vẫn nguyên vẹn cho output pipeline: `origin="user"` là nhãn hậu-pipeline, và `check.py` **fail
 loud** nếu ai đó đổ một state đã qua chat vào contract checker hay eval.
 
-Toàn bộ `eval/` là **266 test**: `test_app_ui` 61 · `test_refine` 39 · `test_cache` 29 ·
-`test_review` 28 · `test_display_vi` 28 · `test_gates` 24 · `test_freshness` 24 ·
-`test_export` 23 · `test_resilience` 9 · `test_deepeval` 1. Trừ `test_redteam_27017` và `test_deepeval`, tất cả đều cách ly —
+Toàn bộ `eval/` là **493 test**: `test_app_ui` 223 · `test_refine` 39 · `test_cache` 29 ·
+`test_review` 28 · `test_display_vi` 28 · `test_metrics` 26 · `test_gates` 24 ·
+`test_freshness` 24 · `test_golden_coverage` 23 · `test_export` 23 ·
+`test_confidence` 16 · `test_resilience` 9 · `test_deepeval` 1. Trừ `test_redteam_27017` và `test_deepeval`, tất cả đều cách ly —
 không mạng, không dựng FAISS.
 
 > ⚠️ **Sinh hồ sơ và chạy eval thì bắt buộc có key.** Thiếu key, lỗi nổ đúng lúc gọi LLM với
